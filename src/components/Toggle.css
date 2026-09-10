@@ -1,0 +1,23 @@
+.toggle {
+  width: 42px;
+  height: 24px;
+  border-radius: var(--r-pill);
+  border: none;
+  position: relative;
+  background: var(--border-strong);
+  padding: 0;
+  flex: none;
+}
+.toggle--on { background: var(--ink); }
+.toggle:hover:not(.toggle--on) { background: #C4C9D0; }
+.toggle__knob {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #fff;
+  transition: left 0.16s ease;
+}
+.toggle--on .toggle__knob { left: 21px; }

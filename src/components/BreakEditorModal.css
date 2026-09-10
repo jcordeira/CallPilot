@@ -1,0 +1,15 @@
+.daypicker { display: flex; gap: 6px; flex-wrap: wrap; }
+.daypicker__day {
+  min-width: 44px;
+  padding: 7px 0;
+  border-radius: var(--r-8);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-family: var(--font-mono);
+  font-size: 11.5px;
+  color: var(--text-secondary);
+}
+.daypicker__day:hover:not(.daypicker__day--on) { border-color: var(--border-strong); }
+.daypicker__day--on { background: var(--ink); border-color: var(--ink); color: #fff; }
+.break-editor__delete { margin-right: auto; color: var(--amber-edge); }
+.form-row { display: grid; grid-template-columns: repeat(auto-fit, minmax(120px, 1fr)); gap: 12px; }

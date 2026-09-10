@@ -1,0 +1,17 @@
+.checkmark {
+  width: 18px;
+  height: 18px;
+  border-radius: var(--r-5);
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 11px;
+  color: #fff;
+  border: 1px solid var(--border-strong);
+  background: var(--surface);
+}
+.checkmark--on {
+  background: var(--ink);
+  border-color: var(--ink);
+}

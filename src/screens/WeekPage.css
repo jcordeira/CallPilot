@@ -1,0 +1,90 @@
+.week__viewing {
+  display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+  margin-bottom: 14px; font-size: 13px;
+}
+.week__viewing-back { border: none; background: transparent; color: var(--text-muted); font-size: 12.5px; padding: 2px 4px; border-radius: 4px; }
+.week__viewing-back:hover { color: var(--ink); }
+
+.week__toolbar {
+  display: flex; align-items: flex-end; justify-content: space-between;
+  margin-bottom: 20px; flex-wrap: wrap; gap: 14px;
+}
+.week__controls { display: flex; gap: 7px; align-items: center; }
+.week__add { margin-left: 8px; padding: 0 15px; }
+
+.week__daytabs {
+  display: grid; grid-template-columns: repeat(7, 1fr); gap: 4px; margin-bottom: 12px;
+}
+.week__daytab {
+  border: 1px solid var(--border); background: var(--surface); border-radius: var(--r-8);
+  padding: 6px 0 8px; display: flex; flex-direction: column; align-items: center; gap: 2px; position: relative;
+}
+.week__daytab-dow { font-size: 9px; letter-spacing: 0.08em; color: var(--text-muted); }
+.week__daytab-n { font-size: 14px; }
+.week__daytab--today { background: var(--fill-subtle); }
+.week__daytab--on { background: var(--ink); border-color: var(--ink); color: #fff; }
+.week__daytab--on .week__daytab-dow { color: rgba(255,255,255,0.7); }
+.week__daytab-dot { width: 4px; height: 4px; border-radius: 50%; background: currentColor; opacity: 0.6; }
+
+.week { --cols: repeat(7, minmax(0, 1fr)); }
+.week--single { --cols: minmax(0, 1fr); }
+.week__head, .week__body {
+  display: grid;
+  grid-template-columns: var(--week-axis-w) var(--cols);
+}
+.week__head { border-bottom: 1px solid var(--border); }
+.week__axis-head, .week__axis { border-right: 1px solid var(--border); }
+.week__dayhead {
+  padding: 11px 8px; text-align: center; border-right: 1px solid var(--border); background: var(--surface);
+  display: flex; flex-direction: column; align-items: center; gap: 2px;
+}
+.week__dayhead--today { background: var(--fill-subtle); }
+.week__dayhead--weekend { background: var(--bg-page); }
+.week__dow { font-size: 10px; letter-spacing: 0.08em; color: var(--text-muted); }
+.week__n { font-size: 16px; color: var(--ink); }
+.week__allday {
+  margin-top: 4px; max-width: 100%;
+  font-size: 10px; line-height: 1.2; padding: 2px 6px; border-radius: 4px; border: none;
+  background: var(--fill-subtle); color: var(--ink); border-left: 2px solid var(--text-muted);
+  overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+}
+.week__allday--task { background: var(--amber-fill); border-left-color: var(--amber-edge); }
+.week__allday--client { border-left-color: var(--ink); }
+
+.week__body { position: relative; }
+.week__hour {
+  height: var(--week-hour-h); padding: 2px 8px 0 0; text-align: right;
+  font-size: 10px; color: var(--text-muted);
+}
+.week__col { border-right: 1px solid var(--border); position: relative; background: var(--surface); }
+.week__col--weekend { background: var(--bg-page); }
+.week__cell { height: var(--week-hour-h); border-bottom: 1px solid var(--rule-light); }
+
+.ev {
+  position: absolute; left: 3px; right: 3px;
+  border-radius: var(--r-6); padding: 4px 6px; overflow: hidden;
+  border: none; border-left: 2px solid var(--ink);
+  background: var(--fill-subtle); text-align: left;
+  display: flex; flex-direction: column; align-items: stretch; gap: 2px;
+}
+.ev:hover { filter: brightness(0.97); }
+.ev--task { background: var(--amber-fill); border-left-color: var(--amber-edge); }
+.ev--synced { border-left-color: var(--text-muted); }
+.ev__title { font-size: 11px; line-height: 1.2; color: var(--ink); overflow: hidden; text-overflow: ellipsis; }
+.ev__title--nowrap { white-space: nowrap; }
+.ev__time { font-size: 9px; color: var(--text-muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.week__legend { margin-top: 16px; gap: 18px; }
+.week__detail { display: flex; flex-direction: column; gap: 10px; font-size: 13px; }
+.week__detail-row { display: flex; justify-content: space-between; gap: 16px; }
+.week__detail-row > span:first-child { color: var(--text-muted); }
+.week__detail-row .mono { font-size: 12px; }
+.week__remove { margin-right: auto; color: var(--amber-edge); }
+
+@media (max-width: 760px) {
+  .week__toolbar { align-items: flex-start; flex-direction: column; }
+  .week__controls { width: 100%; }
+  .week__add { margin-left: auto; }
+  .ev__title { font-size: 12px; }
+  .ev__time { font-size: 10px; }
+}

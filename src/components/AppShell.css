@@ -1,0 +1,77 @@
+.shell { min-height: 100vh; background: var(--bg-page); }
+
+.header {
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+  position: sticky;
+  top: 0;
+  z-index: 10;
+}
+.header__inner {
+  max-width: var(--content-max);
+  margin: 0 auto;
+  padding: 0 24px;
+  height: var(--header-h);
+  display: flex;
+  align-items: center;
+  gap: 28px;
+}
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-right: auto;
+  text-decoration: none;
+}
+.brand:hover { text-decoration: none; }
+.brand__mark {
+  width: 26px; height: 26px;
+  border-radius: var(--r-7);
+  background: var(--ink);
+  color: #fff;
+  font-size: 13px;
+  font-weight: 500;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+.brand__name { font-weight: 500; font-size: 21px; letter-spacing: -0.01em; }
+
+.nav { display: flex; gap: 4px; }
+.nav__link {
+  padding: 7px 13px;
+  border: none;
+  border-radius: var(--r-8);
+  font-size: 13.5px;
+  background: transparent;
+  color: var(--text-muted);
+  text-decoration: none;
+  white-space: nowrap;
+}
+.nav__link:hover { text-decoration: none; color: var(--ink); background: var(--bg-page); }
+.nav__link--active, .nav__link--active:hover { background: var(--fill-subtle); color: var(--ink); }
+
+.header__right {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding-left: 20px;
+  border-left: 1px solid var(--border);
+}
+.header__tz { font-size: 11px; color: var(--text-muted); white-space: nowrap; }
+.header__avatar { width: 28px; height: 28px; }
+
+@media (max-width: 760px) {
+  .header__inner { gap: 12px; padding: 0 16px; }
+  .brand__name { display: none; }
+  .nav { gap: 0; overflow-x: auto; scrollbar-width: none; }
+  .nav::-webkit-scrollbar { display: none; }
+  .nav__link { padding: 7px 10px; font-size: 13px; }
+  .header__right { padding-left: 12px; }
+  .header__tz { display: none; }
+}
+@media (max-width: 480px) {
+  .header__inner { gap: 8px; padding: 0 12px; }
+  .nav__link { padding: 7px 8px; font-size: 12.5px; }
+  .header__right { padding-left: 8px; }
+}
