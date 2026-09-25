@@ -15,6 +15,8 @@ export type ActivityItem = {
   calendarEventId?: string
 }
 
+export type AiProvider = 'grok' | 'openai'
+
 export type AssistantSettings = {
   autoReplyEnabled: boolean
   draftOnly: boolean
@@ -25,6 +27,8 @@ export type AssistantSettings = {
   escalateKeywords: string[]
   signature: string
   tone: 'warm_professional' | 'brief' | 'friendly'
+  aiProvider: AiProvider
+  aiModel: string
   createFubTasks: boolean
   createCalendarEvents: boolean
   unavailableMessage: string

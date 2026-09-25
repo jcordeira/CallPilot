@@ -119,8 +119,8 @@ export function AssistantPage() {
           <p className="eyebrow">Mortgage loan assistant</p>
           <h1 className="page-title assistant__title">LoanPilot</h1>
           <p className="assistant__lede">
-            Answers lead emails and texts when you can&apos;t — skips ops traffic, drafts safe
-            replies, and drops Follow Up Boss tasks plus calendar holds for you.
+            Powered by Grok for lead replies when you can&apos;t get back — skips ops traffic, drafts
+            safe answers, and drops Follow Up Boss tasks plus calendar holds for you.
           </p>
         </div>
         <div className="assistant__actions">

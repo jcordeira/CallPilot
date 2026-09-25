@@ -34,6 +34,8 @@ export type ActivityItem = {
   calendarEventId?: string
 }
 
+export type AiProvider = 'grok' | 'openai'
+
 export type AssistantSettings = {
   autoReplyEnabled: boolean
   draftOnly: boolean
@@ -44,6 +46,10 @@ export type AssistantSettings = {
   escalateKeywords: string[]
   signature: string
   tone: 'warm_professional' | 'brief' | 'friendly'
+  /** Default: Grok via Netlify AI Gateway → OpenRouter (xAI). */
+  aiProvider: AiProvider
+  /** OpenRouter id for Grok, or OpenAI model id when provider is openai. */
+  aiModel: string
   createFubTasks: boolean
   createCalendarEvents: boolean
   unavailableMessage: string
@@ -51,6 +57,16 @@ export type AssistantSettings = {
   companyName: string
   nmls?: string
 }
+
+export const GROK_MODELS = [
+  { id: 'x-ai/grok-4.5', label: 'Grok 4.5' },
+  { id: '~x-ai/grok-latest', label: 'Grok latest' },
+] as const
+
+export const OPENAI_MODELS = [
+  { id: 'gpt-4o-mini', label: 'GPT-4o mini' },
+  { id: 'gpt-4o', label: 'GPT-4o' },
+] as const
 
 export const DEFAULT_SETTINGS: AssistantSettings = {
   autoReplyEnabled: true,
@@ -98,6 +114,8 @@ export const DEFAULT_SETTINGS: AssistantSettings = {
   ],
   signature: '',
   tone: 'warm_professional',
+  aiProvider: 'grok',
+  aiModel: 'x-ai/grok-4.5',
   createFubTasks: true,
   createCalendarEvents: true,
   unavailableMessage:

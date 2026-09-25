@@ -8,7 +8,14 @@ function buildSystemPrompt(settings: AssistantSettings): string {
     settings.signature ||
     `${settings.loanOfficerName}${settings.nmls ? ` | NMLS ${settings.nmls}` : ''}\n${settings.companyName}`
 
-  return `${MORTGAGE_KNOWLEDGE}
+  const engine =
+    settings.aiProvider === 'grok'
+      ? 'You are LoanPilot, a mortgage loan-officer assistant powered by Grok (xAI).'
+      : 'You are LoanPilot, a mortgage loan-officer assistant.'
+
+  return `${engine}
+
+${MORTGAGE_KNOWLEDGE}
 
 Loan officer: ${settings.loanOfficerName}
 Company: ${settings.companyName}
@@ -99,21 +106,53 @@ function parseAiJson(raw: string): StructuredAiResult {
   }
 }
 
+/** Grok (xAI) is reached through Netlify AI Gateway → OpenRouter. */
+function createChatClient(provider: AssistantSettings['aiProvider']): OpenAI {
+  if (provider === 'grok') {
+    const baseURL = env('OPENROUTER_BASE_URL') || undefined
+    const apiKey = env('OPENROUTER_API_KEY') || env('OPENAI_API_KEY') || 'unused'
+    return new OpenAI({
+      baseURL,
+      apiKey,
+      defaultHeaders: {
+        'HTTP-Referer': env('URL', 'https://loanpilot.netlify.app'),
+        'X-Title': 'LoanPilot',
+      },
+    })
+  }
+  // OpenAI path — Netlify injects OPENAI_BASE_URL + OPENAI_API_KEY
+  return new OpenAI()
+}
+
+function resolveModel(settings: AssistantSettings): string {
+  const fromEnv = env('ASSISTANT_MODEL')
+  if (fromEnv) return fromEnv
+  if (settings.aiModel) return settings.aiModel
+  return settings.aiProvider === 'grok' ? 'x-ai/grok-4.5' : 'gpt-4o-mini'
+}
+
+function gatewayReady(provider: AssistantSettings['aiProvider']): boolean {
+  if (provider === 'grok') {
+    return Boolean(env('OPENROUTER_BASE_URL') || env('OPENROUTER_API_KEY') || env('OPENAI_BASE_URL'))
+  }
+  return Boolean(env('OPENAI_BASE_URL') || process.env.OPENAI_API_KEY)
+}
+
 export async function generateReply(
   message: IncomingMessage,
   settings: AssistantSettings,
 ): Promise<StructuredAiResult> {
-  const forceDemo = isDemoMode() || env('OPENAI_API_KEY') === ''
-  // Netlify AI Gateway injects OPENAI_API_KEY after first production deploy.
-  // In demo/local without gateway, use deterministic mortgage replies.
-  if (forceDemo && !env('OPENAI_BASE_URL') && !process.env.OPENAI_API_KEY) {
+  const provider = settings.aiProvider ?? 'grok'
+  // Demo / local without gateway: deterministic mortgage replies (still exercises lead/ops logic).
+  if (isDemoMode() && !gatewayReady(provider)) {
     return demoResult(message, settings)
   }
 
   try {
-    const openai = new OpenAI()
-    const completion = await openai.chat.completions.create({
-      model: env('ASSISTANT_MODEL', 'gpt-4o-mini'),
+    const client = createChatClient(provider)
+    const model = resolveModel(settings)
+    const completion = await client.chat.completions.create({
+      model,
       temperature: 0.3,
       response_format: { type: 'json_object' },
       messages: [

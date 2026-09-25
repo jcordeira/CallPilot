@@ -158,6 +158,79 @@ export function AssistantSettingsPage() {
         ))}
       </div>
 
+      <div className="eyebrow settings__label">AI model</div>
+      <div className="card settings__section">
+        <div className="conn">
+          <div className="conn__who">
+            <div className="conn__name">Reply engine</div>
+            <div className="conn__account">
+              Grok (xAI) via Netlify AI Gateway / OpenRouter — default for LoanPilot
+            </div>
+          </div>
+        </div>
+        <div className="assistant-set__form" style={{ paddingTop: 0 }}>
+          <div className="field">
+            <span className="mono field__label">Provider</span>
+            <div className="chips" role="radiogroup" aria-label="AI provider">
+              {(
+                [
+                  ['grok', 'Grok (xAI)'],
+                  ['openai', 'OpenAI'],
+                ] as const
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={(settings.aiProvider ?? 'grok') === value}
+                  className={`chip${(settings.aiProvider ?? 'grok') === value ? ' chip--selected' : ''}`}
+                  onClick={() =>
+                    patch({
+                      aiProvider: value,
+                      aiModel: value === 'grok' ? 'x-ai/grok-4.5' : 'gpt-4o-mini',
+                    })
+                  }
+                  disabled={pending}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+          <div className="field">
+            <span className="mono field__label">Model</span>
+            <div className="chips" role="radiogroup" aria-label="AI model">
+              {((settings.aiProvider ?? 'grok') === 'grok'
+                ? [
+                    ['x-ai/grok-4.5', 'Grok 4.5'],
+                    ['~x-ai/grok-latest', 'Grok latest'],
+                  ]
+                : [
+                    ['gpt-4o-mini', 'GPT-4o mini'],
+                    ['gpt-4o', 'GPT-4o'],
+                  ]
+              ).map(([value, label]) => (
+                <button
+                  key={value}
+                  type="button"
+                  role="radio"
+                  aria-checked={(settings.aiModel ?? 'x-ai/grok-4.5') === value}
+                  className={`chip${(settings.aiModel ?? 'x-ai/grok-4.5') === value ? ' chip--selected' : ''}`}
+                  onClick={() => patch({ aiModel: value })}
+                  disabled={pending}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+          </div>
+        </div>
+        <div className="card-footer">
+          After the first Netlify production deploy, AI Gateway injects OpenRouter credentials for
+          Grok — no xAI API key to manage.
+        </div>
+      </div>
+
       <div className="eyebrow settings__label">Identity &amp; voice</div>
       <div className="card settings__section assistant-set__form">
         <label className="field">
@@ -232,10 +305,12 @@ export function AssistantSettingsPage() {
           <li>QUO_API_KEY / QUO_FROM_NUMBER / QUO_WEBHOOK_SECRET</li>
           <li>NEO_IMAP_HOST / NEO_IMAP_USER / NEO_IMAP_PASSWORD (optional)</li>
           <li>ASSISTANT_DEMO_MODE=false when going live</li>
+          <li>ASSISTANT_MODEL=x-ai/grok-4.5 (Grok via OpenRouter / AI Gateway)</li>
         </ul>
         <div className="card-footer">
           iMessage itself has no public API — Quo (OpenPhone) gives you a business SMS line that
-          syncs to your iPhone so LoanPilot can answer texts the same way it answers email.
+          syncs to your iPhone so LoanPilot can answer texts the same way it answers email. Grok
+          replies activate after your first Netlify production deploy with AI Gateway enabled.
         </div>
       </div>
     </div>

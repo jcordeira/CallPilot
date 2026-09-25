@@ -22,10 +22,19 @@ The booking calendar from CallPilot remains under Booking / My week / Team for c
 
 - React 19 + TypeScript + Vite
 - Netlify Functions (scheduled inbox + SMS webhook + assistant API)
-- Netlify AI Gateway (OpenAI SDK) with a deterministic demo fallback
+- Netlify AI Gateway with **Grok (xAI)** via OpenRouter (OpenAI fallback available)
 - Netlify Blobs for settings + activity
 - Vitest
 
+## AI model (Grok)
+
+LoanPilot defaults to **Grok 4.5** (`x-ai/grok-4.5`) for drafting lead replies. Netlify AI Gateway routes xAI models through OpenRouter after your first production deploy — no separate xAI key.
+
+In **Assistant settings** you can switch between:
+- **Grok (xAI)** — `x-ai/grok-4.5` or `~x-ai/grok-latest`
+- **OpenAI** — `gpt-4o-mini` / `gpt-4o`
+
+Override with env: `ASSISTANT_MODEL=x-ai/grok-4.5`
 ## Run locally
 
 ```bash
@@ -61,11 +70,10 @@ NEO_IMAP_USER=
 NEO_IMAP_PASSWORD=
 
 ASSISTANT_DEMO_MODE=false
-ASSISTANT_MODEL=gpt-4o-mini
+ASSISTANT_MODEL=x-ai/grok-4.5
 ```
 
-After the first production deploy, enable Netlify AI Gateway so the OpenAI SDK is auto-authenticated (do not set your own `OPENAI_API_KEY` if you want the gateway).
-
+After the first production deploy, enable Netlify AI Gateway. Grok is served via OpenRouter (`OPENROUTER_*` vars are auto-injected — do not set your own provider keys if you want gateway routing).
 Point Quo’s inbound message webhook to `https://<your-site>/api/webhooks/sms`.
 
 ## App routes
