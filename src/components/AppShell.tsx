@@ -6,6 +6,7 @@ import { useTimeZone } from '../state/timezone'
 import './AppShell.css'
 
 const NAV = [
+  { to: '/assistant', label: 'Assistant' },
   { to: '/book', label: 'Booking page' },
   { to: '/week', label: 'My week' },
   { to: '/team', label: 'Team' },
@@ -21,9 +22,9 @@ export function AppShell() {
     <div className="shell">
       <header className="header">
         <div className="header__inner">
-          <NavLink to="/book" className="brand" aria-label="CallPilot home">
-            <span className="brand__mark" aria-hidden="true">C</span>
-            <span className="brand__name">CallPilot</span>
+          <NavLink to="/assistant" className="brand" aria-label="LoanPilot home">
+            <span className="brand__mark" aria-hidden="true">L</span>
+            <span className="brand__name">LoanPilot</span>
           </NavLink>
           <nav className="nav" aria-label="Primary">
             {NAV.map((n) => (

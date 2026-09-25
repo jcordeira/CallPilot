@@ -1,0 +1,243 @@
+import { useEffect, useState, useTransition } from 'react'
+import { Link } from 'react-router-dom'
+import { fetchSettings, saveSettings, type AssistantSettings } from '../lib/assistantApi'
+import { Toggle } from '../components/Toggle'
+import './AssistantSettingsPage.css'
+
+export function AssistantSettingsPage() {
+  const [settings, setSettings] = useState<AssistantSettings | null>(null)
+  const [error, setError] = useState<string | null>(null)
+  const [saved, setSaved] = useState(false)
+  const [pending, startTransition] = useTransition()
+
+  useEffect(() => {
+    startTransition(async () => {
+      try {
+        const data = await fetchSettings()
+        setSettings(data.settings)
+      } catch (e) {
+        setError(e instanceof Error ? e.message : 'Failed to load settings')
+      }
+    })
+  }, [])
+
+  const patch = async (partial: Partial<AssistantSettings>) => {
+    if (!settings) return
+    const optimistic = {
+      ...settings,
+      ...partial,
+      channels: { ...settings.channels, ...(partial.channels ?? {}) },
+    }
+    setSettings(optimistic)
+    setSaved(false)
+    try {
+      const data = await saveSettings(partial)
+      setSettings(data.settings)
+      setSaved(true)
+      setError(null)
+    } catch (e) {
+      setError(e instanceof Error ? e.message : 'Save failed')
+    }
+  }
+
+  if (!settings && !error) {
+    return (
+      <div className="page page--narrow">
+        <p className="assistant-set__muted">Loading assistant settings…</p>
+      </div>
+    )
+  }
+
+  if (!settings) {
+    return (
+      <div className="page page--narrow">
+        <p className="assistant-set__error">{error}</p>
+        <Link to="/assistant">Back to assistant</Link>
+      </div>
+    )
+  }
+
+  return (
+    <div className="page page--narrow assistant-set">
+      <div className="assistant-set__top">
+        <div>
+          <Link to="/assistant" className="assistant-set__back">
+            ← Assistant
+          </Link>
+          <h1 className="page-title settings__title">Assistant settings</h1>
+          <p className="assistant-set__lede">
+            Lead-only replies for Gmail, Neo, and Quo SMS. Draft-first until you trust the voice.
+          </p>
+        </div>
+        {saved && <span className="mono assistant-set__saved">Saved</span>}
+      </div>
+
+      {error && <p className="assistant-set__error">{error}</p>}
+
+      <div className="eyebrow settings__label">Behavior</div>
+      <div className="card settings__section">
+        <div className="conn">
+          <div className="conn__who">
+            <div className="conn__name">Auto-reply</div>
+            <div className="conn__account">Process inbound lead messages automatically</div>
+          </div>
+          <Toggle
+            checked={settings.autoReplyEnabled}
+            onChange={() => patch({ autoReplyEnabled: !settings.autoReplyEnabled })}
+            label="Auto-reply"
+          />
+        </div>
+        <div className="conn">
+          <div className="conn__who">
+            <div className="conn__name">Draft only</div>
+            <div className="conn__account">Recommended — prepare Gmail drafts; don&apos;t send yet</div>
+          </div>
+          <Toggle
+            checked={settings.draftOnly}
+            onChange={() => patch({ draftOnly: !settings.draftOnly })}
+            label="Draft only"
+          />
+        </div>
+        <div className="conn">
+          <div className="conn__who">
+            <div className="conn__name">Lead emails only</div>
+            <div className="conn__account">Never reply to ops, title, UW, or vendor senders</div>
+          </div>
+          <Toggle
+            checked={settings.leadOnly}
+            onChange={() => patch({ leadOnly: !settings.leadOnly })}
+            label="Lead only"
+          />
+        </div>
+        <div className="conn">
+          <div className="conn__who">
+            <div className="conn__name">Create Follow Up Boss tasks</div>
+            <div className="conn__account">Add a task + note on the matched lead</div>
+          </div>
+          <Toggle
+            checked={settings.createFubTasks}
+            onChange={() => patch({ createFubTasks: !settings.createFubTasks })}
+            label="FUB tasks"
+          />
+        </div>
+        <div className="conn">
+          <div className="conn__who">
+            <div className="conn__name">Hold Google Calendar slots</div>
+            <div className="conn__account">When a lead asks to talk, block 30 minutes tomorrow</div>
+          </div>
+          <Toggle
+            checked={settings.createCalendarEvents}
+            onChange={() => patch({ createCalendarEvents: !settings.createCalendarEvents })}
+            label="Calendar holds"
+          />
+        </div>
+      </div>
+
+      <div className="eyebrow settings__label">Channels</div>
+      <div className="card settings__section">
+        {(
+          [
+            ['gmail', 'Gmail', 'Primary lead inbox'],
+            ['neo', 'Neo Mail', 'Forward Neo → Gmail, or set IMAP env vars'],
+            ['sms', 'iPhone / Quo SMS', 'Business number in the Quo app on your iPhone'],
+          ] as const
+        ).map(([key, name, account]) => (
+          <div key={key} className="conn">
+            <div className="conn__who">
+              <div className="conn__name">{name}</div>
+              <div className="conn__account">{account}</div>
+            </div>
+            <Toggle
+              checked={settings.channels[key]}
+              onChange={() =>
+                patch({ channels: { ...settings.channels, [key]: !settings.channels[key] } })
+              }
+              label={name}
+            />
+          </div>
+        ))}
+      </div>
+
+      <div className="eyebrow settings__label">Identity &amp; voice</div>
+      <div className="card settings__section assistant-set__form">
+        <label className="field">
+          <span className="mono field__label">Loan officer name</span>
+          <input
+            value={settings.loanOfficerName}
+            onChange={(e) => setSettings({ ...settings, loanOfficerName: e.target.value })}
+            onBlur={() => patch({ loanOfficerName: settings.loanOfficerName })}
+          />
+        </label>
+        <label className="field">
+          <span className="mono field__label">Company</span>
+          <input
+            value={settings.companyName}
+            onChange={(e) => setSettings({ ...settings, companyName: e.target.value })}
+            onBlur={() => patch({ companyName: settings.companyName })}
+          />
+        </label>
+        <label className="field">
+          <span className="mono field__label">NMLS (optional)</span>
+          <input
+            value={settings.nmls ?? ''}
+            onChange={(e) => setSettings({ ...settings, nmls: e.target.value })}
+            onBlur={() => patch({ nmls: settings.nmls })}
+          />
+        </label>
+        <label className="field">
+          <span className="mono field__label">Unavailable line</span>
+          <textarea
+            rows={3}
+            value={settings.unavailableMessage}
+            onChange={(e) => setSettings({ ...settings, unavailableMessage: e.target.value })}
+            onBlur={() => patch({ unavailableMessage: settings.unavailableMessage })}
+          />
+        </label>
+        <div className="field">
+          <span className="mono field__label">Tone</span>
+          <div className="chips" role="radiogroup" aria-label="Tone">
+            {(
+              [
+                ['warm_professional', 'Warm professional'],
+                ['brief', 'Brief'],
+                ['friendly', 'Friendly'],
+              ] as const
+            ).map(([value, label]) => (
+              <button
+                key={value}
+                type="button"
+                role="radio"
+                aria-checked={settings.tone === value}
+                className={`chip${settings.tone === value ? ' chip--selected' : ''}`}
+                onClick={() => patch({ tone: value })}
+                disabled={pending}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+        </div>
+      </div>
+
+      <div className="eyebrow settings__label">Environment keys</div>
+      <div className="card settings__section">
+        <p className="assistant-set__env">
+          Set these in Netlify (Site settings → Environment variables). Demo mode runs without them.
+        </p>
+        <ul className="assistant-set__keys mono">
+          <li>FOLLOW_UP_BOSS_API_KEY</li>
+          <li>FOLLOW_UP_BOSS_USER_ID</li>
+          <li>GMAIL_ACCESS_TOKEN</li>
+          <li>GOOGLE_CALENDAR_ACCESS_TOKEN</li>
+          <li>QUO_API_KEY / QUO_FROM_NUMBER / QUO_WEBHOOK_SECRET</li>
+          <li>NEO_IMAP_HOST / NEO_IMAP_USER / NEO_IMAP_PASSWORD (optional)</li>
+          <li>ASSISTANT_DEMO_MODE=false when going live</li>
+        </ul>
+        <div className="card-footer">
+          iMessage itself has no public API — Quo (OpenPhone) gives you a business SMS line that
+          syncs to your iPhone so LoanPilot can answer texts the same way it answers email.
+        </div>
+      </div>
+    </div>
+  )
+}

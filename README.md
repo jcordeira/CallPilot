@@ -1,73 +1,95 @@
-# CallPilot
+# LoanPilot
 
-A calendar appointment and booking system with two audiences in one app:
+AI mortgage loan assistant for loan officers who live in **Follow Up Boss**, **Gmail / Neo Mail**, and their phone.
 
-- **Clients** get a public booking page: pick a call type, a day and a time, enter their details, confirm. Times default to Eastern and can be switched to any offered zone.
-- **The host and their team** get a week calendar that merges client calls, tasks booked by teammates and events synced from external calendars; a team roster where anyone can view a colleague's schedule and book on their behalf; and settings for calendar connections, email notifications, conferencing defaults, booking rules, buffers and recurring blocked windows.
+LoanPilot answers **lead** emails and texts when you cannot — it skips operations/title/UW senders, drafts a safe reply (or sends when you turn drafts off), creates **Follow Up Boss tasks + notes**, and holds **Google Calendar** call slots when someone asks to talk.
 
-Built from the design handoff in `design_handoff_callpilot/` (the HTML prototype is the visual reference; this is the production implementation of it).
+The booking calendar from CallPilot remains under Booking / My week / Team for client appointments.
+
+## What it does
+
+| Channel | Behavior |
+|---|---|
+| **Gmail** | Scheduled sweep every 5 minutes; draft or send lead replies |
+| **Neo Mail** | Forward Neo → Gmail (recommended) or configure IMAP env vars |
+| **iPhone messages** | Via **Quo** (OpenPhone) business SMS — works in the Quo iPhone app. Apple iMessage has no public API. |
+| **Follow Up Boss** | Match sender → person; create Follow Up / Appointment tasks; log notes |
+| **Google Calendar** | Hold a 30-minute call block when the lead asks to schedule |
+
+**Lead-only rule:** ops domains, `noreply`/`underwriting`/`title` style addresses, and FUB vendor/agent stages are never auto-answered. Sensitive topics (wire instructions, SSN, denials, attorneys, rate locks) escalate to a human task instead of a reply.
 
 ## Stack
 
-- React 19 + TypeScript, Vite
-- React Router for the four screens (`/book`, `/week`, `/team`, `/settings`)
-- Plain CSS with design tokens in `src/styles/tokens.css` (no component library, no shadows, one near-black accent)
-- Vitest + Testing Library
+- React 19 + TypeScript + Vite
+- Netlify Functions (scheduled inbox + SMS webhook + assistant API)
+- Netlify AI Gateway (OpenAI SDK) with a deterministic demo fallback
+- Netlify Blobs for settings + activity
+- Vitest
 
-## Run it
+## Run locally
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173
-npm test           # unit + component tests
+npm run dev        # http://localhost:5173 — Netlify plugin serves /api/*
+npm test
 npm run typecheck
-npm run build      # production bundle in dist/
+npm run build
 ```
 
-## Where things live
+Demo mode is on by default (`ASSISTANT_DEMO_MODE=true` or missing FUB key). Use **Assistant → Run inbox sweep** or the scenario buttons to see lead vs ops behavior without credentials.
+
+## Configure for production (Netlify)
+
+Set environment variables (Site settings → Environment variables):
+
+```
+FOLLOW_UP_BOSS_API_KEY=
+FOLLOW_UP_BOSS_USER_ID=
+FOLLOW_UP_BOSS_ASSIGNED_TO=
+
+GMAIL_ACCESS_TOKEN=          # OAuth access token for the LO inbox
+GOOGLE_CALENDAR_ACCESS_TOKEN=
+GOOGLE_CALENDAR_ID=primary
+
+QUO_API_KEY=
+QUO_FROM_NUMBER=+1…          # Your Quo inbox number
+QUO_WEBHOOK_SECRET=          # Optional; protect POST /api/webhooks/sms
+
+NEO_ENABLED=true
+NEO_IMAP_HOST=               # Optional if Neo forwards to Gmail
+NEO_IMAP_USER=
+NEO_IMAP_PASSWORD=
+
+ASSISTANT_DEMO_MODE=false
+ASSISTANT_MODEL=gpt-4o-mini
+```
+
+After the first production deploy, enable Netlify AI Gateway so the OpenAI SDK is auto-authenticated (do not set your own `OPENAI_API_KEY` if you want the gateway).
+
+Point Quo’s inbound message webhook to `https://<your-site>/api/webhooks/sms`.
+
+## App routes
+
+| Path | Purpose |
+|---|---|
+| `/assistant` | Activity feed, inbox sweep, reply previews |
+| `/assistant/settings` | Auto-reply, draft-only, channels, voice, env checklist |
+| `/book`, `/week`, `/team`, `/settings` | Appointment booking calendar (CallPilot) |
+
+## Project layout
 
 | Path | What |
 |---|---|
-| `src/lib/availability.ts` | The availability engine: slot generation from working hours, call duration, buffer, recurring breaks, busy time, minimum notice and the daily cap. Pure functions, fully tested. |
-| `src/lib/time.ts` | Hour-float formatting, week math, and IANA time-zone conversion via `Intl` (no library). |
-| `src/state/store.tsx` | Host/admin settings, the events feed, the team roster and bookings. Reducer-based; persisted to `localStorage` for the demo. Swap `load()`/the persistence effect for API calls. |
-| `src/state/timezone.tsx` | The client's chosen time zone (client-side only, defaults to Eastern). |
-| `src/data/fixtures.ts` | Placeholder content: call types, offered zones, team, default settings, and sample events generated relative to the current week. |
-| `src/screens/*` | The four screens. |
-| `src/components/*` | Shell, toggle, checkbox, modal, and the add-task / break-editor / invite dialogs. |
+| `netlify/functions/_shared/` | Classify, AI reply, FUB, Gmail, Neo, Quo, Calendar, pipeline |
+| `netlify/functions/process-inbox.ts` | Cron every 5 minutes |
+| `netlify/functions/sms-webhook.ts` | Quo inbound SMS |
+| `netlify/functions/assistant.ts` | `/api/assistant/:action` |
+| `src/screens/AssistantPage.tsx` | LO dashboard |
+| `src/screens/AssistantSettingsPage.tsx` | Assistant controls |
 
-## Availability rules (as implemented)
+## Safety defaults
 
-- Bookable window is the host's working hours (default Mon–Fri, 9:00–5:00 ET).
-- Slot step is **call duration + buffer**. Intro 15 + 15 → every 30 min; Strategy 45 + 15 → hourly; Deep Dive 90 + 15 → every 1h45.
-- A candidate is dropped if it overlaps an enabled recurring break on that weekday, overlaps busy time on the host's merged calendar (busy time is extended by the buffer, since the buffer is held open after every appointment), or starts inside the minimum-notice window (24 h).
-- The last slot must end by the end of working hours.
-- No slots once the day has reached the max-calls-per-day cap (4).
-- A day is open when it is not in the past and has at least one slot.
-
-Changing the buffer or toggling a break in Settings changes the client-facing slot list immediately.
-
-## What is wired to real logic vs. still needs a backend
-
-Working in this codebase today:
-
-- Booking flow end to end: type → day → slot → client details (name, email, guests, notes; validated) → confirmation. The booking lands on the host's week as a client call and blocks further slots.
-- Week view for any user, with previous/next/today, side-by-side layout for overlapping events, all-day events, an event detail dialog, and **Add task** / **Book for {name}** (tasks land on the chosen teammate's calendar).
-- Team roster with **today's load** and **next open slot** computed from real events and rules; **View** opens that person's week; **Invite user** adds a pending member.
-- Settings: connection toggles, email checkboxes, conferencing default, buffer, recurring breaks with a full editor (name, start, end, weekday picker, delete).
-- Time zones: real offsets and DST via `Intl`; slot labels convert from the host's zone to the client's. A slot that crosses midnight in the client's zone is marked `+1d`.
-- Responsive layouts for phones (stacked booking card, single-day week view with a day strip, stacked roster), hover states, and a visible focus ring on every control.
-
-Needs a backend (out of scope for this frontend):
-
-- OAuth for Google / Outlook / iCloud (CalDAV) and the two-way sync engine that feeds `events` with kind `synced`.
-- Meeting-link creation via Google Meet and Zoom APIs on booking.
-- Email sending (confirmation with `.ics`, 24 h reminder, 1 h reminder, follow-up, teammate notify-on-behalf), plus reschedule/cancel links.
-- Per-user settings (connections, hours, breaks) served per user rather than the single settings object used here.
-- Server persistence. `StoreProvider` currently persists to `localStorage` under `callpilot:v1`; the reducer actions map directly to API mutations.
-
-## Notes on the design spec
-
-- Product copy, colors, sizes and radii follow the handoff exactly. Names, teammates, call types and sample events are placeholders.
-- SMS is deliberately not built; everything goes out by email.
-- The IBM Plex Mono face loads from Google Fonts and falls back to the system monospace stack.
+- **Draft only** is on — Gmail drafts are created until you disable it
+- **Lead only** is on — ops senders are skipped
+- No binding rates, approvals, wire instructions, or SSNs in auto-replies
+- Unknown senders escalate for human review when lead-only is enabled
