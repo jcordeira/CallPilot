@@ -23,13 +23,9 @@ export async function processIncomingMessage(
   message: IncomingMessage,
   settings: AssistantSettings,
 ): Promise<ProcessResult> {
-  const email = message.fromEmail ?? parseFromHeader(message.fromEmail ?? '').email
   let person =
-    (email ? await findPersonByEmail(email) : null) ??
+    (message.fromEmail ? await findPersonByEmail(message.fromEmail) : null) ??
     (message.fromPhone ? await findPersonByPhone(message.fromPhone) : null)
-
-  // If Neo/Gmail from header includes name+email in body fields already parsed:
-  if (!person && message.fromEmail) person = await findPersonByEmail(message.fromEmail)
 
   const fubLead = personLooksLikeLead(person)
   const senderKind = classifySender(message, settings, fubLead)
