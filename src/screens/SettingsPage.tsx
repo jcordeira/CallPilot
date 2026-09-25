@@ -41,7 +41,13 @@ export function SettingsPage() {
             <Toggle checked={c.enabled} onChange={() => dispatch({ type: 'connection/toggle', provider: c.provider })} label={`${c.name} two-way sync`} />
           </div>
         ))}
-        <div className="card-footer">Two-way sync: bookings write to the connected calendar, and busy time there blocks new bookings here.</div>
+        <div className="card-footer">
+          These toggles only mark calendars in this demo booking UI. To sync live Google Calendar and
+          Tasks into the Hub, use{' '}
+          <a href="/api/google/connect">Connect Google Calendar</a>
+          {' '}(requires <span className="mono">GOOGLE_CLIENT_ID</span> /{' '}
+          <span className="mono">GOOGLE_CLIENT_SECRET</span>).
+        </div>
       </div>
 
       <div className="eyebrow settings__label">Email notifications</div>

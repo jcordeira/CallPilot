@@ -1,4 +1,7 @@
 import { env, isDemoMode } from './env'
+import { loadHubExtras, rememberFubTask } from './hubExtras'
+import type { HubTask } from './hubTypes'
+import { shiftDateKey } from './hubTypes'
 
 const FUB_BASE = 'https://api.followupboss.com/v1'
 
@@ -83,6 +86,65 @@ export function personLooksLikeLead(person: FubPerson | null): boolean | null {
   return true
 }
 
+/** Open Follow Up Boss tasks for the hub. Demo fixtures when credentials are missing. */
+export function demoFubTasks(now = new Date()): HubTask[] {
+  return [
+    {
+      id: 'fub-5102',
+      title: 'Follow up: pre-approval documents',
+      due: shiftDateKey(now, 1),
+      status: 'needsAction',
+      source: 'fub',
+      personName: 'Alex Buyer',
+    },
+    {
+      id: 'fub-5103',
+      title: 'Appointment: refinance call',
+      due: shiftDateKey(now, 1),
+      status: 'needsAction',
+      source: 'fub',
+      personName: 'Jordan Hale',
+    },
+  ]
+}
+
+function fubTaskIsDone(value: unknown): boolean {
+  return value === true || value === 1 || value === '1'
+}
+
+export async function listOpenFubTasks(): Promise<HubTask[]> {
+  if (isDemoMode()) {
+    const seen = new Set<string>()
+    const extras = (await loadHubExtras()).fubTasks
+    return [...extras, ...demoFubTasks()].filter((task) => {
+      if (seen.has(task.id)) return false
+      seen.add(task.id)
+      return task.status !== 'completed'
+    })
+  }
+
+  const data = (await fubFetch('/tasks?limit=50')) as {
+    tasks?: {
+      id: number
+      name?: string
+      isCompleted?: boolean | number | string
+      dueDate?: string
+      personId?: number
+      personName?: string
+    }[]
+  }
+  return (data?.tasks ?? [])
+    .filter((task) => task?.id != null && !fubTaskIsDone(task.isCompleted))
+    .map((task) => ({
+      id: String(task.id),
+      title: task.name?.trim() || 'Follow up',
+      due: task.dueDate,
+      status: 'needsAction' as const,
+      source: 'fub' as const,
+      personName: task.personName,
+    }))
+}
+
 export async function createTask(input: {
   personId: number
   name: string
@@ -91,7 +153,16 @@ export async function createTask(input: {
   assignedUserId?: number
 }): Promise<{ id: number }> {
   if (isDemoMode()) {
-    return { id: Math.floor(Math.random() * 10_000) + 5000 }
+    const id = Math.floor(Math.random() * 10_000) + 5000
+    await rememberFubTask({
+      id: String(id),
+      title: input.name,
+      due: input.dueDate,
+      status: 'needsAction',
+      source: 'fub',
+      personName: 'Demo Lead',
+    })
+    return { id }
   }
   const assignedUserId = input.assignedUserId ?? Number(env('FOLLOW_UP_BOSS_USER_ID') || 0)
   const body: Record<string, unknown> = {

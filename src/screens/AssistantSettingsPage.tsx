@@ -292,6 +292,39 @@ export function AssistantSettingsPage() {
         </div>
       </div>
 
+      <div className="eyebrow settings__label" id="google-connect">Google Calendar &amp; Tasks</div>
+      <div className="card settings__section">
+        <p className="assistant-set__env">
+          The Settings toggle only flipped a local demo switch before — that is why Google looked
+          connected but never synced. Use OAuth from the Hub (or set client credentials below).
+        </p>
+        <ol className="assistant-set__keys" style={{ listStyle: 'decimal' }}>
+          <li>In Google Cloud Console, create an OAuth <strong>Web</strong> client</li>
+          <li>Enable <strong>Google Calendar API</strong> and <strong>Google Tasks API</strong></li>
+          <li>
+            Add authorized redirect URI:{' '}
+            <span className="mono">https://YOUR_DOMAIN/api/google/callback</span>
+            {' '}(local: <span className="mono">http://localhost:5173/api/google/callback</span>)
+          </li>
+          <li>
+            Set Netlify env vars <span className="mono">GOOGLE_CLIENT_ID</span> and{' '}
+            <span className="mono">GOOGLE_CLIENT_SECRET</span>, then redeploy
+          </li>
+          <li>
+            Open the Hub and click <strong>Connect Google Calendar</strong>
+          </li>
+        </ol>
+        <div className="card-footer">
+          <a className="btn btn--primary" href="/api/google/connect">
+            Connect Google Calendar
+          </a>
+          {' '}
+          <a className="btn" href="/hub">
+            Back to Hub
+          </a>
+        </div>
+      </div>
+
       <div className="eyebrow settings__label">Environment keys</div>
       <div className="card settings__section">
         <p className="assistant-set__env">
@@ -301,7 +334,9 @@ export function AssistantSettingsPage() {
           <li>FOLLOW_UP_BOSS_API_KEY</li>
           <li>FOLLOW_UP_BOSS_USER_ID</li>
           <li>GMAIL_ACCESS_TOKEN</li>
-          <li>GOOGLE_CALENDAR_ACCESS_TOKEN</li>
+          <li>GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI</li>
+          <li>GOOGLE_CALENDAR_ID=primary · GOOGLE_TASKS_LIST_ID=@default</li>
+          <li>LOANPILOT_API_KEY (public /api/v1; demo-key while ASSISTANT_DEMO_MODE=true)</li>
           <li>QUO_API_KEY / QUO_FROM_NUMBER / QUO_WEBHOOK_SECRET</li>
           <li>NEO_IMAP_HOST / NEO_IMAP_USER / NEO_IMAP_PASSWORD (optional)</li>
           <li>ASSISTANT_DEMO_MODE=false when going live</li>

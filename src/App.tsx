@@ -1,5 +1,6 @@
 import { Navigate, Route, Routes } from 'react-router-dom'
 import { AppShell } from './components/AppShell'
+import { HubPage } from './screens/HubPage'
 import { AssistantPage } from './screens/AssistantPage'
 import { AssistantSettingsPage } from './screens/AssistantSettingsPage'
 import { BookingPage } from './screens/BookingPage'
@@ -11,7 +12,8 @@ export function App() {
   return (
     <Routes>
       <Route element={<AppShell />}>
-        <Route index element={<Navigate to="/assistant" replace />} />
+        <Route index element={<Navigate to="/hub" replace />} />
+        <Route path="/hub" element={<HubPage />} />
         <Route path="/assistant" element={<AssistantPage />} />
         <Route path="/assistant/settings" element={<AssistantSettingsPage />} />
         <Route path="/book" element={<BookingPage />} />
@@ -19,7 +21,7 @@ export function App() {
         <Route path="/week" element={<WeekPage />} />
         <Route path="/team" element={<TeamPage />} />
         <Route path="/settings" element={<SettingsPage />} />
-        <Route path="*" element={<Navigate to="/assistant" replace />} />
+        <Route path="*" element={<Navigate to="/hub" replace />} />
       </Route>
     </Routes>
   )

@@ -6,11 +6,11 @@ import { useTimeZone } from '../state/timezone'
 import './AppShell.css'
 
 const NAV = [
-  { to: '/assistant', label: 'Assistant' },
-  { to: '/book', label: 'Booking page' },
-  { to: '/week', label: 'My week' },
-  { to: '/team', label: 'Team' },
-  { to: '/settings', label: 'Settings' },
+  { to: '/hub', label: 'Hub', end: true },
+  { to: '/assistant', label: 'Assistant', end: false },
+  { to: '/week', label: 'Week', end: true },
+  { to: '/book', label: 'Book', end: false },
+  { to: '/settings', label: 'Settings', end: true },
 ]
 
 export function AppShell() {
@@ -22,13 +22,18 @@ export function AppShell() {
     <div className="shell">
       <header className="header">
         <div className="header__inner">
-          <NavLink to="/assistant" className="brand" aria-label="LoanPilot home">
+          <NavLink to="/hub" className="brand" aria-label="LoanPilot home">
             <span className="brand__mark" aria-hidden="true">L</span>
             <span className="brand__name">LoanPilot</span>
           </NavLink>
           <nav className="nav" aria-label="Primary">
             {NAV.map((n) => (
-              <NavLink key={n.to} to={n.to} className={({ isActive }) => `nav__link${isActive ? ' nav__link--active' : ''}`}>
+              <NavLink
+                key={n.to}
+                to={n.to}
+                end={n.end}
+                className={({ isActive }) => `nav__link${isActive ? ' nav__link--active' : ''}`}
+              >
                 {n.label}
               </NavLink>
             ))}
