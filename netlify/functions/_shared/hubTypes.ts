@@ -23,6 +23,25 @@ export type HubTask = {
   status: TaskStatus
   source: TaskSource
   personName?: string
+  personId?: number
+  assignedTo?: string
+}
+
+export type LeadHeatBand = 'hot' | 'warm' | 'cool' | 'cold'
+
+export type ScoredLead = {
+  personId: number
+  name: string
+  score: number
+  band: LeadHeatBand
+  reasons: string[]
+  assignee?: string
+  assigneeRole?: 'lo' | 'loa'
+  taskType?: string
+  due?: string
+  taskId?: number
+  stage?: string
+  scoredAt: string
 }
 
 export type HubStats = {
@@ -47,6 +66,7 @@ export type HubSummary = {
   stats: HubStats
   warnings: string[]
   google: GoogleConnection
+  leads: ScoredLead[]
 }
 
 export type HubEventInput = {

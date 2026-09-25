@@ -1,13 +1,14 @@
 import { getStore } from '@netlify/blobs'
-import type { HubCalendarEvent, HubTask } from './hubTypes'
+import type { HubCalendarEvent, HubTask, ScoredLead } from './hubTypes'
 
 type Extras = {
   events: HubCalendarEvent[]
   tasks: HubTask[]
   fubTasks: HubTask[]
+  scoredLeads: ScoredLead[]
 }
 
-const empty = (): Extras => ({ events: [], tasks: [], fubTasks: [] })
+const empty = (): Extras => ({ events: [], tasks: [], fubTasks: [], scoredLeads: [] })
 let memory: Extras = empty()
 
 function store() {
@@ -24,6 +25,7 @@ function normalize(raw: Partial<Extras> | null | undefined): Extras | null {
     events: Array.isArray(raw.events) ? raw.events : [],
     tasks: Array.isArray(raw.tasks) ? raw.tasks : [],
     fubTasks: Array.isArray(raw.fubTasks) ? raw.fubTasks : [],
+    scoredLeads: Array.isArray(raw.scoredLeads) ? raw.scoredLeads : [],
   }
 }
 
@@ -38,6 +40,7 @@ export async function loadHubExtras(): Promise<Extras> {
           events: [...raw.events],
           tasks: [...raw.tasks],
           fubTasks: [...raw.fubTasks],
+          scoredLeads: [...raw.scoredLeads],
         }
       }
     } catch {
@@ -48,6 +51,7 @@ export async function loadHubExtras(): Promise<Extras> {
     events: [...memory.events],
     tasks: [...memory.tasks],
     fubTasks: [...memory.fubTasks],
+    scoredLeads: [...memory.scoredLeads],
   }
 }
 
@@ -56,6 +60,7 @@ async function save(next: Extras) {
     events: next.events.slice(0, 40),
     tasks: next.tasks.slice(0, 40),
     fubTasks: next.fubTasks.slice(0, 40),
+    scoredLeads: next.scoredLeads.slice(0, 40),
   }
   const blob = store()
   if (!blob) return
@@ -79,4 +84,17 @@ export async function rememberHubTask(task: HubTask) {
 export async function rememberFubTask(task: HubTask) {
   const current = await loadHubExtras()
   await save({ ...current, fubTasks: [task, ...current.fubTasks.filter((item) => item.id !== task.id)] })
+}
+
+export async function loadScoredLeads(): Promise<ScoredLead[]> {
+  const current = await loadHubExtras()
+  return [...current.scoredLeads].sort((a, b) => b.score - a.score || a.name.localeCompare(b.name))
+}
+
+export async function rememberScoredLead(lead: ScoredLead) {
+  const current = await loadHubExtras()
+  const scoredLeads = [lead, ...current.scoredLeads.filter((item) => item.personId !== lead.personId)].sort(
+    (a, b) => b.score - a.score || a.name.localeCompare(b.name),
+  )
+  await save({ ...current, scoredLeads })
 }

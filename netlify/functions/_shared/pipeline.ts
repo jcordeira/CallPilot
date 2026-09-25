@@ -2,10 +2,13 @@ import { generateReply } from './ai'
 import { holdFollowUpSlot } from './calendar'
 import { classifySender, shouldAutoRespond } from './classify'
 import { addNote, createTask, findPersonByEmail, findPersonByPhone, personLooksLikeLead } from './followupboss'
+import { publishLeadScore } from './leadHeat'
+import { scoreLead } from './leadScore'
 import { createDraftReply, sendReply } from './gmail'
 import { sendNeoReply } from './neo'
 import { sendSms } from './quo'
 import { appendActivity } from './store'
+import { loanOfficer } from './team'
 import type { ActivityItem, AssistantSettings, IncomingMessage } from './types'
 
 export type ProcessResult = {
@@ -13,10 +16,32 @@ export type ProcessResult = {
   replyBody?: string
 }
 
-function tomorrowDueDate(): string {
-  const d = new Date()
-  d.setDate(d.getDate() + 1)
-  return d.toISOString().slice(0, 10)
+async function recordLeadHeat(
+  message: IncomingMessage,
+  person: { id: number; name?: string; stage?: string; tags?: string[] },
+  options: { escalate: boolean; needsAppointment: boolean; taskName?: string },
+): Promise<number | undefined> {
+  const personName = person.name || message.fromName || 'Lead'
+  const result = scoreLead({
+    stage: person.stage,
+    tags: person.tags,
+    recentText: `${message.subject ?? ''}\n${message.body}`,
+    lastInboundAt: message.receivedAt,
+    lastContactAt: message.receivedAt,
+    appointmentRequested: options.needsAppointment,
+    now: new Date(),
+  })
+  const saved = await publishLeadScore({
+    personId: person.id,
+    personName,
+    result,
+    stage: person.stage,
+    escalate: options.escalate,
+    taskName: options.taskName,
+    taskType: options.needsAppointment && !options.escalate ? 'Appointment' : undefined,
+    now: new Date(),
+  })
+  return saved?.taskId
 }
 
 export async function processIncomingMessage(
@@ -56,13 +81,11 @@ export async function processIncomingMessage(
   if (!ai.canAnswer || !ai.replyBody) {
     let fubTaskId: number | undefined
     if (settings.createFubTasks && person) {
-      const task = await createTask({
-        personId: person.id,
-        name: ai.taskTitle ?? `Human follow-up needed: ${message.subject ?? 'lead message'}`,
-        type: 'Follow Up',
-        dueDate: tomorrowDueDate(),
+      fubTaskId = await recordLeadHeat(message, person, {
+        escalate: true,
+        needsAppointment: Boolean(ai.needsAppointment),
+        taskName: ai.taskTitle ?? `Human follow-up needed: ${message.subject ?? 'lead message'}`,
       })
-      fubTaskId = task.id
       await addNote({
         personId: person.id,
         subject: 'LoanPilot — escalated (no safe auto-reply)',
@@ -105,13 +128,11 @@ export async function processIncomingMessage(
   let decision: ActivityItem['decision'] = 'replied'
 
   if (settings.createFubTasks && person) {
-    const task = await createTask({
-      personId: person.id,
-      name: ai.taskTitle ?? 'Review AI lead reply',
-      type: ai.needsAppointment ? 'Appointment' : 'Follow Up',
-      dueDate: tomorrowDueDate(),
+    fubTaskId = await recordLeadHeat(message, person, {
+      escalate: false,
+      needsAppointment: Boolean(ai.needsAppointment),
+      taskName: ai.taskTitle ?? 'Review AI lead reply',
     })
-    fubTaskId = task.id
     await addNote({
       personId: person.id,
       subject: settings.draftOnly ? 'LoanPilot — draft reply prepared' : 'LoanPilot — auto-replied',
@@ -128,11 +149,15 @@ export async function processIncomingMessage(
     calendarEventId = cal.id
     decision = 'appointment_created'
     if (settings.createFubTasks && person && !fubTaskId) {
+      const lo = loanOfficer()
       const task = await createTask({
         personId: person.id,
+        personName: person.name,
         name: `Confirm call ${cal.startIso}`,
         type: 'Appointment',
         dueDate: cal.startIso.slice(0, 10),
+        assignedTo: lo.name,
+        assignedUserId: lo.userId,
       })
       fubTaskId = task.id
     }

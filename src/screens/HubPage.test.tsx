@@ -39,6 +39,32 @@ const summary = {
     warnings: [],
     stats: { upcomingEvents: 1, openTasks: 2, recentReplies: 1, escalations: 0, demo: true },
     google: { configured: true, connected: false, source: null },
+    leads: [
+      {
+        personId: 1001,
+        name: 'Alex Buyer',
+        score: 92,
+        band: 'hot',
+        reasons: ['Inbound email or text in the last 24 hours', 'Engagement: pre-approval, docs ready, ready to buy'],
+        assignee: 'Joseph Cordeira',
+        assigneeRole: 'lo',
+        taskType: 'Call',
+        due: '2026-09-25',
+        scoredAt: '2026-09-25T15:00:00.000Z',
+      },
+      {
+        personId: 1002,
+        name: 'Jordan Hale',
+        score: 72,
+        band: 'warm',
+        reasons: ['Engagement: refinance, rate'],
+        assignee: 'Frank Cordeira',
+        assigneeRole: 'loa',
+        taskType: 'Text',
+        due: '2026-09-26',
+        scoredAt: '2026-09-25T15:00:00.000Z',
+      },
+    ],
   },
 }
 
@@ -69,6 +95,12 @@ function mockHub() {
       if (url.includes('/api/hub/summary')) {
         return new Response(JSON.stringify(summary), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
+      if (url.includes('/api/hub/leads')) {
+        return new Response(JSON.stringify({ ok: true, data: { leads: summary.data.leads, demo: true } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
       if (url.includes('/api/google/status')) {
         return new Response(JSON.stringify({ ok: true, data: summary.data.google }), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
@@ -98,6 +130,11 @@ describe('Hub', () => {
     expect(screen.getByText('Send pre-approval checklist to Alex Buyer')).toBeInTheDocument()
     expect(screen.getByText('Follow up: pre-approval documents')).toBeInTheDocument()
     expect(screen.getByText('Drafted reply listing typical pre-approval docs.')).toBeInTheDocument()
+    expect(screen.getByRole('heading', { name: 'Lead heat' })).toBeInTheDocument()
+    expect(screen.getByText('Hot now')).toBeInTheDocument()
+    expect(screen.getByText(/Joseph Cordeira · LO/)).toBeInTheDocument()
+    expect(screen.getByText(/Frank Cordeira · LOA/)).toBeInTheDocument()
+    expect(screen.getByRole('button', { name: 'Rescore leads' })).toBeInTheDocument()
   })
 
   it('opens the add-task and hold-slot forms', async () => {

@@ -2,8 +2,10 @@ import { createCalendarEvent, createGoogleTask, holdFollowUpSlot, listGoogleTask
 import { isDemoMode } from './env'
 import { getGoogleConnectionStatus, resolveGoogleAccessToken } from './googleAuth'
 import { createTask, listOpenFubTasks } from './followupboss'
+import { listLeadHeat, rescoreOpenLeads } from './leadHeat'
+import { loanOfficer, loanOfficerAssistant } from './team'
 import { ApiError, optionalNumber, optionalString } from './http'
-import type { HubCalendarEvent, HubEventInput, HubSummary, HubTask, HubTaskInput } from './hubTypes'
+import type { HubCalendarEvent, HubEventInput, HubSummary, HubTask, HubTaskInput, ScoredLead } from './hubTypes'
 import { listActivity } from './store'
 
 function errorMessage(err: unknown, fallback: string): string {
@@ -79,6 +81,7 @@ export async function getHubSummary(): Promise<HubSummary> {
 
   const tasks = [...googleResult.tasks, ...fubTasks]
   const calendarDemo = eventsResult.demo || googleResult.demo
+  const heat = await listLeadHeat().catch(() => ({ leads: [], demo: isDemoMode() }))
   return {
     events: eventsResult.events,
     tasks,
@@ -90,6 +93,7 @@ export async function getHubSummary(): Promise<HubSummary> {
       email: google.email,
       source: google.source,
     },
+    leads: heat.leads,
     stats: {
       upcomingEvents: eventsResult.events.length,
       openTasks: tasks.filter((task) => task.status !== 'completed').length,
@@ -108,11 +112,15 @@ export async function createHubTask(input: HubTaskInput): Promise<{ tasks: HubTa
   if (input.source === 'fub' || input.source === 'both') {
     const personId = input.personId ?? (isDemoMode() ? 1001 : undefined)
     if (!personId) throw new ApiError(400, 'personId is required to create a Follow Up Boss task')
+    const teammate = /\bcall\b|appointment/i.test(input.title) ? loanOfficer() : loanOfficerAssistant()
     const created = await createTask({
       personId,
       name: input.title,
-      type: 'Follow Up',
+      type: /\bcall\b|appointment/i.test(input.title) ? 'Call' : 'Follow Up',
       dueDate: input.due?.slice(0, 10),
+      assignedTo: teammate.name,
+      assignedUserId: teammate.userId,
+      personName: input.personName ?? (isDemoMode() ? 'Demo Lead' : undefined),
     })
     tasks.push({
       id: String(created.id),
@@ -122,9 +130,16 @@ export async function createHubTask(input: HubTaskInput): Promise<{ tasks: HubTa
       status: 'needsAction',
       source: 'fub',
       personName: input.personName ?? (isDemoMode() ? 'Demo Lead' : undefined),
+      personId,
+      assignedTo: teammate.name,
     })
   }
   return { tasks }
+}
+
+export async function scoreHubLeads(): Promise<{ leads: ScoredLead[]; demo: boolean }> {
+  await rescoreOpenLeads()
+  return listLeadHeat()
 }
 
 export async function createHubEvent(input: HubEventInput): Promise<{ event: HubCalendarEvent }> {

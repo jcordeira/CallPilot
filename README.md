@@ -13,7 +13,7 @@ The booking calendar from CallPilot remains under Booking / My week / Team for c
 | **Gmail** | Scheduled sweep every 5 minutes; draft or send lead replies |
 | **Neo Mail** | Forward Neo → Gmail (recommended) or configure IMAP env vars |
 | **iPhone messages** | Via **Quo** (OpenPhone) business SMS — works in the Quo iPhone app. Apple iMessage has no public API. |
-| **Follow Up Boss** | Match sender → person; create Follow Up / Appointment tasks; log notes |
+| **Follow Up Boss** | Match sender → person; score lead heat 0–100; create Call / Text / Follow Up tasks for Joseph (LO) or Frank (LOA); log notes |
 | **Google Calendar** | List the next 7 days and hold a 30-minute call block when the lead asks to schedule |
 | **Google Tasks** | List and create tasks (falls back to the calendar token when it includes the tasks scope) |
 
@@ -68,6 +68,11 @@ Set environment variables (Site settings → Environment variables):
 FOLLOW_UP_BOSS_API_KEY=
 FOLLOW_UP_BOSS_USER_ID=
 FOLLOW_UP_BOSS_ASSIGNED_TO=
+FUB_LO_NAME=Joseph Cordeira
+FUB_LOA_NAME=Frank Cordeira
+FUB_LO_USER_ID=
+FUB_LOA_USER_ID=
+FUB_WEBHOOK_SECRET=
 
 GMAIL_ACCESS_TOKEN=          # OAuth access token for the LO inbox
 GOOGLE_CALENDAR_ACCESS_TOKEN=
@@ -93,11 +98,28 @@ ASSISTANT_MODEL=x-ai/grok-4.5
 After the first production deploy, enable Netlify AI Gateway. Grok is served via OpenRouter (`OPENROUTER_*` vars are auto-injected — do not set your own provider keys if you want gateway routing).
 Point Quo’s inbound message webhook to `https://<your-site>/api/webhooks/sms`.
 
+Point Follow Up Boss webhooks (`peopleUpdated`, `peopleStageUpdated`, `notesCreated`, `emailsCreated`, `textMessagesCreated`) to `https://<your-site>/api/webhooks/fub`. LoanPilot rescores that person and, when heat crosses a band, writes a note plus a task. An optional custom field named **LoanPilot Score** is stored as `customLoanPilotScore`. If that field does not exist yet, scoring still saves the note and the task.
+
+## Lead heat (Joseph and Frank)
+
+Scores run in demo mode with no Follow Up Boss key (sample leads on the Hub). With a key, the hourly `score-leads` function and the FUB webhook rescore open people.
+
+| Score | Band | Task |
+|---|---|---|
+| 90–100 | Hot now | **Call today** for **Joseph Cordeira** (LO) |
+| 70–89 | Warm | **Text within 24–48h** for **Frank Cordeira** (LOA) |
+| 40–69 | Cool | **Follow up in 3–7 days** for **Frank Cordeira** (LOA) |
+| 0–39 | Cold | Note only — no urgent task |
+
+Signals: inbound email/SMS in the last 24–72 hours, engagement words (pre-approval, rate, docs ready, ready to buy, refinance now), stage, days since last contact, and appointment requests. Vendor, title, and ops contacts are skipped. Escalations (wire instructions, SSN, and the other sensitive topics) always create a same-day call for Joseph.
+
+Google Calendar stays optional. The Hub lead board works when Google is disconnected.
+
 ## App routes
 
 | Path | Purpose |
 |---|---|
-| `/hub` | Home desk: calendar, Google + FUB tasks, assistant activity, quick actions |
+| `/hub` | Home desk: lead heat, calendar, Google + FUB tasks, assistant activity, quick actions |
 | `/assistant` | Activity feed, inbox sweep, reply previews |
 | `/assistant/settings` | Auto-reply, draft-only, channels, voice, env checklist |
 | `/week`, `/book`, `/settings` | Appointment booking calendar (CallPilot) |
@@ -109,8 +131,10 @@ Used by the Hub screen. Same JSON envelope as the public API: `{ "ok": true, "da
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/api/hub/summary` | Events (7 days), Google + FUB tasks, recent activity, counts |
-| POST | `/api/hub/tasks` | Create a Google Task and/or Follow Up Boss task |
+| GET | `/api/hub/summary` | Events (7 days), Google + FUB tasks, scored leads, recent activity, counts |
+| GET | `/api/hub/leads` | Lead heat board: score, band, reasons, assignee, due |
+| POST | `/api/hub/score` | Rescore open leads and create Joseph/Frank tasks when the band changes |
+| POST | `/api/hub/tasks` | Create a Google Task and/or Follow Up Boss task (calls go to Joseph, other follow-ups to Frank) |
 | POST | `/api/hub/events` | Create a calendar event, or hold the next morning slot when `leadName` is sent without times |
 
 ```json
@@ -151,7 +175,9 @@ curl -s -H "Authorization: Bearer demo-key" -H "Content-Type: application/json" 
 |---|---|
 | `netlify/functions/_shared/` | Classify, AI reply, FUB, Gmail, Neo, Quo, Calendar, pipeline |
 | `netlify/functions/process-inbox.ts` | Cron every 5 minutes |
+| `netlify/functions/score-leads.ts` | Cron hourly — rescore FUB leads |
 | `netlify/functions/sms-webhook.ts` | Quo inbound SMS |
+| `netlify/functions/fub-webhook.ts` | Follow Up Boss webhook `/api/webhooks/fub` |
 | `netlify/functions/assistant.ts` | `/api/assistant/:action` |
 | `netlify/functions/hub.ts` | `/api/hub/:action` |
 | `netlify/functions/public-api.ts` | `/api/v1/*` (API key) |

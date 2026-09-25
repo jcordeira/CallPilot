@@ -6,10 +6,13 @@ import {
   createHubTask,
   disconnectGoogle,
   fetchHubSummary,
+  fetchLeadHeat,
   googleConnectUrl,
+  rescoreLeads,
   type HubCalendarEvent,
   type HubSummary,
   type HubTask,
+  type ScoredLead,
 } from '../lib/hubApi'
 import { dateToKey, dayLabel } from '../lib/time'
 import './HubPage.css'
@@ -53,6 +56,19 @@ function sourceLabel(source: HubTask['source'] | HubCalendarEvent['source']): st
   return 'Sample'
 }
 
+function heatLabel(band: ScoredLead['band']): string {
+  if (band === 'hot') return 'Hot now'
+  if (band === 'warm') return 'Warm'
+  if (band === 'cool') return 'Cool'
+  return 'Cold'
+}
+
+function roleLabel(role?: ScoredLead['assigneeRole']): string {
+  if (role === 'lo') return 'LO'
+  if (role === 'loa') return 'LOA'
+  return ''
+}
+
 function nextBusinessMorning(): { start: Date; end: Date } {
   const start = new Date()
   start.setDate(start.getDate() + 1)
@@ -66,6 +82,8 @@ export function HubPage() {
   const formId = useId()
   const [searchParams, setSearchParams] = useSearchParams()
   const [summary, setSummary] = useState<HubSummary | null>(null)
+  const [leads, setLeads] = useState<ScoredLead[]>([])
+  const [leadDemo, setLeadDemo] = useState(false)
   const [activity, setActivity] = useState<ActivityItem[]>([])
   const [error, setError] = useState<string | null>(null)
   const [notice, setNotice] = useState<string | null>(null)
@@ -85,9 +103,15 @@ export function HubPage() {
 
   const load = useCallback(async () => {
     try {
-      const [nextSummary, nextActivity] = await Promise.all([fetchHubSummary(), fetchActivity(12)])
+      const [nextSummary, nextActivity, heat] = await Promise.all([
+        fetchHubSummary(),
+        fetchActivity(12),
+        fetchLeadHeat().catch(() => null),
+      ])
       setSummary(nextSummary)
       setActivity(nextActivity.items)
+      setLeads(heat?.leads ?? nextSummary.leads ?? [])
+      setLeadDemo(heat?.demo ?? nextSummary.stats.demo)
       setError(null)
     } catch (e) {
       setError(e instanceof Error ? e.message : 'Could not load the hub')
@@ -115,6 +139,23 @@ export function HubPage() {
     next.delete('reason')
     setSearchParams(next, { replace: true })
   }, [searchParams, setSearchParams, load])
+
+  const onRescore = async () => {
+    setBusy(true)
+    setNotice(null)
+    try {
+      const heat = await rescoreLeads()
+      setLeads(heat.leads)
+      setLeadDemo(heat.demo)
+      setNotice(`Rescored ${heat.leads.length} leads in Follow Up Boss.`)
+      setError(null)
+    } catch (e) {
+      setNotice(null)
+      setError(e instanceof Error ? e.message : 'Could not rescore leads')
+    } finally {
+      setBusy(false)
+    }
+  }
 
   const onSweep = async () => {
     setBusy(true)
@@ -212,7 +253,7 @@ export function HubPage() {
           <p className="eyebrow">Loan officer desk</p>
           <h1 className="page-title hub__title">Hub</h1>
           <p className="hub__lede">
-            Upcoming calls, open tasks, and what LoanPilot handled for your leads — Grok still drafts the replies.
+            Upcoming calls, open tasks, and which leads are hot again for Joseph and Frank. Grok still drafts the replies.
           </p>
           {summary?.google?.connected ? (
             <p className="hub__demo hub__demo--ok">
@@ -257,6 +298,9 @@ export function HubPage() {
               Connect Google Calendar
             </a>
           )}
+          <button type="button" className="btn" onClick={() => void onRescore()} disabled={busy}>
+            {busy ? 'Working…' : 'Rescore leads'}
+          </button>
           <button type="button" className="btn" onClick={() => void onSweep()} disabled={busy}>
             {busy ? 'Working…' : 'Run inbox sweep'}
           </button>
@@ -411,6 +455,44 @@ export function HubPage() {
       </ul>
 
       <div className="hub__grid">
+        <section className="card hub__card hub__heat" aria-labelledby="hub-heat">
+          <div className="hub__card-head">
+            <h2 id="hub-heat">Lead heat</h2>
+            <span className="mono hub__count">{leads.length} scored</span>
+          </div>
+          {leadDemo && (
+            <p className="hub__form-help hub__heat-note">
+              Sample scores until Follow Up Boss is connected. Hot leads route to Joseph (LO); warm and cool leads route to Frank (LOA).
+            </p>
+          )}
+          {!ready ? (
+            <p className="hub__empty">Loading lead heat…</p>
+          ) : leads.length === 0 ? (
+            <p className="hub__empty">No scored leads yet. Rescore to rank who Joseph and Frank should call.</p>
+          ) : (
+            <ul className="hub__list">
+              {leads.map((lead) => {
+                const role = roleLabel(lead.assigneeRole)
+                return (
+                  <li key={lead.personId} className="hub__row">
+                    <div className="hub__row-top">
+                      <span className={`pill pill--${lead.band}`}>{heatLabel(lead.band)}</span>
+                      <span className="mono hub__channel">{lead.score}</span>
+                      <span className="hub__when">{lead.due ? formatDue(lead.due) : 'No task'}</span>
+                    </div>
+                    <div className="hub__item-title">{lead.name}</div>
+                    <div className="hub__item-meta">
+                      {lead.assignee ? `${lead.assignee}${role ? ` · ${role}` : ''}` : 'No assignee'}
+                      {lead.taskType ? ` · ${lead.taskType}` : ''}
+                    </div>
+                    {lead.reasons.length > 0 && <p className="hub__item-meta">{lead.reasons.join(' · ')}</p>}
+                  </li>
+                )
+              })}
+            </ul>
+          )}
+        </section>
+
         <section className="card hub__card" aria-labelledby="hub-calendar">
           <div className="hub__card-head">
             <h2 id="hub-calendar">Calendar</h2>
@@ -514,6 +596,7 @@ function TaskRow({ task }: { task: HubTask }) {
       </div>
       <div className="hub__item-title">{task.title}</div>
       {task.personName && <div className="hub__item-meta">{task.personName}</div>}
+      {task.assignedTo && <div className="hub__item-meta">Assigned to {task.assignedTo}</div>}
       {task.notes && <p className="hub__item-meta">{task.notes}</p>}
     </li>
   )

@@ -20,6 +20,23 @@ export type HubTask = {
   status: 'needsAction' | 'completed'
   source: HubTaskSource
   personName?: string
+  assignedTo?: string
+}
+
+export type LeadHeatBand = 'hot' | 'warm' | 'cool' | 'cold'
+
+export type ScoredLead = {
+  personId: number
+  name: string
+  score: number
+  band: LeadHeatBand
+  reasons: string[]
+  assignee?: string
+  assigneeRole?: 'lo' | 'loa'
+  taskType?: string
+  due?: string
+  stage?: string
+  scoredAt: string
 }
 
 export type GoogleConnection = {
@@ -47,6 +64,7 @@ export type HubSummary = {
   }
   warnings: string[]
   google: GoogleConnection
+  leads?: ScoredLead[]
 }
 
 async function hubRequest<T>(path: string, init?: RequestInit): Promise<T> {
@@ -69,6 +87,14 @@ async function hubRequest<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function fetchHubSummary() {
   return hubRequest<HubSummary>('summary')
+}
+
+export function fetchLeadHeat() {
+  return hubRequest<{ leads: ScoredLead[]; demo: boolean }>('leads')
+}
+
+export function rescoreLeads() {
+  return hubRequest<{ leads: ScoredLead[]; demo: boolean }>('score', { method: 'POST' })
 }
 
 export function createHubTask(input: {

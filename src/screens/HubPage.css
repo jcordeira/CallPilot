@@ -103,7 +103,13 @@
   align-items: start;
 }
 
-.hub__activity { grid-column: 1 / -1; }
+.hub__activity,
+.hub__heat { grid-column: 1 / -1; }
+
+.hub__heat-note {
+  margin: 0;
+  padding: 12px 18px 0;
+}
 
 .hub__card-head {
   display: flex;
@@ -213,7 +219,11 @@ a.hub__item-title:hover { text-decoration: underline; }
 .hub .pill--appointment_created { background: #e8f0ea; color: #1f4d2e; }
 .hub .pill--escalated,
 .hub .pill--task_created { background: var(--amber-fill); color: var(--amber-edge); }
-.hub .pill--skipped { background: var(--fill-subtle); color: var(--text-muted); }
+.hub .pill--skipped,
+.hub .pill--cold { background: var(--fill-subtle); color: var(--text-muted); }
+.hub .pill--hot { background: #fde8e4; color: #8c2f23; }
+.hub .pill--warm { background: var(--amber-fill); color: var(--amber-edge); }
+.hub .pill--cool { background: #e7eef8; color: #1e3a5f; }
 
 @media (max-width: 860px) {
   .hub__hero { flex-direction: column; align-items: stretch; }
