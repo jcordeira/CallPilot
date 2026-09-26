@@ -1,73 +1,193 @@
-# CallPilot
+# LoanPilot
 
-A calendar appointment and booking system with two audiences in one app:
+AI mortgage loan assistant for loan officers who live in **Follow Up Boss**, **Gmail / Neo Mail**, and their phone.
 
-- **Clients** get a public booking page: pick a call type, a day and a time, enter their details, confirm. Times default to Eastern and can be switched to any offered zone.
-- **The host and their team** get a week calendar that merges client calls, tasks booked by teammates and events synced from external calendars; a team roster where anyone can view a colleague's schedule and book on their behalf; and settings for calendar connections, email notifications, conferencing defaults, booking rules, buffers and recurring blocked windows.
+LoanPilot answers **lead** emails and texts when you cannot — it skips operations/title/UW senders, drafts a safe reply (or sends when you turn drafts off), creates **Follow Up Boss tasks + notes**, and holds **Google Calendar** call slots when someone asks to talk.
 
-Built from the design handoff in `design_handoff_callpilot/` (the HTML prototype is the visual reference; this is the production implementation of it).
+The booking calendar from CallPilot remains under Booking / My week / Team for client appointments.
+
+## What it does
+
+| Channel | Behavior |
+|---|---|
+| **Gmail** | Scheduled sweep every 5 minutes; draft or send lead replies |
+| **Neo Mail** | Forward Neo → Gmail (recommended) or configure IMAP env vars |
+| **iPhone messages** | Via **Quo** (OpenPhone) business SMS — works in the Quo iPhone app. Apple iMessage has no public API. |
+| **Follow Up Boss** | Match sender → person; score lead heat 0–100; create Call / Text / Follow Up tasks for Joseph (LO) or Frank (LOA); log notes |
+| **Google Calendar** | List the next 7 days and hold a 30-minute call block when the lead asks to schedule |
+| **Google Tasks** | List and create tasks (falls back to the calendar token when it includes the tasks scope) |
+
+**Lead-only rule:** ops domains, `noreply`/`underwriting`/`title` style addresses, and FUB vendor/agent stages are never auto-answered. Sensitive topics (wire instructions, SSN, denials, attorneys, rate locks) escalate to a human task instead of a reply.
 
 ## Stack
 
-- React 19 + TypeScript, Vite
-- React Router for the four screens (`/book`, `/week`, `/team`, `/settings`)
-- Plain CSS with design tokens in `src/styles/tokens.css` (no component library, no shadows, one near-black accent)
-- Vitest + Testing Library
+- React 19 + TypeScript + Vite
+- Netlify Functions (scheduled inbox + SMS webhook + assistant API)
+- Netlify AI Gateway with **Grok (xAI)** via OpenRouter (OpenAI fallback available)
+- Netlify Blobs for settings + activity
+- Vitest
 
-## Run it
+## Connect Google Calendar (fix)
+
+Demo mode used to block Google even when a token was set. That is fixed. Live sync uses OAuth:
+
+1. Google Cloud Console → create OAuth **Web** client  
+2. Enable **Calendar API** + **Tasks API**  
+3. Redirect URI: `https://YOUR_DOMAIN/api/google/callback` (local: `http://localhost:5173/api/google/callback`)  
+4. Set `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` on Netlify (and optionally `GOOGLE_REDIRECT_URI`)  
+5. Open **Hub** → **Connect Google Calendar**
+
+Tokens refresh automatically and are stored in Netlify Blobs. The old Settings page toggle only flipped a local demo switch — it never talked to Google.
+
+## AI model (Grok)
+
+LoanPilot defaults to **Grok 4.5** (`x-ai/grok-4.5`) for drafting lead replies. Netlify AI Gateway routes xAI models through OpenRouter after your first production deploy — no separate xAI key.
+
+In **Assistant settings** you can switch between:
+- **Grok (xAI)** — `x-ai/grok-4.5` or `~x-ai/grok-latest`
+- **OpenAI** — `gpt-4o-mini` / `gpt-4o`
+
+Override with env: `ASSISTANT_MODEL=x-ai/grok-4.5`
+## Run locally
 
 ```bash
 npm install
-npm run dev        # http://localhost:5173
-npm test           # unit + component tests
+npm run dev        # http://localhost:5173 — Netlify plugin serves /api/*
+npm test
 npm run typecheck
-npm run build      # production bundle in dist/
+npm run build
 ```
 
-## Where things live
+Demo mode is on by default (`ASSISTANT_DEMO_MODE=true` or missing FUB key). Use **Assistant → Run inbox sweep** or the scenario buttons to see lead vs ops behavior without credentials.
+
+## Configure for production (Netlify)
+
+Set environment variables (Site settings → Environment variables):
+
+```
+FOLLOW_UP_BOSS_API_KEY=
+FOLLOW_UP_BOSS_USER_ID=
+FOLLOW_UP_BOSS_ASSIGNED_TO=
+FUB_LO_NAME=Joseph Cordeira
+FUB_LOA_NAME=Frank Cordeira
+FUB_LO_USER_ID=
+FUB_LOA_USER_ID=
+FUB_WEBHOOK_SECRET=
+
+GMAIL_ACCESS_TOKEN=          # OAuth access token for the LO inbox
+GOOGLE_CALENDAR_ACCESS_TOKEN=
+GOOGLE_CALENDAR_ID=primary
+GOOGLE_TASKS_ACCESS_TOKEN=
+GOOGLE_TASKS_LIST_ID=@default
+
+LOANPILOT_API_KEY=            # Bearer token for /api/v1 (demo mode also accepts demo-key)
+
+QUO_API_KEY=
+QUO_FROM_NUMBER=+1…          # Your Quo inbox number
+QUO_WEBHOOK_SECRET=          # Optional; protect POST /api/webhooks/sms
+
+NEO_ENABLED=true
+NEO_IMAP_HOST=               # Optional if Neo forwards to Gmail
+NEO_IMAP_USER=
+NEO_IMAP_PASSWORD=
+
+ASSISTANT_DEMO_MODE=false
+ASSISTANT_MODEL=x-ai/grok-4.5
+```
+
+After the first production deploy, enable Netlify AI Gateway. Grok is served via OpenRouter (`OPENROUTER_*` vars are auto-injected — do not set your own provider keys if you want gateway routing).
+Point Quo’s inbound message webhook to `https://<your-site>/api/webhooks/sms`.
+
+Point Follow Up Boss webhooks (`peopleUpdated`, `peopleStageUpdated`, `notesCreated`, `emailsCreated`, `textMessagesCreated`) to `https://<your-site>/api/webhooks/fub`. LoanPilot rescores that person and, when heat crosses a band, writes a note plus a task. An optional custom field named **LoanPilot Score** is stored as `customLoanPilotScore`. If that field does not exist yet, scoring still saves the note and the task.
+
+## Lead heat (Joseph and Frank)
+
+Scores run in demo mode with no Follow Up Boss key (sample leads on the Hub). With a key, the hourly `score-leads` function and the FUB webhook rescore open people.
+
+| Score | Band | Task |
+|---|---|---|
+| 90–100 | Hot now | **Call today** for **Joseph Cordeira** (LO) |
+| 70–89 | Warm | **Text within 24–48h** for **Frank Cordeira** (LOA) |
+| 40–69 | Cool | **Follow up in 3–7 days** for **Frank Cordeira** (LOA) |
+| 0–39 | Cold | Note only — no urgent task |
+
+Signals: inbound email/SMS in the last 24–72 hours, engagement words (pre-approval, rate, docs ready, ready to buy, refinance now), stage, days since last contact, and appointment requests. Vendor, title, and ops contacts are skipped. Escalations (wire instructions, SSN, and the other sensitive topics) always create a same-day call for Joseph.
+
+Google Calendar stays optional. The Hub lead board works when Google is disconnected.
+
+## App routes
+
+| Path | Purpose |
+|---|---|
+| `/hub` | Home desk: lead heat, calendar, Google + FUB tasks, assistant activity, quick actions |
+| `/assistant` | Activity feed, inbox sweep, reply previews |
+| `/assistant/settings` | Auto-reply, draft-only, channels, voice, env checklist |
+| `/week`, `/book`, `/settings` | Appointment booking calendar (CallPilot) |
+| `/team` | Team calendars (still available; not in the primary nav) |
+
+## Hub API (app)
+
+Used by the Hub screen. Same JSON envelope as the public API: `{ "ok": true, "data": ... }`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/hub/summary` | Events (7 days), Google + FUB tasks, scored leads, recent activity, counts |
+| GET | `/api/hub/leads` | Lead heat board: score, band, reasons, assignee, due |
+| POST | `/api/hub/score` | Rescore open leads and create Joseph/Frank tasks when the band changes |
+| POST | `/api/hub/tasks` | Create a Google Task and/or Follow Up Boss task (calls go to Joseph, other follow-ups to Frank) |
+| POST | `/api/hub/events` | Create a calendar event, or hold the next morning slot when `leadName` is sent without times |
+
+```json
+{ "title": "Send checklist", "source": "both", "due": "2026-09-26", "personId": 1001 }
+```
+
+```json
+{ "summary": "Call: Alex Buyer", "startIso": "2026-09-26T14:00:00.000Z", "endIso": "2026-09-26T14:30:00.000Z" }
+```
+
+## Public API (`/api/v1`)
+
+For other software. Send `Authorization: Bearer <LOANPILOT_API_KEY>` or `X-Api-Key`. A missing or wrong key returns `401` `{ "ok": false, "error": "Unauthorized" }`.
+
+Demo mode (`ASSISTANT_DEMO_MODE` is not `false`, or `FOLLOW_UP_BOSS_API_KEY` is unset) also accepts `demo-key`.
+
+| Method | Path | Purpose |
+|---|---|---|
+| GET | `/api/v1/health` | Service, demo flag, and the configured reply model (Grok by default) |
+| GET | `/api/v1/activity` | Recent assistant activity (`?limit=40`) |
+| GET | `/api/v1/calendar/events` | Upcoming events (`?days=7`) |
+| POST | `/api/v1/calendar/events` | Create an event |
+| GET | `/api/v1/tasks` | Open Google Tasks and Follow Up Boss tasks |
+| POST | `/api/v1/tasks` | Create a task (`source`: `google`, `fub`, or `both`) |
+| POST | `/api/v1/messages/preview` | Dry-run a lead reply. Always draft-only — nothing is sent |
+
+```bash
+curl -s -H "Authorization: Bearer demo-key" https://<your-site>/api/v1/health
+curl -s -H "X-Api-Key: demo-key" https://<your-site>/api/v1/tasks
+curl -s -H "Authorization: Bearer demo-key" -H "Content-Type: application/json" \
+  -d '{"body":"What documents do I need for pre-approval?","fromEmail":"alex.buyer@gmail.com"}' \
+  https://<your-site>/api/v1/messages/preview
+```
+
+## Project layout
 
 | Path | What |
 |---|---|
-| `src/lib/availability.ts` | The availability engine: slot generation from working hours, call duration, buffer, recurring breaks, busy time, minimum notice and the daily cap. Pure functions, fully tested. |
-| `src/lib/time.ts` | Hour-float formatting, week math, and IANA time-zone conversion via `Intl` (no library). |
-| `src/state/store.tsx` | Host/admin settings, the events feed, the team roster and bookings. Reducer-based; persisted to `localStorage` for the demo. Swap `load()`/the persistence effect for API calls. |
-| `src/state/timezone.tsx` | The client's chosen time zone (client-side only, defaults to Eastern). |
-| `src/data/fixtures.ts` | Placeholder content: call types, offered zones, team, default settings, and sample events generated relative to the current week. |
-| `src/screens/*` | The four screens. |
-| `src/components/*` | Shell, toggle, checkbox, modal, and the add-task / break-editor / invite dialogs. |
+| `netlify/functions/_shared/` | Classify, AI reply, FUB, Gmail, Neo, Quo, Calendar, pipeline |
+| `netlify/functions/process-inbox.ts` | Cron every 5 minutes |
+| `netlify/functions/score-leads.ts` | Cron hourly — rescore FUB leads |
+| `netlify/functions/sms-webhook.ts` | Quo inbound SMS |
+| `netlify/functions/fub-webhook.ts` | Follow Up Boss webhook `/api/webhooks/fub` |
+| `netlify/functions/assistant.ts` | `/api/assistant/:action` |
+| `netlify/functions/hub.ts` | `/api/hub/:action` |
+| `netlify/functions/public-api.ts` | `/api/v1/*` (API key) |
+| `src/screens/HubPage.tsx` | Loan officer hub |
+| `src/screens/AssistantPage.tsx` | LO assistant |
+| `src/screens/AssistantSettingsPage.tsx` | Assistant controls |
 
-## Availability rules (as implemented)
+## Safety defaults
 
-- Bookable window is the host's working hours (default Mon–Fri, 9:00–5:00 ET).
-- Slot step is **call duration + buffer**. Intro 15 + 15 → every 30 min; Strategy 45 + 15 → hourly; Deep Dive 90 + 15 → every 1h45.
-- A candidate is dropped if it overlaps an enabled recurring break on that weekday, overlaps busy time on the host's merged calendar (busy time is extended by the buffer, since the buffer is held open after every appointment), or starts inside the minimum-notice window (24 h).
-- The last slot must end by the end of working hours.
-- No slots once the day has reached the max-calls-per-day cap (4).
-- A day is open when it is not in the past and has at least one slot.
-
-Changing the buffer or toggling a break in Settings changes the client-facing slot list immediately.
-
-## What is wired to real logic vs. still needs a backend
-
-Working in this codebase today:
-
-- Booking flow end to end: type → day → slot → client details (name, email, guests, notes; validated) → confirmation. The booking lands on the host's week as a client call and blocks further slots.
-- Week view for any user, with previous/next/today, side-by-side layout for overlapping events, all-day events, an event detail dialog, and **Add task** / **Book for {name}** (tasks land on the chosen teammate's calendar).
-- Team roster with **today's load** and **next open slot** computed from real events and rules; **View** opens that person's week; **Invite user** adds a pending member.
-- Settings: connection toggles, email checkboxes, conferencing default, buffer, recurring breaks with a full editor (name, start, end, weekday picker, delete).
-- Time zones: real offsets and DST via `Intl`; slot labels convert from the host's zone to the client's. A slot that crosses midnight in the client's zone is marked `+1d`.
-- Responsive layouts for phones (stacked booking card, single-day week view with a day strip, stacked roster), hover states, and a visible focus ring on every control.
-
-Needs a backend (out of scope for this frontend):
-
-- OAuth for Google / Outlook / iCloud (CalDAV) and the two-way sync engine that feeds `events` with kind `synced`.
-- Meeting-link creation via Google Meet and Zoom APIs on booking.
-- Email sending (confirmation with `.ics`, 24 h reminder, 1 h reminder, follow-up, teammate notify-on-behalf), plus reschedule/cancel links.
-- Per-user settings (connections, hours, breaks) served per user rather than the single settings object used here.
-- Server persistence. `StoreProvider` currently persists to `localStorage` under `callpilot:v1`; the reducer actions map directly to API mutations.
-
-## Notes on the design spec
-
-- Product copy, colors, sizes and radii follow the handoff exactly. Names, teammates, call types and sample events are placeholders.
-- SMS is deliberately not built; everything goes out by email.
-- The IBM Plex Mono face loads from Google Fonts and falls back to the system monospace stack.
+- **Draft only** is on — Gmail drafts are created until you disable it
+- **Lead only** is on — ops senders are skipped
+- No binding rates, approvals, wire instructions, or SSNs in auto-replies
+- Unknown senders escalate for human review when lead-only is enabled
