@@ -162,6 +162,46 @@ If a phone env is empty, LoanPilot tries `GET /users/:id` (`phone`) once per run
 
 Signature checks are off until `FUB_WEBHOOK_VERIFY=true` (or `FUB_WEBHOOK_SECRET` is set). When enabled, the `FUB-Signature` header must be the hex HMAC-SHA256 of the base64-encoded raw body, using `FOLLOW_UP_BOSS_SYSTEM_KEY`.
 
+## WhatsApp auto-reply
+
+Off until `WHATSAPP_AUTOREPLY_ENABLED=true`. When a contact messages Joseph in a 1:1 WhatsApp chat and he does not reply within `WHATSAPP_AUTOREPLY_WAIT_MINUTES` (default 5), LoanPilot sends that contact a WhatsApp text through Kapso and texts Joseph’s cell (`FUB_LO_PHONE`) from his Quo line.
+
+The timer is a Netlify scheduled function every minute (`whatsapp-autoreply`). Kapso’s `whatsapp.conversation.inactive` event is accepted as a backup signal, and the send still waits for the same timer. A reply from the WhatsApp Business app arrives as an echo with `message.kapso.origin` `business_app` and `direction` `outbound`; any outbound message to that contact after the inbound one cancels the auto-reply, except messages LoanPilot sent through the API (`origin: cloud_api` matching the auto-reply, or a stored message id). Group chats (`group_id`, `@g.us`), status events (`whatsapp.message.delivered` / `read` / `failed`, message type `status`), reactions, history sync, and passive messages are ignored. One auto-reply per contact per `WHATSAPP_AUTOREPLY_COOLDOWN_HOURS` (default 4). Messages older than `WHATSAPP_AUTOREPLY_MAX_AGE_HOURS` (default 24) are not armed, so a late history import does not blast people. State is in the `loanpilot-whatsapp` Netlify Blobs store. `WHATSAPP_AUTOREPLY_DRY_RUN=true` and Hub → Preview WhatsApp log the digest and do not send. `POST /api/hub/whatsapp` only previews.
+
+**Kapso.** Connect `+15169969070` with Meta coexistence so Joseph keeps the WhatsApp Business app ([coexistence](https://docs.kapso.ai/docs/how-to/whatsapp/coexistence-troubleshooting)). Send with `POST https://api.kapso.ai/meta/whatsapp/v24.0/{KAPSO_PHONE_NUMBER_ID}/messages`, header `X-API-Key: KAPSO_API_KEY`, body `messaging_product`, `to` (digits), `type: text`, `text.body` ([send text](https://docs.kapso.ai/docs/whatsapp/send-messages/text)). `KAPSO_PHONE_NUMBER_ID` is the Meta phone number id from Kapso → WhatsApp → Phone numbers, not the E.164 number. API keys are under Integrations → API keys.
+
+**Webhook.** `POST /api/webhooks/whatsapp`. Kapso signs the raw body with HMAC-SHA256 and puts the hex digest in `X-Webhook-Signature` ([security](https://docs.kapso.ai/docs/platform/webhooks/security)). Set that secret as `KAPSO_WEBHOOK_SECRET`. A missing or wrong signature returns 401. Register a Kapso (not Meta-raw) phone-number webhook:
+
+```bash
+curl -X POST "https://api.kapso.ai/platform/v1/whatsapp/phone_numbers/$KAPSO_PHONE_NUMBER_ID/webhooks" \
+  -H "X-API-Key: $KAPSO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{
+    "whatsapp_webhook": {
+      "kind": "kapso",
+      "url": "https://<your-site>/api/webhooks/whatsapp",
+      "events": ["whatsapp.message.received", "whatsapp.message.sent"],
+      "secret_key": "<KAPSO_WEBHOOK_SECRET>"
+    }
+  }'
+```
+
+Subscribe to `whatsapp.message.received` and `whatsapp.message.sent`. `whatsapp.message.sent` is what carries Business-app echoes. Do not rely on `whatsapp.conversation.inactive` for the timer; the minute cron is the source of truth. Optional inactive subscription is harmless.
+
+| Env | Default | Purpose |
+|---|---|---|
+| `WHATSAPP_AUTOREPLY_ENABLED` | `false` | Master switch |
+| `WHATSAPP_AUTOREPLY_DRY_RUN` | `false` | Log the reply and the Quo alert, send nothing |
+| `WHATSAPP_AUTOREPLY_WAIT_MINUTES` | `5` | Silence before the auto-reply |
+| `WHATSAPP_AUTOREPLY_COOLDOWN_HOURS` | `4` | Minimum gap between auto-replies to one contact |
+| `WHATSAPP_AUTOREPLY_MAX_AGE_HOURS` | `24` | Ignore inbound messages older than this |
+| `WHATSAPP_AUTOREPLY_TEXT` | Joseph’s away message | WhatsApp text sent to the contact |
+| `KAPSO_API_KEY` | | Project API key (`X-API-Key`) |
+| `KAPSO_PHONE_NUMBER_ID` | | Meta phone number id for Joseph’s line |
+| `KAPSO_WEBHOOK_SECRET` | | HMAC secret; required or the webhook returns 401 |
+| `KAPSO_API_BASE` | `https://api.kapso.ai/meta/whatsapp/v24.0` | Optional proxy base |
+| `FUB_LO_PHONE` | | Joseph’s cell for the Quo alert |
+
 Open tasks on the Hub are Joseph’s and Frank’s (`FUB_LO_USER_ID`, `FUB_LOA_USER_ID`), incomplete, due in a recent window, with person names filled from Follow Up Boss. Set `FUB_LO_USER_ID=1`, `FUB_LOA_USER_ID=16`, and `FOLLOW_UP_BOSS_USER_ID=1` for this account. The first live Hub load (or the 5-minute inbox sweep) deletes sample rows previously stored in Netlify Blobs.
 
 ## Lead heat (Joseph and Frank)
@@ -241,6 +281,8 @@ curl -s -H "Authorization: Bearer demo-key" -H "Content-Type: application/json" 
 | `netlify/functions/process-inbox.ts` | Cron every 5 minutes |
 | `netlify/functions/score-leads.ts` | Cron hourly — rescore FUB leads |
 | `netlify/functions/loa-reminders.ts` | Cron every 15 minutes — LOA/LO miss reminders (off until enabled) |
+| `netlify/functions/whatsapp-autoreply.ts` | Cron every minute — WhatsApp away reply (off until enabled) |
+| `netlify/functions/whatsapp-webhook.ts` | Kapso webhook `/api/webhooks/whatsapp` |
 | `netlify/functions/sms-webhook.ts` | Quo inbound SMS |
 | `netlify/functions/fub-webhook.ts` | Follow Up Boss webhook `/api/webhooks/fub` |
 | `netlify/functions/assistant.ts` | `/api/assistant/:action` |

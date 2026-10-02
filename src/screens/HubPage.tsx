@@ -8,10 +8,13 @@ import {
   fetchHubSummary,
   fetchLeadHeat,
   fetchReminderPanel,
+  fetchWhatsappPanel,
   googleConnectUrl,
   previewReminders,
+  previewWhatsappAutoreply,
   rescoreLeads,
   type ReminderPanel,
+  type WhatsappPanel,
   type HubCalendarEvent,
   type HubSummary,
   type HubTask,
@@ -87,6 +90,7 @@ export function HubPage() {
   const [summary, setSummary] = useState<HubSummary | null>(null)
   const [leads, setLeads] = useState<ScoredLead[]>([])
   const [reminders, setReminders] = useState<ReminderPanel | null>(null)
+  const [whatsapp, setWhatsapp] = useState<WhatsappPanel | null>(null)
   const [leadDemo, setLeadDemo] = useState(false)
   const [activity, setActivity] = useState<ActivityItem[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -107,15 +111,17 @@ export function HubPage() {
 
   const load = useCallback(async () => {
     try {
-      const [nextSummary, nextActivity, heat, reminderPanel] = await Promise.all([
+      const [nextSummary, nextActivity, heat, reminderPanel, whatsappPanel] = await Promise.all([
         fetchHubSummary(),
         fetchActivity(12),
         fetchLeadHeat().catch(() => null),
         fetchReminderPanel().catch(() => null),
+        fetchWhatsappPanel().catch(() => null),
       ])
       setSummary(nextSummary)
       setActivity(nextActivity.items)
       setReminders(reminderPanel && Array.isArray(reminderPanel.recent) ? reminderPanel : null)
+      setWhatsapp(whatsappPanel && Array.isArray(whatsappPanel.recent) ? whatsappPanel : null)
       setLeads(heat?.leads ?? nextSummary.leads ?? [])
       setLeadDemo(heat?.demo ?? nextSummary.stats.demo)
       setError(null)
@@ -229,6 +235,26 @@ export function HubPage() {
     } catch (e) {
       setNotice(null)
       setError(e instanceof Error ? e.message : 'Could not preview reminders')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onPreviewWhatsapp = async () => {
+    setBusy(true)
+    try {
+      const result = await previewWhatsappAutoreply()
+      const count = result.deliveries?.length ?? 0
+      setNotice(
+        result.skipped === 'demo'
+          ? 'WhatsApp preview skipped in demo mode. Nothing was sent.'
+          : `WhatsApp preview only — ${count} ${count === 1 ? 'auto-reply' : 'auto-replies'}, nothing sent.`,
+      )
+      await load()
+      setError(null)
+    } catch (e) {
+      setNotice(null)
+      setError(e instanceof Error ? e.message : 'Could not preview WhatsApp auto-replies')
     } finally {
       setBusy(false)
     }
@@ -536,6 +562,46 @@ export function HubPage() {
             <div className="hub__form-actions hub__reminder-actions">
               <button type="button" className="btn" disabled={busy} onClick={() => void onPreviewReminders()}>
                 {busy ? 'Working…' : 'Preview reminders'}
+              </button>
+            </div>
+          </section>
+        )}
+        {whatsapp && (
+          <section className="card hub__card" aria-labelledby="hub-whatsapp">
+            <div className="hub__card-head">
+              <h2 id="hub-whatsapp">WhatsApp auto-reply</h2>
+              <span className="mono hub__count">{whatsapp.enabled ? (whatsapp.dryRun ? 'Dry run' : 'On') : 'Off'}</span>
+            </div>
+            <p className="hub__form-help hub__heat-note">
+              {whatsapp.enabled
+                ? `Replies after ${whatsapp.waitMinutes} minutes with no answer. One reply per contact every ${whatsapp.cooldownHours} hours.`
+                : 'Off until WHATSAPP_AUTOREPLY_ENABLED=true. Preview does not message anyone.'}
+            </p>
+            <p className="hub__item-meta">
+              {whatsapp.pending} waiting
+              {whatsapp.loPhoneSet ? '' : ' · no LO mobile'}
+              {whatsapp.kapsoConfigured ? '' : ' · Kapso not configured'}
+            </p>
+            <h3 className="hub__subhead">Recent</h3>
+            {whatsapp.recent.length === 0 ? (
+              <p className="hub__empty">No WhatsApp auto-replies yet.</p>
+            ) : (
+              <ul className="hub__list">
+                {whatsapp.recent.slice(0, 6).map((item) => (
+                  <li key={item.id} className="hub__row">
+                    <div className="hub__row-top">
+                      <span className={`pill pill--${item.status}`}>{item.dryRun ? 'Preview' : item.status}</span>
+                      <span className="hub__when">{relativeTime(item.at)}</span>
+                    </div>
+                    <div className="hub__item-title">{item.contactLabel}</div>
+                    <p className="hub__item-meta">{item.summary}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="hub__form-actions hub__reminder-actions">
+              <button type="button" className="btn" disabled={busy} onClick={() => void onPreviewWhatsapp()}>
+                {busy ? 'Working…' : 'Preview WhatsApp'}
               </button>
             </div>
           </section>

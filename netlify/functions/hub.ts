@@ -2,6 +2,7 @@ import type { Config, Context } from '@netlify/functions'
 import { createHubEvent, createHubTask, eventInputFromBody, getHubSummary, scoreHubLeads, taskInputFromBody } from './_shared/hub'
 import { listLeadHeat } from './_shared/leadHeat'
 import { getReminderPanel, runLoaReminders } from './_shared/loaReminders'
+import { getWhatsappPanel, runWhatsappAutoreply } from './_shared/whatsappAutoreply'
 import { errorResponse, jsonFail, jsonOk, readJson } from './_shared/http'
 
 export default async (req: Request, context: Context) => {
@@ -44,6 +45,21 @@ export default async (req: Request, context: Context) => {
       }
       // The hub endpoint only previews. Live sends stay on the schedule and call/text webhooks.
       return jsonOk(await runLoaReminders({ trigger: 'hub', dryRun: true }))
+    }
+    if (action === 'whatsapp') {
+      if (req.method === 'GET') return jsonOk(await getWhatsappPanel())
+      if (req.method !== 'POST') return jsonFail('Method not allowed', 405)
+      const text = await req.text()
+      if (text.trim()) {
+        let body: unknown
+        try {
+          body = JSON.parse(text)
+        } catch {
+          return jsonFail('Invalid JSON body', 400)
+        }
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonFail('JSON object body is required', 400)
+      }
+      return jsonOk(await runWhatsappAutoreply({ trigger: 'hub', dryRun: true }))
     }
     return jsonFail('Unknown action', 404)
   } catch (err) {

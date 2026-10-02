@@ -162,6 +162,47 @@ export function previewReminders() {
   })
 }
 
+export type WhatsappLog = {
+  id: string
+  at: string
+  trigger: string
+  dryRun: boolean
+  contactLabel: string
+  summary: string
+  status: 'preview' | 'sent' | 'skipped' | 'error' | 'cancelled'
+  error?: string
+}
+
+export type WhatsappPanel = {
+  enabled: boolean
+  dryRun: boolean
+  waitMinutes: number
+  cooldownHours: number
+  kapsoConfigured: boolean
+  quoConfigured: boolean
+  loPhoneSet: boolean
+  pending: number
+  recent: WhatsappLog[]
+}
+
+export type WhatsappRun = {
+  skipped?: 'disabled' | 'demo'
+  enabled: boolean
+  dryRun: boolean
+  deliveries: { contactLabel: string; summary: string; status: string }[]
+}
+
+export function fetchWhatsappPanel() {
+  return hubRequest<WhatsappPanel>('whatsapp')
+}
+
+export function previewWhatsappAutoreply() {
+  return hubRequest<WhatsappRun>('whatsapp', {
+    method: 'POST',
+    body: JSON.stringify({ dryRun: true }),
+  })
+}
+
 export function createHubEvent(input: {
   summary?: string
   description?: string
