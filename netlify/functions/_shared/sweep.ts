@@ -1,11 +1,13 @@
 import { listUnreadLeadCandidates, parseFromHeader } from './gmail'
 import { fetchNeoUnread } from './neo'
 import { processIncomingMessage } from './pipeline'
+import { purgeStoredDemoData } from './purgeDemo'
 import { loadSettings } from './store'
 import type { IncomingMessage } from './types'
 import type { ProcessResult } from './pipeline'
 
 export async function sweepInboxes(): Promise<ProcessResult[]> {
+  await purgeStoredDemoData()
   const settings = await loadSettings()
   const results: ProcessResult[] = []
 

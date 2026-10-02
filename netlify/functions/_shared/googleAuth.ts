@@ -1,5 +1,56 @@
+import { timingSafeEqual } from 'node:crypto'
 import { getStore } from '@netlify/blobs'
 import { env } from './env'
+
+export const GOOGLE_OAUTH_COOKIE = 'lp_google_oauth'
+const OAUTH_STATE_MAX_AGE_MS = 10 * 60_000
+
+export function googleOAuthState(): string {
+  return `${crypto.randomUUID()}.${Date.now()}`
+}
+
+export function googleOAuthStateFresh(state: string, now = Date.now()): boolean {
+  if (!/^[0-9a-f-]{36}\.\d+$/i.test(state)) return false
+  const stamp = Number(state.slice(state.lastIndexOf('.') + 1))
+  if (!Number.isFinite(stamp)) return false
+  const age = now - stamp
+  return age >= 0 && age <= OAUTH_STATE_MAX_AGE_MS
+}
+
+export function googleOAuthCookie(state: string, secure: boolean): string {
+  const parts = [
+    `${GOOGLE_OAUTH_COOKIE}=${state}`,
+    'HttpOnly',
+    'SameSite=Lax',
+    'Path=/api/google',
+    `Max-Age=${Math.floor(OAUTH_STATE_MAX_AGE_MS / 1000)}`,
+  ]
+  if (secure) parts.push('Secure')
+  return parts.join('; ')
+}
+
+export function clearGoogleOAuthCookie(secure: boolean): string {
+  const parts = [`${GOOGLE_OAUTH_COOKIE}=`, 'HttpOnly', 'SameSite=Lax', 'Path=/api/google', 'Max-Age=0']
+  if (secure) parts.push('Secure')
+  return parts.join('; ')
+}
+
+export function readCookie(header: string | null, name: string): string | null {
+  if (!header) return null
+  for (const part of header.split(';')) {
+    const [key, ...rest] = part.trim().split('=')
+    if (key === name) return decodeURIComponent(rest.join('='))
+  }
+  return null
+}
+
+export function oauthStatesMatch(expected: string | null, provided: string | null): boolean {
+  if (!expected || !provided) return false
+  const left = Buffer.from(expected)
+  const right = Buffer.from(provided)
+  if (left.length !== right.length) return false
+  return timingSafeEqual(left, right)
+}
 
 export type GoogleTokenBundle = {
   accessToken: string

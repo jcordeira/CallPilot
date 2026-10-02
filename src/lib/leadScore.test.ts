@@ -174,6 +174,7 @@ describe('team routing', () => {
 describe('demo lead board', () => {
   it('ranks sample leads for Joseph and Frank without a FUB key', () => {
     const leads = demoLeadBoard(now)
+    expect(leads.every((lead) => lead.personId < 0)).toBe(true)
     expect(leads.map((lead) => [lead.name, lead.band, lead.score, lead.assignee])).toEqual([
       ['Alex Buyer', 'hot', 92, 'Joseph Cordeira'],
       ['Jordan Hale', 'warm', 72, 'Frank Cordeira'],

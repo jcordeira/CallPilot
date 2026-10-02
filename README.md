@@ -72,6 +72,7 @@ FUB_LO_NAME=Joseph Cordeira
 FUB_LOA_NAME=Frank Cordeira
 FUB_LO_USER_ID=
 FUB_LOA_USER_ID=
+FUB_WEBHOOK_VERIFY=
 FUB_WEBHOOK_SECRET=
 
 GMAIL_ACCESS_TOKEN=          # OAuth access token for the LO inbox
@@ -99,6 +100,10 @@ After the first production deploy, enable Netlify AI Gateway. Grok is served via
 Point Quo’s inbound message webhook to `https://<your-site>/api/webhooks/sms`.
 
 Point Follow Up Boss webhooks (`peopleUpdated`, `peopleStageUpdated`, `notesCreated`, `emailsCreated`, `textMessagesCreated`) to `https://<your-site>/api/webhooks/fub`. LoanPilot rescores that person and, when heat crosses a band, writes a note plus a task. An optional custom field named **LoanPilot Score** is stored as `customLoanPilotScore`. If that field does not exist yet, scoring still saves the note and the task.
+
+Signature checks are off until `FUB_WEBHOOK_VERIFY=true` (or `FUB_WEBHOOK_SECRET` is set). When enabled, the `FUB-Signature` header must be the hex HMAC-SHA256 of the base64-encoded raw body, using `FOLLOW_UP_BOSS_SYSTEM_KEY`.
+
+Open tasks on the Hub are Joseph’s and Frank’s (`FUB_LO_USER_ID`, `FUB_LOA_USER_ID`), incomplete, due in a recent window, with person names filled from Follow Up Boss. Set `FUB_LO_USER_ID=1`, `FUB_LOA_USER_ID=16`, and `FOLLOW_UP_BOSS_USER_ID=1` for this account. The first live Hub load (or the 5-minute inbox sweep) deletes sample rows previously stored in Netlify Blobs.
 
 ## Lead heat (Joseph and Frank)
 
@@ -138,7 +143,7 @@ Used by the Hub screen. Same JSON envelope as the public API: `{ "ok": true, "da
 | POST | `/api/hub/events` | Create a calendar event, or hold the next morning slot when `leadName` is sent without times |
 
 ```json
-{ "title": "Send checklist", "source": "both", "due": "2026-09-26", "personId": 1001 }
+{ "title": "Send checklist", "source": "both", "due": "2026-09-26", "personId": 12345 }
 ```
 
 ```json

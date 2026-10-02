@@ -1,4 +1,4 @@
-import { env } from './env'
+import { env, isDemoMode } from './env'
 import { resolveGoogleAccessToken } from './googleAuth'
 import { loadHubExtras, rememberHubEvent, rememberHubTask } from './hubExtras'
 import type { HubCalendarEvent, HubTask } from './hubTypes'
@@ -177,6 +177,7 @@ export async function listUpcomingEvents(days = 7): Promise<{ events: HubCalenda
   const now = new Date()
   const { accessToken: token } = await resolveGoogleAccessToken()
   if (!token) {
+    if (!isDemoMode()) return { events: [], demo: false }
     const extras = (await loadHubExtras()).events.filter((event) => inWindow(event.startIso, now, safeDays))
     const events = [...extras, ...demoUpcomingEvents(now, safeDays)]
     const seen = new Set<string>()
@@ -215,6 +216,7 @@ export async function listUpcomingEvents(days = 7): Promise<{ events: HubCalenda
 export async function listGoogleTasks(): Promise<{ tasks: HubTask[]; demo: boolean }> {
   const { accessToken: token } = await resolveGoogleAccessToken()
   if (!token) {
+    if (!isDemoMode()) return { tasks: [], demo: false }
     const seen = new Set<string>()
     const tasks = [...(await loadHubExtras()).tasks, ...demoGoogleTasks()].filter((task) => {
       if (task.status === 'completed' || seen.has(task.id)) return false
@@ -250,6 +252,7 @@ export async function createGoogleTask(input: {
   const { accessToken: token } = await resolveGoogleAccessToken()
   const due = dueKey(input.due)
   if (!token) {
+    if (!isDemoMode()) throw new Error('Google Tasks is not connected')
     const task: HubTask = {
       id: nextDemoId('gtask-demo'),
       title: input.title,
@@ -290,6 +293,7 @@ export async function createCalendarEvent(input: {
 }): Promise<{ id: string; htmlLink?: string }> {
   const { accessToken: token } = await resolveGoogleAccessToken()
   if (!token) {
+    if (!isDemoMode()) throw new Error('Google Calendar is not connected')
     const id = nextDemoId('cal-demo')
     await rememberHubEvent({
       id,

@@ -1,12 +1,13 @@
 import type { Config } from '@netlify/functions'
 import { env } from './_shared/env'
+import { fubSignatureMatches, fubWebhookVerificationEnabled } from './_shared/fubSignature'
 import { handleFubWebhook } from './_shared/leadHeat'
 
-function authorized(req: Request): boolean {
-  const secret = env('FUB_WEBHOOK_SECRET')
-  if (!secret) return true
-  const header = req.headers.get('x-fub-signature') ?? req.headers.get('authorization') ?? ''
-  return header === secret || header === `Bearer ${secret}`
+function signatureOk(rawBody: string, req: Request): boolean {
+  if (!fubWebhookVerificationEnabled()) return true
+  const systemKey = env('FOLLOW_UP_BOSS_SYSTEM_KEY')
+  const header = req.headers.get('fub-signature')
+  return fubSignatureMatches(rawBody, header, systemKey)
 }
 
 /** Follow Up Boss webhooks → rescore the person and route a task to Joseph or Frank. */
@@ -17,11 +18,13 @@ export default async (req: Request) => {
   if (req.method !== 'POST') {
     return new Response('Method not allowed', { status: 405 })
   }
-  if (!authorized(req)) return Response.json({ ok: false, error: 'Unauthorized' }, { status: 401 })
+
+  const rawBody = await req.text()
+  if (!signatureOk(rawBody, req)) return Response.json({ ok: false, error: 'Unauthorized' }, { status: 401 })
 
   let payload: unknown
   try {
-    payload = await req.json()
+    payload = rawBody ? JSON.parse(rawBody) : null
   } catch {
     return Response.json({ ok: false, error: 'Invalid JSON body' }, { status: 400 })
   }

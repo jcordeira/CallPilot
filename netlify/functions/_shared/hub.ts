@@ -3,7 +3,8 @@ import { isDemoMode } from './env'
 import { getGoogleConnectionStatus, resolveGoogleAccessToken } from './googleAuth'
 import { createTask, listOpenFubTasks } from './followupboss'
 import { listLeadHeat, rescoreOpenLeads } from './leadHeat'
-import { loanOfficer, loanOfficerAssistant } from './team'
+import { purgeStoredDemoData } from './purgeDemo'
+import { followUpAssigneeIds, loanOfficer, loanOfficerAssistant } from './team'
 import { ApiError, optionalNumber, optionalString } from './http'
 import type { HubCalendarEvent, HubEventInput, HubSummary, HubTask, HubTaskInput, ScoredLead } from './hubTypes'
 import { listActivity } from './store'
@@ -52,15 +53,16 @@ export function eventInputFromBody(body: Record<string, unknown>): HubEventInput
 
 export async function getHubSummary(): Promise<HubSummary> {
   const warnings: string[] = []
+  await purgeStoredDemoData()
 
   const [eventsResult, googleResult, fubTasks, activity, google] = await Promise.all([
     listUpcomingEvents(7).catch((err: unknown) => {
       warnings.push(errorMessage(err, 'Calendar unavailable'))
-      return { events: [] as HubCalendarEvent[], demo: true }
+      return { events: [] as HubCalendarEvent[], demo: isDemoMode() }
     }),
     listGoogleTasks().catch((err: unknown) => {
       warnings.push(errorMessage(err, 'Google Tasks unavailable'))
-      return { tasks: [] as HubTask[], demo: true }
+      return { tasks: [] as HubTask[], demo: isDemoMode() }
     }),
     listOpenFubTasks().catch((err: unknown) => {
       warnings.push(errorMessage(err, 'Follow Up Boss tasks unavailable'))
@@ -74,13 +76,19 @@ export async function getHubSummary(): Promise<HubSummary> {
   ])
 
   if (!google.connected) {
-    warnings.push('Google Calendar is not connected — connect it from the Hub to sync live events and tasks.')
+    warnings.push(
+      isDemoMode()
+        ? 'Google Calendar is not connected — sample events are showing until you connect.'
+        : 'Google Calendar is not connected. Connect it to sync live events and tasks.',
+    )
   } else if (!google.configured && google.source === 'env') {
     warnings.push('Google is using a static access token. Prefer Connect Google (OAuth) so tokens refresh automatically.')
   }
+  if (!isDemoMode() && followUpAssigneeIds().length === 0) {
+    warnings.push('Set FUB_LO_USER_ID and FUB_LOA_USER_ID to show open tasks for Joseph and Frank.')
+  }
 
   const tasks = [...googleResult.tasks, ...fubTasks]
-  const calendarDemo = eventsResult.demo || googleResult.demo
   const heat = await listLeadHeat().catch(() => ({ leads: [], demo: isDemoMode() }))
   return {
     events: eventsResult.events,
@@ -99,7 +107,7 @@ export async function getHubSummary(): Promise<HubSummary> {
       openTasks: tasks.filter((task) => task.status !== 'completed').length,
       recentReplies: activity.filter((item) => item.decision === 'replied').length,
       escalations: activity.filter((item) => item.decision === 'escalated').length,
-      demo: calendarDemo,
+      demo: isDemoMode(),
     },
   }
 }
@@ -110,7 +118,7 @@ export async function createHubTask(input: HubTaskInput): Promise<{ tasks: HubTa
     tasks.push(await createGoogleTask({ title: input.title, notes: input.notes, due: input.due }))
   }
   if (input.source === 'fub' || input.source === 'both') {
-    const personId = input.personId ?? (isDemoMode() ? 1001 : undefined)
+    const personId = input.personId ?? (isDemoMode() ? -1001 : undefined)
     if (!personId) throw new ApiError(400, 'personId is required to create a Follow Up Boss task')
     const teammate = /\bcall\b|appointment/i.test(input.title) ? loanOfficer() : loanOfficerAssistant()
     const created = await createTask({

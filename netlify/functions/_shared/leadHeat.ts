@@ -13,6 +13,7 @@ import {
   type FubPerson,
 } from './followupboss'
 import { loadScoredLeads, rememberScoredLead } from './hubExtras'
+import { purgeStoredDemoData } from './purgeDemo'
 import type { ScoredLead } from './hubTypes'
 import { bandLabel, scoreLead, type LeadScoreResult, type LeadSignals } from './leadScore'
 import { escalationPlan, followUpPlan, type FollowUpPlan } from './team'
@@ -31,21 +32,21 @@ type Fixture = {
 
 const DEMO_FIXTURES: Fixture[] = [
   {
-    personId: 1001,
+    personId: -1001,
     name: 'Alex Buyer',
     stage: 'Lead',
     text: 'Docs are ready and we are ready to buy. Can you send the pre-approval?',
     inboundHoursAgo: 2,
   },
   {
-    personId: 1002,
+    personId: -1002,
     name: 'Jordan Hale',
     stage: 'Lead',
     text: 'Thinking about refinance rates this week.',
     inboundHoursAgo: 36,
   },
   {
-    personId: 1003,
+    personId: -1003,
     name: 'Sam Rivera',
     stage: 'Nurture',
     text: 'Still thinking about a refinance later this year.',
@@ -53,7 +54,7 @@ const DEMO_FIXTURES: Fixture[] = [
     contactDaysAgo: 5,
   },
   {
-    personId: 1004,
+    personId: -1004,
     name: 'Pat Nguyen',
     stage: 'Lead',
     text: 'Thanks for the info a while back.',
@@ -179,6 +180,7 @@ export async function publishLeadScore(input: {
   now?: Date
 }): Promise<ScoredLead | null> {
   if (!input.personId || input.result.excluded) return null
+  if (!isDemoMode()) await purgeStoredDemoData()
   const now = input.now ?? new Date()
   const personName = input.personName.trim() || 'Lead'
   const plan = input.escalate ? escalationPlan(personName, now) : followUpPlan(input.result, personName, now)
@@ -253,6 +255,7 @@ async function scoreFixture(fixture: Fixture, now: Date, createTask: boolean): P
 }
 
 export async function rescoreOpenLeads(now = new Date()): Promise<ScoredLead[]> {
+  if (!isDemoMode()) await purgeStoredDemoData()
   if (isDemoMode()) {
     const leads: ScoredLead[] = []
     for (const fixture of DEMO_FIXTURES) {
@@ -285,6 +288,7 @@ export async function rescoreOpenLeads(now = new Date()): Promise<ScoredLead[]> 
 }
 
 export async function listLeadHeat(): Promise<{ leads: ScoredLead[]; demo: boolean }> {
+  if (!isDemoMode()) await purgeStoredDemoData()
   const stored = await loadScoredLeads()
   if (!isDemoMode()) return { leads: stored, demo: false }
   const merged = new Map<number, ScoredLead>()

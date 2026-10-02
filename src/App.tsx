@@ -7,22 +7,25 @@ import { BookingPage } from './screens/BookingPage'
 import { WeekPage } from './screens/WeekPage'
 import { TeamPage } from './screens/TeamPage'
 import { SettingsPage } from './screens/SettingsPage'
+import { DemoModeProvider, FixtureScreen } from './state/demoMode'
 
 export function App() {
   return (
-    <Routes>
-      <Route element={<AppShell />}>
-        <Route index element={<Navigate to="/hub" replace />} />
-        <Route path="/hub" element={<HubPage />} />
-        <Route path="/assistant" element={<AssistantPage />} />
-        <Route path="/assistant/settings" element={<AssistantSettingsPage />} />
-        <Route path="/book" element={<BookingPage />} />
-        <Route path="/book/:hostId" element={<BookingPage />} />
-        <Route path="/week" element={<WeekPage />} />
-        <Route path="/team" element={<TeamPage />} />
-        <Route path="/settings" element={<SettingsPage />} />
-        <Route path="*" element={<Navigate to="/hub" replace />} />
-      </Route>
-    </Routes>
+    <DemoModeProvider>
+      <Routes>
+        <Route element={<AppShell />}>
+          <Route index element={<Navigate to="/hub" replace />} />
+          <Route path="/hub" element={<HubPage />} />
+          <Route path="/assistant" element={<AssistantPage />} />
+          <Route path="/assistant/settings" element={<AssistantSettingsPage />} />
+          <Route path="/book" element={<FixtureScreen title="Book"><BookingPage /></FixtureScreen>} />
+          <Route path="/book/:hostId" element={<FixtureScreen title="Book"><BookingPage /></FixtureScreen>} />
+          <Route path="/week" element={<FixtureScreen title="Week"><WeekPage /></FixtureScreen>} />
+          <Route path="/team" element={<FixtureScreen title="Team"><TeamPage /></FixtureScreen>} />
+          <Route path="/settings" element={<FixtureScreen title="Settings"><SettingsPage /></FixtureScreen>} />
+          <Route path="*" element={<Navigate to="/hub" replace />} />
+        </Route>
+      </Routes>
+    </DemoModeProvider>
   )
 }
