@@ -109,7 +109,7 @@ Off until `LOA_REMINDERS_ENABLED=true`. `LOA_REMINDERS_DRY_RUN=true` (or Hub →
 
 | Who | What they are reminded about | How |
 |---|---|---|
-| Frankie (`FUB_LOA_USER_IDS`, id 16) and Daniel (id 27) | Overdue FUB tasks assigned to them, unanswered inbound texts on leads assigned to them, missed inbound calls (`No Answer`, `Left Message`, `Busy`, voicemail) on those leads with no later outbound call or text | One FUB note per lead that @mentions them, plus one SMS digest |
+| Each id in `FUB_LOA_USER_IDS`: Frankie (16), Daniel (27), and Debra Rose (32, processor) | Overdue FUB tasks assigned to them, unanswered inbound texts on leads assigned to them, missed inbound calls (`No Answer`, `Left Message`, `Busy`, voicemail) on those leads with no later outbound call or text | One FUB note per lead that @mentions them, plus one SMS digest |
 | Joseph (id 1) | Overdue FUB tasks assigned to him, missed inbound calls on leads assigned to him, overdue Google Tasks | One SMS digest. No FUB mention note |
 
 Scoring is unchanged: hot → Joseph Call, warm → Frank Text, cool → Frank Follow Up, cold → note only.
@@ -137,8 +137,9 @@ All three of `isHtml`, the `data-user-id` span, and `mentions.user` are required
 | `FUB_LO_PHONE` | Joseph’s mobile |
 | `FUB_LOA_PHONE_16` | Frankie’s mobile |
 | `FUB_LOA_PHONE_27` | Daniel’s mobile |
-| `FUB_LOA_NAME_16` / `FUB_LOA_NAME_27` | Names inside the mention chip |
-| `FUB_LOA_USER_IDS` | `16,27` (the single `FUB_LOA_USER_ID` is still included) |
+| `FUB_LOA_PHONE_32` | Debra Rose’s mobile |
+| `FUB_LOA_NAME_<id>` | Name inside that person’s mention chip |
+| `FUB_LOA_USER_IDS` | `16,27,32` (the single `FUB_LOA_USER_ID` is still included). Every id gets the same note and SMS. |
 
 If a phone env is empty, LoanPilot tries `GET /users/:id` (`phone`) once per run.
 
@@ -236,13 +237,13 @@ Only these cells are commands. Every other sender, including clients on the same
 | +15169969070 | Joseph (`FUB_LO_PHONE`) | owner |
 | +16315126480 | Frankie Cordeira, LOA, FUB user 16, fcordeirajr@cliffcomortgage.com | team |
 | +15165213121 | Daniel Ebbecke, LOA, FUB user 27, debbecke@cliffcomortgage.com | team |
-| +12013946798 | Debra Rose, Processor, not a FUB user, drose@cliffcomortgage.com | team |
+| +12013946798 | Debra Rose, Processor, FUB user 32, drose@cliffcomortgage.com | team |
 
 The line is `QUO_FROM_NUMBER` (+15163869773, the Sales inbox). `COMMAND_PREFIX` is empty by default. Set it to `LP ` or `@lp` if you want a prefix on top of the allowlist.
 
 **Parsing.** Tool calls go through the Netlify AI Gateway already used for Grok (`OPENROUTER_API_KEY` / `OPENROUTER_BASE_URL`, model `ASSISTANT_MODEL` or `COMMAND_MODEL`). Add `OPENAI_API_KEY` and `COMMAND_MODEL=gpt-4o-mini` only if you want OpenAI instead. Lead names are matched against Follow Up Boss. Two close matches get a numbered reply; `1` or `2` picks one. Confirmations expire after 15 minutes.
 
-Owner can book, move, and cancel calls (cancel waits for YES), text any teammate or the whole team immediately (`text Debra: ...`, `text the team: ...`), draft a client text that waits for YES, ask what's on today, brief a lead, add a note, create a task, assign a lead to a Follow Up Boss user (YES, then a FUB mention and a text to that LOA; Debra cannot take an assignment), list open slots, and hold calls until a time. Frankie, Daniel, and Debra can ask when Joe is free (free/busy only, no event titles, 9–6 ET Mon–Fri, up to five 30-minute slots), request a booking that texts Joseph for YES/NO, and brief, note, or task a lead.
+Owner can book, move, and cancel calls (cancel waits for YES), text any teammate or the whole team immediately (`text Debra: ...`, `text the team: ...`), draft a client text that waits for YES, ask what's on today, brief a lead, add a note, create a task, assign a lead (YES, then a FUB @mention note and a Quo text to that person, including Debra), list open slots, and hold calls until a time. Frankie, Daniel, and Debra can ask when Joe is free (free/busy only, no event titles, 9–6 ET Mon–Fri, up to five 30-minute slots), request a booking that texts Joseph for YES/NO, and brief, note, or task a lead.
 
 Booked calls are titled `<Client Name> call <topic>` for 30 minutes in America/New_York. Conflicts are booked and called out. `book Siddick tomorrow 2pm and add Debra` puts that teammate's email on the invite. When `CALENDAR_AUTO_GUEST_ENABLED=true`, Frankie is also added from `CALENDAR_AUTO_GUEST_EMAILS`. `hold calls till 2` sets a busy flag the WhatsApp auto-reply honors (it sends immediately and adds the hold time).
 

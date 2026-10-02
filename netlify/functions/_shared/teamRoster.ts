@@ -88,7 +88,7 @@ function fromIndexedEnv(): RosterMember[] {
 }
 
 function fromLoaEnv(): RosterMember[] {
-  return env('FUB_LOA_USER_IDS', '16,27')
+  return env('FUB_LOA_USER_IDS', '16,27,32')
     .split(',')
     .map((part) => Number(part.trim()))
     .filter((id) => Number.isInteger(id) && id > 0)

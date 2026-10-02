@@ -710,7 +710,7 @@ export function HubPage() {
             </div>
             <p className="hub__form-help hub__heat-note">
               {commands.enabled
-                ? `Texts from Joseph and the LOAs on ${commands.line ?? 'the Quo line'}${commands.dryRun ? ' are previews.' : '.'}`
+                ? `Texts from Joseph and the team on ${commands.line ?? 'the Quo line'}${commands.dryRun ? ' are previews.' : '.'}`
                 : 'Off until COMMAND_MODE_ENABLED=true. Client texts are ignored.'}
             </p>
             {commands.needsGoogleReconnect ? (

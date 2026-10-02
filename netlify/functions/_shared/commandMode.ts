@@ -183,6 +183,25 @@ function clip(text: string, dryRun: boolean): string {
   return dryRun ? `[preview] ${body}` : body
 }
 
+function escapeHtml(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;').replace(/"/g, '&quot;')
+}
+
+/** Same Follow Up Boss mention contract as LOA reminders: HTML span, isHtml, and mentions.user. */
+export function fubMentionNote(input: { body: string; mentionUserId: number; mentionName: string }): {
+  subject: string
+  body: string
+  isHtml: true
+  mentionUserIds: number[]
+} {
+  return {
+    subject: 'LoanPilot assignment',
+    body: `<p><span data-user-id="${input.mentionUserId}">${escapeHtml(input.mentionName)}</span> ${escapeHtml(input.body)}</p>`,
+    isHtml: true,
+    mentionUserIds: [input.mentionUserId],
+  }
+}
+
 function eventTitle(name: string, topic?: string): string {
   const topicText = topic?.replace(/\bcall\b/gi, '').trim()
   return topicText ? `${name} call ${topicText}` : `${name} call`
@@ -751,14 +770,14 @@ async function defaultEffects(): Promise<CommandEffects> {
     },
     addNote: async (input) => {
       const mention = input.mentionUserId
-        ? `<p><span data-user-id="${input.mentionUserId}">${input.mentionName ?? 'Teammate'}</span> ${input.body}</p>`
-        : input.body
+        ? fubMentionNote({ body: input.body, mentionUserId: input.mentionUserId, mentionName: input.mentionName ?? 'Teammate' })
+        : undefined
       await addNote({
         personId: input.personId,
-        subject: input.mentionUserId ? 'LoanPilot assignment' : 'LoanPilot note',
-        body: mention,
-        isHtml: Boolean(input.mentionUserId),
-        mentionUserIds: input.mentionUserId ? [input.mentionUserId] : undefined,
+        subject: mention?.subject ?? 'LoanPilot note',
+        body: mention?.body ?? input.body,
+        isHtml: Boolean(mention),
+        mentionUserIds: mention?.mentionUserIds,
       })
     },
     createFubTask: async (input) => {

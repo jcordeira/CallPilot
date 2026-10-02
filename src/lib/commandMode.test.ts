@@ -3,6 +3,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { calendarCanReadFreeBusy, calendarCanWriteEvents } from '../../netlify/functions/_shared/googleAuth'
 import { commandFromToolCall, intentsForRole, parseCommand, toolSchema } from '../../netlify/functions/_shared/commandParse'
 import {
+  fubMentionNote,
   handleCommandMessage,
   matchLeads,
   type CommandEffects,
@@ -343,7 +344,7 @@ const debbra = '+12013946798'
 const roster = [
   { name: 'Frankie Cordeira', phone: frankie, email: 'fcordeirajr@cliffcomortgage.com', userId: 16, title: 'LOA' },
   { name: 'Daniel Ebbecke', phone: '+15165213121', email: 'debbecke@cliffcomortgage.com', userId: 27, title: 'LOA' },
-  { name: 'Debra Rose', phone: debbra, email: 'drose@cliffcomortgage.com', title: 'Processor' },
+  { name: 'Debra Rose', phone: debbra, email: 'drose@cliffcomortgage.com', userId: 32, title: 'Processor' },
 ]
 
 describe('team roster', () => {
@@ -401,7 +402,7 @@ describe('team roster', () => {
     expect(live.sent).toEqual([{ to: debbra, content: 'File is in' }])
   })
 
-  it('adds a teammate email on a booking and refuses to assign a non-FUB teammate', async () => {
+  it('adds a teammate email on a booking', async () => {
     process.env.TEAM_MEMBERS = JSON.stringify(roster)
     const fx = effects()
     const preview = await handleCommandMessage({
@@ -438,8 +439,22 @@ describe('team roster', () => {
     expect(booked.reply).toContain('drose@cliffcomortgage.com')
     expect(live.created[0]?.guests).toEqual(['fcordeirajr@cliffcomortgage.com', 'drose@cliffcomortgage.com'])
 
-    process.env.COMMAND_MODE_DRY_RUN = 'true'
-    const assign = await handleCommandMessage({
+  })
+
+  it('assigns Debra with a Follow Up Boss mention and a Quo text after YES', async () => {
+    process.env.TEAM_MEMBERS = JSON.stringify(roster)
+    process.env.COMMAND_MODE_DRY_RUN = 'false'
+    const notes: { personId: number; body: string; mentionUserId?: number; mentionName?: string }[] = []
+    const assigned: number[] = []
+    const fx = effects({
+      addNote: async (input) => {
+        notes.push(input)
+      },
+      assignLead: async (_personId, userId) => {
+        assigned.push(userId)
+      },
+    })
+    const ask = await handleCommandMessage({
       from: joseph,
       to: line,
       body: 'assign Siddick to Debra',
@@ -448,7 +463,30 @@ describe('team roster', () => {
       parse: async () => ({ name: 'assign_lead', arguments: { clientName: 'Siddick Chowdhury', assignee: 'Debra' } }),
       effects: fx,
     })
-    expect(assign.reply).toContain('Debra Rose is not in Follow Up Boss')
+    expect(ask.reply).toContain('Assign Siddick Chowdhury to Debra Rose? Reply YES.')
+    expect(notes).toEqual([])
+    expect(fx.sent).toEqual([])
+    const yes = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'YES',
+      messageId: 'm-assign-debra-yes',
+      now: new Date(now.getTime() + 60_000),
+      parse: async () => {
+        throw new Error('pending assignment')
+      },
+      effects: fx,
+    })
+    expect(yes.reply).toBe('Assigned Siddick Chowdhury to Debra Rose.')
+    expect(assigned).toEqual([32])
+    expect(notes).toEqual([
+      { personId: 42, body: 'Assigned to Debra Rose from LoanPilot.', mentionUserId: 32, mentionName: 'Debra Rose' },
+    ])
+    expect(fx.sent).toEqual([{ to: debbra, content: 'LoanPilot: Siddick Chowdhury is now assigned to you.' }])
+    const posted = fubMentionNote({ body: notes[0].body, mentionUserId: 32, mentionName: 'Debra Rose' })
+    expect(posted.isHtml).toBe(true)
+    expect(posted.mentionUserIds).toEqual([32])
+    expect(posted.body).toContain('<span data-user-id="32">Debra Rose</span>')
   })
 
   it('accepts per-member env vars when TEAM_MEMBERS is unset', async () => {
