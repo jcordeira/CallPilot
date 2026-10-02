@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { calendarCanReadFreeBusy, calendarCanWriteEvents } from '../../netlify/functions/_shared/googleAuth'
-import { commandClient, commandFromToolCall, commandModel, GATEWAY_COMMAND_MODEL, intentsForRole, parseCommand, toolSchema } from '../../netlify/functions/_shared/commandParse'
+import { commandClient, commandFromToolCall, commandModel, GATEWAY_COMMAND_MODEL, intentsForRole, parseCommand, probeCommandGateway, toolSchema } from '../../netlify/functions/_shared/commandParse'
 import {
   fubMentionNote,
   handleCommandMessage,
@@ -546,7 +546,7 @@ describe('calendar scopes for command mode', () => {
 })
 
 describe('command mode gateway', () => {
-  it('uses the Netlify AI Gateway model unless OpenRouter is configured', () => {
+  it('uses the Netlify AI Gateway model unless OpenRouter is configured', async () => {
     delete process.env.COMMAND_MODEL
     delete process.env.OPENROUTER_API_KEY
     delete process.env.OPENROUTER_BASE_URL
@@ -556,6 +556,7 @@ describe('command mode gateway', () => {
     delete process.env.NETLIFY_AI_GATEWAY_KEY
     expect(commandClient()).toBeNull()
     expect(commandModel()).toBe(GATEWAY_COMMAND_MODEL)
+    await expect(probeCommandGateway()).resolves.toMatchObject({ ok: false, model: 'gpt-4o-mini' })
 
     process.env.OPENAI_BASE_URL = 'https://gateway.ai.netlify.com/openai/v1'
     process.env.OPENAI_API_KEY = 'n/a'
