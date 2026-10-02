@@ -3,6 +3,7 @@ import fubWebhook from '../../netlify/functions/fub-webhook'
 import { scoreLead } from '../../netlify/functions/_shared/leadScore'
 import {
   collectMissedItems,
+  clipSms,
   digestSms,
   mentionNoteHtml,
   normalizePhone,
@@ -217,6 +218,26 @@ describe('miss detection', () => {
     })
     expect(digestSms('Joseph Cordeira', [item('a')])).toMatch(/^LoanPilot: Joseph Cordeira, 1 item needs you\./)
     expect(digestSms('Joseph Cordeira', [item('a'), item('b')])).toMatch(/^LoanPilot: Joseph Cordeira, 2 items need you\./)
+  })
+
+  it('keeps the Follow Up Boss profile link whole when the digest is long', () => {
+    const href = 'https://teamcordeira.followupboss.com/2/people/view/100'
+    const items = Array.from({ length: 8 }, (_, index) => ({
+      key: `task-${index}`,
+      kind: 'task' as const,
+      seatUserId: 1,
+      personId: 100,
+      personName: 'Alex Buyer',
+      title: 'Follow up',
+      line: `Overdue task: ${'documents '.repeat(6)}${index}`,
+      missedAt: now.toISOString(),
+      href,
+    }))
+    const sms = digestSms('Joseph Cordeira', items)
+    expect(sms.length).toBeLessThanOrEqual(640)
+    expect(sms).toContain(href)
+    expect(sms).not.toMatch(/https:\/\/teamcordeira\.followupboss\.com\/2\/people\/view\/10[^0\s]/)
+    expect(clipSms(`${href}\n${'x'.repeat(700)}`)).toBe(`${href}…`)
   })
 })
 

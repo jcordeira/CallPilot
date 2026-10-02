@@ -24,6 +24,8 @@ import {
   type HubTask,
   type ScoredLead,
 } from '../lib/hubApi'
+import { FubPersonLink, TextWithPerson } from '../components/FubPersonLink'
+import { matchPersonInText, personIdForName, type NamedPerson } from '../lib/fubLink'
 import { dateToKey, dayLabel } from '../lib/time'
 import './HubPage.css'
 
@@ -77,6 +79,37 @@ function roleLabel(role?: ScoredLead['assigneeRole']): string {
   if (role === 'lo') return 'LO'
   if (role === 'loa') return 'LOA'
   return ''
+}
+
+function EventTitle({ summary, htmlLink, people }: { summary: string; htmlLink?: string; people: NamedPerson[] }) {
+  const match = matchPersonInText(summary, people)
+  if (!match) {
+    if (htmlLink) {
+      return (
+        <a className="hub__item-title" href={htmlLink} target="_blank" rel="noreferrer">
+          {summary}
+        </a>
+      )
+    }
+    return <div className="hub__item-title">{summary}</div>
+  }
+  const before = summary.slice(0, match.index)
+  const after = summary.slice(match.index + match.label.length)
+  return (
+    <div className="hub__item-title">
+      {before}
+      <FubPersonLink personId={match.personId}>{match.label}</FubPersonLink>
+      {after}
+      {htmlLink ? (
+        <>
+          {' '}
+          <a href={htmlLink} target="_blank" rel="noreferrer">
+            Calendar
+          </a>
+        </>
+      ) : null}
+    </div>
+  )
 }
 
 function nextBusinessMorning(): { start: Date; end: Date } {
@@ -325,6 +358,9 @@ export function HubPage() {
     }
   }
 
+  const people: NamedPerson[] = leads
+    .filter((lead) => lead.personId > 0 && lead.name.trim().length > 2)
+    .map((lead) => ({ personId: lead.personId, name: lead.name }))
   const events = summary?.events ?? []
   const googleTasks = (summary?.tasks ?? []).filter((task) => task.source === 'google' || task.source === 'demo')
   const fubTasks = (summary?.tasks ?? []).filter((task) => task.source === 'fub')
@@ -592,7 +628,16 @@ export function HubPage() {
                       <span className="hub__when">{relativeTime(item.at)}</span>
                     </div>
                     <div className="hub__item-title">{item.seatName}</div>
-                    <p className="hub__item-meta">{item.summary}</p>
+                    {item.personName && (
+                      <div className="hub__item-meta">
+                        <FubPersonLink personId={item.personId && item.personId > 0 ? item.personId : personIdForName(item.personName, people)}>
+                          {item.personName}
+                        </FubPersonLink>
+                      </div>
+                    )}
+                    <p className="hub__item-meta">
+                      <TextWithPerson text={item.summary} people={people} />
+                    </p>
                   </li>
                 ))}
               </ul>
@@ -679,8 +724,12 @@ export function HubPage() {
                       <span className={`pill pill--${item.status}`}>{item.dryRun ? 'Preview' : item.status}</span>
                       <span className="hub__when">{relativeTime(item.at)}</span>
                     </div>
-                    <div className="hub__item-title">{item.contactLabel}</div>
-                    <p className="hub__item-meta">{item.summary}</p>
+                    <div className="hub__item-title">
+                      <TextWithPerson text={item.contactLabel} people={people} />
+                    </div>
+                    <p className="hub__item-meta">
+                      <TextWithPerson text={item.summary} people={people} />
+                    </p>
                   </li>
                 ))}
               </ul>
@@ -717,7 +766,9 @@ export function HubPage() {
                       <span className="mono hub__channel">{lead.score}</span>
                       <span className="hub__when">{lead.due ? formatDue(lead.due) : 'No task'}</span>
                     </div>
-                    <div className="hub__item-title">{lead.name}</div>
+                    <div className="hub__item-title">
+                      <FubPersonLink personId={lead.personId}>{lead.name}</FubPersonLink>
+                    </div>
                     <div className="hub__item-meta">
                       {lead.assignee ? `${lead.assignee}${role ? ` · ${role}` : ''}` : 'No assignee'}
                       {lead.taskType ? ` · ${lead.taskType}` : ''}
@@ -751,14 +802,12 @@ export function HubPage() {
                     <span className="hub__source">{sourceLabel(event.source)}</span>
                     <span className="hub__when">{formatEventWhen(event)}</span>
                   </div>
-                  {event.htmlLink ? (
-                    <a className="hub__item-title" href={event.htmlLink} target="_blank" rel="noreferrer">
-                      {event.summary}
-                    </a>
-                  ) : (
-                    <div className="hub__item-title">{event.summary}</div>
+                  <EventTitle summary={event.summary} htmlLink={event.htmlLink} people={people} />
+                  {event.description && (
+                    <p className="hub__item-meta">
+                      <TextWithPerson text={event.description} people={people} />
+                    </p>
                   )}
-                  {event.description && <p className="hub__item-meta">{event.description}</p>}
                 </li>
               ))}
             </ul>
@@ -782,7 +831,7 @@ export function HubPage() {
           ) : (
             <ul className="hub__list">
               {googleTasks.map((task) => (
-                <TaskRow key={`${task.source}-${task.id}`} task={task} />
+                <TaskRow key={`${task.source}-${task.id}`} task={task} people={people} />
               ))}
             </ul>
           )}
@@ -792,7 +841,7 @@ export function HubPage() {
           ) : (
             <ul className="hub__list">
               {fubTasks.map((task) => (
-                <TaskRow key={`${task.source}-${task.id}`} task={task} />
+                <TaskRow key={`${task.source}-${task.id}`} task={task} people={people} />
               ))}
             </ul>
           )}
@@ -818,9 +867,13 @@ export function HubPage() {
                     <span className="mono hub__channel">{item.channel}</span>
                     <span className="hub__when">{relativeTime(item.at)}</span>
                   </div>
-                  <div className="hub__item-title">{item.from}</div>
+                  <div className="hub__item-title">
+                    <FubPersonLink personId={item.fubPersonId}>{item.from}</FubPersonLink>
+                  </div>
                   {item.subject && <div className="hub__item-meta">{item.subject}</div>}
-                  <p className="hub__item-meta">{item.summary}</p>
+                  <p className="hub__item-meta">
+                    <TextWithPerson text={item.summary} people={people} />
+                  </p>
                   {item.replyPreview && <blockquote className="hub__quote">{item.replyPreview}</blockquote>}
                 </li>
               ))}
@@ -832,15 +885,22 @@ export function HubPage() {
   )
 }
 
-function TaskRow({ task }: { task: HubTask }) {
+function TaskRow({ task, people }: { task: HubTask; people: NamedPerson[] }) {
+  const linkedId = task.personId && task.personId > 0 ? task.personId : personIdForName(task.personName, people)
   return (
     <li className="hub__row">
       <div className="hub__row-top">
         <span className="hub__source">{sourceLabel(task.source)}</span>
         <span className="hub__when">{formatDue(task.due)}</span>
       </div>
-      <div className="hub__item-title">{task.title}</div>
-      {task.personName && <div className="hub__item-meta">{task.personName}</div>}
+      <div className="hub__item-title">
+        <TextWithPerson text={task.title} people={people} />
+      </div>
+      {task.personName && (
+        <div className="hub__item-meta">
+          <FubPersonLink personId={linkedId}>{task.personName}</FubPersonLink>
+        </div>
+      )}
       {task.assignedTo && <div className="hub__item-meta">Assigned to {task.assignedTo}</div>}
       {task.notes && <p className="hub__item-meta">{task.notes}</p>}
     </li>

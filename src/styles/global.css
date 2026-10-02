@@ -17,6 +17,7 @@ body {
 
 a { color: var(--ink); text-decoration: none; }
 a:hover { text-decoration: underline; }
+a.fub-person { text-decoration: underline; text-underline-offset: 2px; }
 
 button, select, input, textarea {
   font: inherit;

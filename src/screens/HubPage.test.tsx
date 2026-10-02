@@ -32,6 +32,7 @@ const summary = {
         status: 'needsAction',
         source: 'fub',
         personName: 'Alex Buyer',
+        personId: 1001,
         due: '2026-09-26',
       },
     ],
@@ -79,6 +80,7 @@ const activity = {
       senderKind: 'lead',
       decision: 'replied',
       summary: 'Drafted reply listing typical pre-approval docs.',
+      fubPersonId: 1001,
     },
   ],
 }
@@ -86,6 +88,18 @@ const activity = {
 afterEach(() => {
   vi.unstubAllGlobals()
 })
+
+function hasText(expected: string | RegExp) {
+  return (_content: string, node: Element | null) => {
+    const text = node?.textContent ?? ''
+    const ok = typeof expected === 'string' ? text === expected : expected.test(text)
+    if (!ok || !node) return false
+    return Array.from(node.children).every((child) => {
+      const childText = child.textContent ?? ''
+      return typeof expected === 'string' ? childText !== expected : !expected.test(childText)
+    })
+  }
+}
 
 function mockHub() {
   vi.stubGlobal(
@@ -127,15 +141,29 @@ describe('Hub', () => {
       'Settings',
     ])
     expect(await screen.findByRole('link', { name: 'Connect Google Calendar' })).toBeInTheDocument()
-    expect(await screen.findByText('Call: Jordan Hale')).toBeInTheDocument()
-    expect(screen.getByText('Send pre-approval checklist to Alex Buyer')).toBeInTheDocument()
-    expect(screen.getByText('Follow up: pre-approval documents')).toBeInTheDocument()
+    expect(await screen.findByText(hasText('Call: Jordan Hale'))).toBeInTheDocument()
+    expect(screen.getByText(hasText('Send pre-approval checklist to Alex Buyer'))).toBeInTheDocument()
+    expect(screen.getByText(hasText('Follow up: pre-approval documents'))).toBeInTheDocument()
     expect(screen.getByText('Drafted reply listing typical pre-approval docs.')).toBeInTheDocument()
     expect(screen.getByRole('heading', { name: 'Lead heat' })).toBeInTheDocument()
     expect(screen.getByText('Hot now')).toBeInTheDocument()
     expect(screen.getByText(/Joseph Cordeira · LO/)).toBeInTheDocument()
     expect(screen.getByText(/Frank Cordeira · LOA/)).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Rescore leads' })).toBeInTheDocument()
+    const profile = (id: number) => `https://teamcordeira.followupboss.com/2/people/view/${id}`
+    const alex = screen.getAllByRole('link', { name: 'Alex Buyer' })
+    expect(alex.length).toBeGreaterThanOrEqual(2)
+    for (const link of alex) {
+      expect(link).toHaveAttribute('href', profile(1001))
+      expect(link).toHaveAttribute('target', '_blank')
+    }
+    const jordan = screen.getAllByRole('link', { name: 'Jordan Hale' })
+    expect(jordan.length).toBeGreaterThanOrEqual(2)
+    for (const link of jordan) {
+      expect(link).toHaveAttribute('href', profile(1002))
+      expect(link).toHaveAttribute('target', '_blank')
+    }
+    expect(screen.getByRole('link', { name: 'alex.buyer@gmail.com' })).toHaveAttribute('href', profile(1001))
   })
 
   it('shows reminder activity and previews without sending', async () => {
@@ -172,7 +200,9 @@ describe('Hub', () => {
                     seatName: 'Frankie Cordeira',
                     seatRole: 'loa',
                     channel: 'sms',
-                    summary: 'LoanPilot: Frankie Cordeira, 1 item needs you.',
+                    personId: 1001,
+                    personName: 'Alex Buyer',
+                    summary: 'LoanPilot: Frankie Cordeira, 1 item needs you. Missed inbound call from Alex Buyer.',
                     itemKeys: ['fub-task:1'],
                     status: 'preview',
                   },
@@ -213,6 +243,11 @@ describe('Hub', () => {
     expect(screen.getAllByText('Frankie Cordeira').length).toBeGreaterThan(0)
     expect(screen.getByText(/Google Calendar has no missed-call feed/)).toBeInTheDocument()
     expect(screen.getByText(/Frankie Cordeira, 1 item needs you/)).toBeInTheDocument()
+    const reminderLead = screen.getAllByRole('link', { name: 'Alex Buyer' }).find((link) =>
+      link.closest('#hub-reminders, [aria-labelledby="hub-reminders"]'),
+    )
+    expect(reminderLead).toHaveAttribute('href', 'https://teamcordeira.followupboss.com/2/people/view/1001')
+    expect(reminderLead).toHaveAttribute('target', '_blank')
     await user.click(screen.getByRole('button', { name: 'Preview reminders' }))
     expect(await screen.findByText(/Preview only — 0 deliveries, nothing sent/)).toBeInTheDocument()
     expect(calls.some((call) => call.startsWith('POST') && call.includes('/api/hub/reminders'))).toBe(true)
@@ -281,7 +316,7 @@ describe('Hub', () => {
     renderApp(<App />, { route: '/hub' })
     expect(await screen.findByRole('heading', { name: 'WhatsApp auto-reply' })).toBeInTheDocument()
     expect(screen.getByText(/Off until WHATSAPP_AUTOREPLY_ENABLED=true/)).toBeInTheDocument()
-    expect(screen.getByText(/WhatsApp from Alex Buyer/)).toBeInTheDocument()
+    expect(screen.getByText(hasText(/WhatsApp from Alex Buyer/))).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Preview WhatsApp' }))
     expect(await screen.findByText(/WhatsApp preview only — 0 auto-replies, nothing sent/)).toBeInTheDocument()
     expect(calls.some((call) => call.startsWith('POST') && call.includes('/api/hub/whatsapp'))).toBe(true)
