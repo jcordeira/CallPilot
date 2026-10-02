@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { screen } from '@testing-library/react'
+import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { CalendarPage } from './CalendarPage'
 import { renderApp } from '../test/render'
@@ -57,8 +57,11 @@ describe('Calendar page', () => {
     await user.click(screen.getAllByRole('button', { name: 'Edit' })[0])
     expect(screen.getByRole('dialog', { name: 'Edit event' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: 'Delete' }))
-    expect(screen.getByRole('dialog', { name: 'Delete this event?' })).toBeInTheDocument()
-    await user.click(screen.getByRole('button', { name: 'Cancel' }))
+    const confirm = screen.getByRole('dialog', { name: 'Delete this event?' })
+    expect(confirm).toBeInTheDocument()
+    await user.click(within(confirm).getByRole('button', { name: 'Cancel' }))
+    const editor = screen.getByRole('dialog', { name: 'Edit event' })
+    await user.click(within(editor).getByRole('button', { name: 'Cancel' }))
     await user.click(screen.getByRole('button', { name: 'New booking' }))
     await user.type(screen.getByLabelText('Title'), 'Alex Buyer call refi')
     await user.click(screen.getByRole('button', { name: 'Frankie' }))

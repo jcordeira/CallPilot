@@ -41,7 +41,7 @@ describe('calendar writes', () => {
       existingAttendees: [{ email: 'fcordeirajr@cliffcomortgage.com', responseStatus: 'accepted' }],
       sendUpdates: 'none',
     })
-    const [url, init] = fetchMock.mock.calls[0] as [string, RequestInit]
+    const [url, init] = fetchMock.mock.calls[0] as unknown as [string, RequestInit]
     expect(url).toContain('/events/evt-1?sendUpdates=none')
     expect(init.method).toBe('PATCH')
     const body = JSON.parse(String(init.body))

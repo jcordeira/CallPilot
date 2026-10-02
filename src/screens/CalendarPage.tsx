@@ -5,7 +5,6 @@ import { clientCallTitle, externalGuestEmails, TEAM_GUESTS } from '../lib/calend
 import { matchPersonInText } from '../lib/fubLink'
 import {
   addZonedDays,
-  CALENDAR_TZ,
   dateKey,
   formatDayLabel,
   formatTimeLabel,

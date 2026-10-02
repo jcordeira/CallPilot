@@ -10,7 +10,7 @@ export function useHubAuth(): AuthValue {
 }
 
 export function HubAuthGate({ children }: { children: ReactNode }) {
-  const skip = import.meta.env.VITEST === true
+  const skip = import.meta.env.MODE === 'test' || Boolean(import.meta.env.VITEST)
   const [state, setState] = useState<'loading' | 'in' | 'out'>(skip ? 'in' : 'loading')
   const [passwordSet, setPasswordSet] = useState(true)
 
