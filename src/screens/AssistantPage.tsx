@@ -1,5 +1,7 @@
 import { useEffect, useState, useTransition } from 'react'
 import { Link } from 'react-router-dom'
+import { FubPersonLink } from '../components/FubPersonLink'
+import { fubPersonUrl } from '../lib/fubLink'
 import { useDemoMode } from '../state/demoMode'
 import {
   fetchActivity,
@@ -162,13 +164,20 @@ export function AssistantPage() {
                   <span className="mono activity__kind">{item.senderKind}</span>
                   <span className="activity__when">{relativeTime(item.at)}</span>
                 </div>
-                <div className="activity__from">{item.from}</div>
+                <div className="activity__from">
+                  <FubPersonLink personId={item.fubPersonId}>{item.from}</FubPersonLink>
+                </div>
                 {item.subject && <div className="activity__subject">{item.subject}</div>}
                 <div className="activity__summary">{item.summary}</div>
                 {item.replyPreview && (
                   <blockquote className="activity__preview">{item.replyPreview}</blockquote>
                 )}
                 <div className="activity__links mono">
+                  {fubPersonUrl(item.fubPersonId) && (
+                    <a href={fubPersonUrl(item.fubPersonId)} target="_blank" rel="noreferrer">
+                      FUB profile
+                    </a>
+                  )}
                   {item.fubTaskId != null && <span>FUB task #{item.fubTaskId}</span>}
                   {item.calendarEventId && <span>Cal {item.calendarEventId}</span>}
                 </div>

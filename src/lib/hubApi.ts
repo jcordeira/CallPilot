@@ -20,6 +20,7 @@ export type HubTask = {
   status: 'needsAction' | 'completed'
   source: HubTaskSource
   personName?: string
+  personId?: number
   assignedTo?: string
 }
 

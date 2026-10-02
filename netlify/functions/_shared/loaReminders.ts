@@ -540,8 +540,16 @@ export function digestSms(name: string, items: MissedItem[]): string {
   })
   const hidden = items.length - shown.length
   const more = hidden > 0 ? `\n+ ${hidden} more` : ''
-  const body = [header, ...lines].join('\n') + more
-  return body.length > 640 ? `${body.slice(0, 620)}…` : body
+  return clipSms([header, ...lines].join('\n') + more)
+}
+
+/** Keep Follow Up Boss links whole. Drop the last line instead of cutting a URL in half. */
+export function clipSms(body: string, limit = 640): string {
+  if (body.length <= limit) return body
+  const budget = Math.max(1, limit - 1)
+  const cut = body.lastIndexOf('\n', budget)
+  const clipped = (cut > 40 ? body.slice(0, cut) : body.slice(0, budget)).trimEnd()
+  return `${clipped}…`
 }
 
 type NoteGroup = { personId: number; items: MissedItem[] }
