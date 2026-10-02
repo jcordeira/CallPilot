@@ -18,6 +18,7 @@ import {
   saveCommandState,
 } from './commandStore'
 import { addDays, formatSlot, formatWhen, openSlots, parseWhen, zonedDate, zonedParts } from './commandTime'
+import { personLink } from './loaReminders'
 import { membersForLabel, teamRoster } from './teamRoster'
 
 export type { CommandCall, CommandRole }
@@ -181,6 +182,17 @@ function clip(text: string, dryRun: boolean): string {
   const clean = text.replace(/[ \t]+\n/g, '\n').trim()
   const body = clean.length > 700 ? `${clean.slice(0, 697)}...` : clean
   return dryRun ? `[preview] ${body}` : body
+}
+
+/** Append the Follow Up Boss profile and keep it inside the SMS cap. */
+function withProfileLink(text: string, personId: number): string {
+  if (!Number.isInteger(personId) || personId <= 0) return text
+  const href = personLink(personId)
+  const suffix = ` ${href}`
+  const clean = text.replace(/[ \t]+\n/g, '\n').trim()
+  const budget = 700 - suffix.length
+  const body = clean.length > budget ? `${clean.slice(0, Math.max(0, budget - 1)).trimEnd()}…` : clean
+  return `${body}${suffix}`
 }
 
 function escapeHtml(text: string): string {
@@ -437,8 +449,15 @@ async function runCall(
       const info = detail?.lead ?? lead
       const tasks = detail?.tasks.slice(0, 3).join('; ') || 'none'
       const notes = detail?.notes.slice(0, 2).join(' | ') || 'none'
+      const personId = info.id > 0 ? info.id : lead.id
       return {
-        reply: clip(`${info.name} — ${info.stage || 'no stage'}, assigned ${info.assignedTo || 'nobody'}. Last contact ${info.lastActivity || 'unknown'}. Open: ${tasks}. Notes: ${notes}.`, dryRun),
+        reply: clip(
+          withProfileLink(
+            `${info.name} — ${info.stage || 'no stage'}, assigned ${info.assignedTo || 'nobody'}. Last contact ${info.lastActivity || 'unknown'}. Open: ${tasks}. Notes: ${notes}.`,
+            personId,
+          ),
+          dryRun,
+        ),
         status: 'done',
       }
     }

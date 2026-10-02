@@ -282,6 +282,27 @@ describe('command mode', () => {
     })
     expect(picked.reply).toContain('[preview] Siddick Chowdhury')
     expect(picked.reply).toContain('Pre-approval')
+    expect(picked.reply).toContain('https://teamcordeira.followupboss.com/2/people/view/42')
+  })
+
+  it('keeps the Follow Up Boss link whole on a long lead brief', async () => {
+    const href = 'https://teamcordeira.followupboss.com/2/people/view/42'
+    const fx = effects({
+      leadDetail: async () => ({ lead: siddick, tasks: ['Call back'], notes: ['x'.repeat(900)] }),
+    })
+    const result = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'brief Siddick Chowdhury',
+      messageId: 'm-brief-long',
+      now,
+      parse: async () => ({ name: 'lead_brief', arguments: { clientName: 'Siddick Chowdhury' } }),
+      effects: fx,
+    })
+    const reply = result.reply ?? ''
+    expect(reply).toContain(href)
+    expect(reply.endsWith(href)).toBe(true)
+    expect(reply.length).toBeLessThanOrEqual('[preview] '.length + 700)
   })
 
   it('lets Frankie ask for open slots without event titles, and requests a booking Joseph must approve', async () => {
