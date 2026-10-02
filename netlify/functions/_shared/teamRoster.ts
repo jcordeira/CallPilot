@@ -3,6 +3,8 @@ import { env } from './env'
 export type RosterMember = {
   name: string
   phone: string
+  /** Extra cells that may text in. Outbound team texts still use `phone`. */
+  altPhones?: string[]
   email?: string
   /** Follow Up Boss user id. Absent for people who are not FUB users. */
   userId?: number
@@ -29,9 +31,28 @@ function userIdOf(value: unknown): number | undefined {
   return Number.isInteger(id) && id > 0 ? id : undefined
 }
 
+function phoneList(value: unknown): string[] {
+  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string')
+  if (typeof value === 'string') return value.split(',')
+  return []
+}
+
+function altPhonesOf(value: unknown, primary: string): string[] | undefined {
+  const seen = new Set<string>([primary])
+  const phones: string[] = []
+  for (const item of phoneList(value)) {
+    const phone = e164(item)
+    if (!phone || seen.has(phone)) continue
+    seen.add(phone)
+    phones.push(phone)
+  }
+  return phones.length ? phones : undefined
+}
+
 function memberFrom(raw: {
   name?: unknown
   phone?: unknown
+  altPhones?: unknown
   email?: unknown
   userId?: unknown
   title?: unknown
@@ -40,9 +61,11 @@ function memberFrom(raw: {
   const phone = e164(typeof raw.phone === 'string' ? raw.phone : undefined)
   if (!name || !phone) return null
   const title = typeof raw.title === 'string' ? raw.title.trim() : ''
+  const altPhones = altPhonesOf(raw.altPhones, phone)
   return {
     name,
     phone,
+    ...(altPhones ? { altPhones } : {}),
     email: emailOf(raw.email),
     userId: userIdOf(raw.userId),
     title: title || undefined,
@@ -61,6 +84,7 @@ function fromJson(): RosterMember[] | null {
       const member = memberFrom({
         name: bag.name,
         phone: bag.phone,
+        altPhones: bag.altPhones,
         email: bag.email,
         userId: bag.userId ?? bag.fubUserId,
         title: bag.title,
@@ -78,6 +102,7 @@ function fromIndexedEnv(): RosterMember[] {
     const member = memberFrom({
       name: env(`TEAM_MEMBER_${index}_NAME`),
       phone: env(`TEAM_MEMBER_${index}_PHONE`),
+      altPhones: env(`TEAM_MEMBER_${index}_ALT_PHONES`),
       email: env(`TEAM_MEMBER_${index}_EMAIL`),
       userId: env(`TEAM_MEMBER_${index}_USER_ID`),
       title: env(`TEAM_MEMBER_${index}_TITLE`),
@@ -96,6 +121,7 @@ function fromLoaEnv(): RosterMember[] {
       const member = memberFrom({
         name: env(`FUB_LOA_NAME_${userId}`).trim() || `LOA ${userId}`,
         phone: env(`FUB_LOA_PHONE_${userId}`),
+        altPhones: env(`FUB_LOA_ALT_PHONES_${userId}`),
         email: env(`FUB_LOA_EMAIL_${userId}`),
         userId,
         title: 'LOA',
@@ -106,10 +132,24 @@ function fromLoaEnv(): RosterMember[] {
 
 function dedupe(members: RosterMember[]): RosterMember[] {
   const seen = new Set<string>()
-  return members.filter((member) => {
+  const unique = members.filter((member) => {
     if (seen.has(member.phone)) return false
     seen.add(member.phone)
     return true
+  })
+  const claimed = new Set(unique.map((member) => member.phone))
+  return unique.map((member) => {
+    const altPhones = (member.altPhones ?? []).filter((phone) => {
+      if (claimed.has(phone)) return false
+      claimed.add(phone)
+      return true
+    })
+    if (!altPhones.length) {
+      const rest = { ...member }
+      delete rest.altPhones
+      return rest
+    }
+    return { ...member, altPhones }
   })
 }
 

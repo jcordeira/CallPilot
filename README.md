@@ -232,13 +232,15 @@ Joseph and the team text the Quo Sales line and LoanPilot acts on it. Off until 
 
 The Hub **Command Center** (`/command`) uses that same engine for Joseph. Confirmations are Confirm and Cancel buttons, and ambiguous leads are numbered choices. The thread mixes Hub commands with SMS commands from the audit log. Messages on the right send a Quo text to a teammate, or to a Follow Up Boss lead after an extra Confirm click, and list that contact’s recent Quo messages. The thread and sent texts are stored in Netlify Blobs.
 
-Only these cells are commands. Every other sender, including clients on the same line, is ignored with no reply. The team comes from `TEAM_MEMBERS` (JSON). If that is empty, `TEAM_MEMBER_1_NAME` / `_PHONE` / `_EMAIL` / `_USER_ID` / `_TITLE` (through `_20_`) is used. If neither is set, the FUB LOA phones (`FUB_LOA_PHONE_<id>`) are the team.
+Only these cells are commands. Every other sender, including clients on the same line, is ignored with no reply. The team comes from `TEAM_MEMBERS` (JSON). Each entry has a primary `phone` and an optional `altPhones` array. A text from any of those numbers is that member, and the reply goes back to the number that texted. Texts LoanPilot sends to the team, including assignment notices, still go to the primary `phone`. If `TEAM_MEMBERS` is empty, `TEAM_MEMBER_1_NAME` / `_PHONE` / `_ALT_PHONES` / `_EMAIL` / `_USER_ID` / `_TITLE` (through `_20_`) is used. `_ALT_PHONES` is comma-separated. If neither is set, the FUB LOA phones (`FUB_LOA_PHONE_<id>`) are the team, and `FUB_LOA_ALT_PHONES_<id>` is the comma-separated extra list. Reminder SMS still uses `FUB_LOA_PHONE_<id>`, not the alt numbers.
 
 | Phone | Who | Role |
 |---|---|---|
 | +15169969070 | Joseph (`FUB_LO_PHONE`) | owner |
-| +16315126480 | Frankie Cordeira, LOA, FUB user 16, fcordeirajr@cliffcomortgage.com | team |
-| +15165213121 | Daniel Ebbecke, LOA, FUB user 27, debbecke@cliffcomortgage.com | team |
+| +16315126480 | Frankie Cordeira, LOA, FUB user 16, fcordeirajr@cliffcomortgage.com | team, primary |
+| +16315460457 | Frankie Cordeira alt (her FUB number) | team, inbound only |
+| +15165213121 | Daniel Ebbecke, LOA, FUB user 27, debbecke@cliffcomortgage.com | team, primary |
+| +15169087631 | Daniel Ebbecke alt (his FUB number) | team, inbound only |
 | +12013946798 | Debra Rose, Processor, FUB user 32, drose@cliffcomortgage.com | team |
 
 The line is `QUO_FROM_NUMBER` (+15163869773, the Sales inbox). `COMMAND_PREFIX` is empty by default. Set it to `LP ` or `@lp` if you want a prefix on top of the allowlist.
@@ -294,7 +296,7 @@ The Hub Command mode card lists recent commands. It does not send anything.
 | `COMMAND_MODEL` | `gpt-4o-mini` | Tool-calling model on the Netlify AI Gateway |
 | `QUO_FROM_NUMBER` | | Sales line, +15163869773 |
 | `QUO_WEBHOOK_SECRET` | | Required. Unsigned posts are 401 |
-| `TEAM_MEMBERS` | FUB LOA phones | JSON roster: name, phone, email, optional userId, title |
+| `TEAM_MEMBERS` | FUB LOA phones | JSON roster: name, phone, optional altPhones, email, optional userId, title |
 
 ## Lead heat (Joseph and Frank)
 

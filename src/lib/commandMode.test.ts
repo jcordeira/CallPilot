@@ -10,6 +10,7 @@ import {
   type LeadHit,
 } from '../../netlify/functions/_shared/commandMode'
 import { resetCommandStateForTests } from '../../netlify/functions/_shared/commandStore'
+import { teamRoster } from '../../netlify/functions/_shared/teamRoster'
 import { parseWhen } from '../../netlify/functions/_shared/commandTime'
 import { verifyQuoWebhook } from '../../netlify/functions/_shared/quoSignature'
 import handler from '../../netlify/functions/quo-webhook'
@@ -82,7 +83,9 @@ beforeEach(async () => {
   delete process.env.COMMAND_PREFIX
   delete process.env.CALENDAR_AUTO_GUEST_ENABLED
   delete process.env.TEAM_MEMBERS
-  for (const key of ['NAME', 'PHONE', 'EMAIL', 'USER_ID', 'TITLE']) {
+  delete process.env.FUB_LOA_ALT_PHONES_16
+  delete process.env.FUB_LOA_ALT_PHONES_27
+  for (const key of ['NAME', 'PHONE', 'ALT_PHONES', 'EMAIL', 'USER_ID', 'TITLE']) {
     delete process.env[`TEAM_MEMBER_1_${key}`]
     delete process.env[`TEAM_MEMBER_2_${key}`]
     delete process.env[`TEAM_MEMBER_3_${key}`]
@@ -513,8 +516,10 @@ describe('team roster', () => {
   it('accepts per-member env vars when TEAM_MEMBERS is unset', async () => {
     process.env.TEAM_MEMBER_1_NAME = 'Debra Rose'
     process.env.TEAM_MEMBER_1_PHONE = debbra
+    process.env.TEAM_MEMBER_1_ALT_PHONES = '+12015550111, junk'
     process.env.TEAM_MEMBER_1_EMAIL = 'drose@cliffcomortgage.com'
     process.env.TEAM_MEMBER_1_TITLE = 'Processor'
+    expect(teamRoster()[0]?.altPhones).toEqual(['+12015550111'])
     const fx = effects()
     const result = await handleCommandMessage({
       from: debbra,
@@ -529,6 +534,149 @@ describe('team roster', () => {
     expect(result.reply).toMatch(/^\[preview\] Open:/)
     expect(commandFromToolCall('text_team', { who: 'the team', body: 'hi' }, 'owner').who).toBe('team')
     expect(commandFromToolCall('book_call', { clientName: 'Siddick', whenText: 'tomorrow 2pm', guests: ['Debra'] }, 'owner').guests).toEqual(['Debra'])
+  })
+
+  it('authorizes alt phones and still texts the primary number', async () => {
+    const frankieAlt = '+16315460457'
+    const danielAlt = '+15169087631'
+    const daniel = '+15165213121'
+    process.env.TEAM_MEMBERS = JSON.stringify([
+      { ...roster[0], altPhones: [frankieAlt, 'not-a-phone', frankie] },
+      { ...roster[1], altPhones: [danielAlt, debbra] },
+      roster[2],
+    ])
+    expect(teamRoster().map((member) => ({ name: member.name, phone: member.phone, altPhones: member.altPhones }))).toEqual([
+      { name: 'Frankie Cordeira', phone: frankie, altPhones: [frankieAlt] },
+      { name: 'Daniel Ebbecke', phone: daniel, altPhones: [danielAlt] },
+      { name: 'Debra Rose', phone: debbra, altPhones: undefined },
+    ])
+
+    const fx = effects()
+    const fromFrankie = await handleCommandMessage({
+      from: frankieAlt,
+      to: line,
+      body: 'when is Joe free Thursday?',
+      messageId: 'm-frankie-alt',
+      now,
+      parse: async () => ({ name: 'availability', arguments: { whenText: 'Thursday' } }),
+      effects: fx,
+    })
+    expect(fromFrankie.ignored).toBeUndefined()
+    expect(fromFrankie.actor).toBe('Frankie Cordeira')
+    expect(fromFrankie.reply).toMatch(/^\[preview\] Open:/)
+
+    const fromDaniel = await handleCommandMessage({
+      from: danielAlt,
+      to: line,
+      body: 'when is Joe free Thursday?',
+      messageId: 'm-daniel-alt',
+      now,
+      parse: async () => ({ name: 'availability', arguments: { whenText: 'Thursday' } }),
+      effects: fx,
+    })
+    expect(fromDaniel.ignored).toBeUndefined()
+    expect(fromDaniel.actor).toBe('Daniel Ebbecke')
+
+    const stranger = await handleCommandMessage({
+      from: client,
+      to: line,
+      body: 'when is Joe free?',
+      messageId: 'm-stranger-alt',
+      now,
+      parse: async () => ({ name: 'availability', arguments: {} }),
+      effects: fx,
+    })
+    expect(stranger.ignored).toBe('sender')
+
+    process.env.COMMAND_MODE_DRY_RUN = 'false'
+    const live = effects()
+    const sent = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'text the team: standup moved',
+      messageId: 'm-text-team-primary',
+      now,
+      parse: async () => ({ name: 'text_team', arguments: { who: 'the team', body: 'Standup moved' } }),
+      effects: live,
+    })
+    expect(sent.reply).toBe('Texted Frankie, Daniel, and Debra: Standup moved')
+    expect(live.sent.map((item) => item.to)).toEqual([frankie, daniel, debbra])
+
+    const one = effects()
+    await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'text Frankie: pull appraisal',
+      messageId: 'm-text-frankie-primary',
+      now,
+      parse: async () => ({ name: 'text_team', arguments: { who: 'Frankie', body: 'Pull appraisal' } }),
+      effects: one,
+    })
+    expect(one.sent).toEqual([{ to: frankie, content: 'Pull appraisal' }])
+
+    const booking = effects({
+      searchLeads: async () => [{ id: 7, name: 'Rakesh Patel', phone: '+15165551007', stage: 'Lead' }],
+    })
+    const ask = await handleCommandMessage({
+      from: frankieAlt,
+      to: line,
+      body: 'book Joe with Rakesh Thu 3pm',
+      messageId: 'm-req-alt',
+      now,
+      parse: async () => ({ name: 'request_booking', arguments: { clientName: 'Rakesh Patel', whenText: 'Thu 3pm', topic: 'refi' } }),
+      effects: booking,
+    })
+    expect(ask.reply).toContain('Asked Joseph to approve')
+    expect(booking.sent.map((item) => item.to)).toEqual([joseph])
+    const approved = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'YES',
+      messageId: 'm-approve-alt',
+      now: new Date(now.getTime() + 60_000),
+      parse: async () => {
+        throw new Error('approval pending')
+      },
+      effects: booking,
+    })
+    expect(approved.reply).toContain('Booked Rakesh Patel call refi')
+    expect(booking.sent.some((item) => item.to === frankieAlt && item.content.includes('approved'))).toBe(true)
+    expect(booking.sent.some((item) => item.to === frankie)).toBe(false)
+  })
+
+  it('reads FUB_LOA_ALT_PHONES when TEAM_MEMBERS is unset', async () => {
+    const frankieAlt = '+16315460457'
+    const danielAlt = '+15169087631'
+    process.env.FUB_LOA_ALT_PHONES_16 = frankieAlt
+    process.env.FUB_LOA_ALT_PHONES_27 = `${danielAlt}, junk`
+    expect(teamRoster().find((member) => member.userId === 16)?.altPhones).toEqual([frankieAlt])
+    expect(teamRoster().find((member) => member.userId === 27)?.altPhones).toEqual([danielAlt])
+
+    const fx = effects()
+    const fromAlt = await handleCommandMessage({
+      from: danielAlt,
+      to: line,
+      body: 'when is Joe free Thursday?',
+      messageId: 'm-daniel-loa-alt',
+      now,
+      parse: async () => ({ name: 'availability', arguments: { whenText: 'Thursday' } }),
+      effects: fx,
+    })
+    expect(fromAlt.ignored).toBeUndefined()
+    expect(fromAlt.actor).toBe('Daniel Ebbecke')
+
+    process.env.COMMAND_MODE_DRY_RUN = 'false'
+    const live = effects()
+    await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'text Frankie: file is in',
+      messageId: 'm-text-frankie-loa',
+      now,
+      parse: async () => ({ name: 'text_team', arguments: { who: 'Frankie', body: 'File is in' } }),
+      effects: live,
+    })
+    expect(live.sent).toEqual([{ to: frankie, content: 'File is in' }])
   })
 })
 
