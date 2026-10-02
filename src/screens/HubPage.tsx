@@ -397,7 +397,7 @@ export function HubPage() {
           ) : null}
         </div>
         <div className="hub__actions">
-          {summary?.google?.needsCalendarWrite ? (
+          {summary?.google?.needsCalendarWrite || summary?.google?.reconnect ? (
             <a className="btn btn--primary" href={googleConnectUrl()}>
               Reconnect Google
             </a>

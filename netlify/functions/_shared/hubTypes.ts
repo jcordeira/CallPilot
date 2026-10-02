@@ -4,15 +4,26 @@ export type TaskSource = 'google' | 'fub' | 'demo'
 export type TaskStatus = 'needsAction' | 'completed'
 export type EventSource = 'google' | 'demo'
 
+export type CalendarAttendee = {
+  email: string
+  displayName?: string
+  responseStatus?: string
+  optional?: boolean
+  self?: boolean
+  organizer?: boolean
+}
+
 export type HubCalendarEvent = {
   id: string
   summary: string
   description?: string
+  location?: string
   startIso: string
   endIso: string
   htmlLink?: string
   allDay: boolean
   source: EventSource
+  attendees?: CalendarAttendee[]
 }
 
 export type HubTask = {
@@ -58,6 +69,10 @@ export type GoogleConnection = {
   email?: string
   source: 'oauth' | 'env' | null
   needsCalendarWrite?: boolean
+  /** True when the grant includes `calendar` or `calendar.events`. Env tokens are treated as capable. */
+  canWrite?: boolean
+  /** OAuth is connected but the stored scope cannot create or edit events. */
+  reconnect?: boolean
 }
 
 export type HubSummary = {

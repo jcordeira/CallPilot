@@ -12,6 +12,7 @@ import { appendActivity, listActivity, resetActivityForTests } from '../../netli
 import { sweepInboxes } from '../../netlify/functions/_shared/sweep'
 import fubWebhook from '../../netlify/functions/fub-webhook'
 import googleOauth from '../../netlify/functions/google-oauth'
+import { hubSessionCookie, signHubSession } from '../../netlify/functions/_shared/hubSession'
 import publicApi from '../../netlify/functions/public-api'
 
 const context = { requestId: 'test', params: {} } as Context
@@ -305,11 +306,16 @@ describe('FUB webhook signature', () => {
   })
 })
 
+function hubCookie(): string {
+  process.env.HUB_PASSWORD = 'hub-test-password'
+  return hubSessionCookie(signHubSession(), false).split(';')[0] ?? ''
+}
+
 describe('Google OAuth', () => {
   it('binds the callback to the state cookie and rejects a missing or stale state', async () => {
     process.env.GOOGLE_CLIENT_ID = 'client'
     process.env.GOOGLE_CLIENT_SECRET = 'secret'
-    const connect = await googleOauth(new Request('https://site.example/api/google/connect'), context)
+    const connect = await googleOauth(new Request('https://site.example/api/google/connect', { headers: { cookie: hubCookie() } }), context)
     expect(connect.status).toBe(302)
     const state = new URL(connect.headers.get('location') ?? '').searchParams.get('state')
     expect(state).toBeTruthy()
@@ -339,7 +345,7 @@ describe('Google OAuth', () => {
     const denied = await googleOauth(
       new Request('https://site.example/api/google/disconnect', {
         method: 'POST',
-        headers: { Origin: 'https://evil.example' },
+        headers: { Origin: 'https://evil.example', cookie: hubCookie() },
       }),
       context,
     )
@@ -348,7 +354,7 @@ describe('Google OAuth', () => {
     const sameOrigin = await googleOauth(
       new Request('https://site.example/api/google/disconnect', {
         method: 'POST',
-        headers: { Origin: 'https://site.example', 'Sec-Fetch-Site': 'same-origin' },
+        headers: { Origin: 'https://site.example', 'Sec-Fetch-Site': 'same-origin', cookie: hubCookie() },
       }),
       context,
     )

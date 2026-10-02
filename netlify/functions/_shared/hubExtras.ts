@@ -8,6 +8,7 @@ type Extras = {
   tasks: HubTask[]
   fubTasks: HubTask[]
   scoredLeads: ScoredLead[]
+  hiddenEventIds?: string[]
   /** Set after the one-time removal of legacy colliding sample person ids. */
   demoPurged?: boolean
 }
@@ -34,6 +35,7 @@ function normalize(raw: Partial<Extras> | null | undefined): Extras | null {
     tasks: Array.isArray(raw.tasks) ? raw.tasks : [],
     fubTasks: Array.isArray(raw.fubTasks) ? raw.fubTasks : [],
     scoredLeads: Array.isArray(raw.scoredLeads) ? raw.scoredLeads : [],
+    hiddenEventIds: Array.isArray(raw.hiddenEventIds) ? raw.hiddenEventIds.filter((id) => typeof id === 'string') : [],
     demoPurged: raw.demoPurged === true,
   }
 }
@@ -44,6 +46,7 @@ function clone(raw: Extras): Extras {
     tasks: [...raw.tasks],
     fubTasks: [...raw.fubTasks],
     scoredLeads: [...raw.scoredLeads],
+    hiddenEventIds: [...(raw.hiddenEventIds ?? [])],
     demoPurged: raw.demoPurged === true,
   }
 }
@@ -56,6 +59,7 @@ export function projectLiveExtras(raw: Extras): Extras {
     tasks: raw.tasks.filter((task) => !hideTaskInLive(task)),
     fubTasks: [],
     scoredLeads: raw.scoredLeads.filter((lead) => !hideLeadInLive(lead, dropLegacy)),
+    hiddenEventIds: raw.hiddenEventIds ?? [],
     demoPurged: raw.demoPurged === true,
   }
 }
@@ -88,6 +92,7 @@ export async function saveHubExtras(next: Extras) {
     tasks: next.tasks.slice(0, 40),
     fubTasks: next.fubTasks.slice(0, 40),
     scoredLeads: next.scoredLeads.slice(0, 40),
+    hiddenEventIds: (next.hiddenEventIds ?? []).slice(0, 80),
     demoPurged: next.demoPurged === true,
   }
   const blob = store()
@@ -102,6 +107,16 @@ export async function saveHubExtras(next: Extras) {
 export async function rememberHubEvent(event: HubCalendarEvent) {
   const current = await loadHubExtras()
   await saveHubExtras({ ...current, events: [event, ...current.events.filter((item) => item.id !== event.id)] })
+}
+
+export async function forgetHubEvent(id: string) {
+  const current = await loadHubExtras()
+  const hiddenEventIds = [...new Set([...(current.hiddenEventIds ?? []), id])].slice(0, 80)
+  await saveHubExtras({
+    ...current,
+    events: current.events.filter((item) => item.id !== id),
+    hiddenEventIds,
+  })
 }
 
 export async function rememberHubTask(task: HubTask) {

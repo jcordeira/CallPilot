@@ -8,8 +8,10 @@ export type HubCalendarEvent = {
   startIso: string
   endIso: string
   htmlLink?: string
+  location?: string
   allDay: boolean
   source: HubEventSource
+  attendees?: CalendarAttendee[]
 }
 
 export type HubTask = {
@@ -46,6 +48,16 @@ export type GoogleConnection = {
   email?: string
   source: 'oauth' | 'env' | null
   needsCalendarWrite?: boolean
+  canWrite?: boolean
+  reconnect?: boolean
+}
+
+export type CalendarAttendee = {
+  email: string
+  displayName?: string
+  responseStatus?: string
+  self?: boolean
+  organizer?: boolean
 }
 
 export type HubSummary = {
@@ -318,4 +330,45 @@ export function disconnectGoogle() {
 
 export function googleConnectUrl() {
   return '/api/google/connect'
+}
+
+export type CalendarPayload = {
+  events: HubCalendarEvent[]
+  demo: boolean
+  timezone: string
+  google: GoogleConnection
+  leads: { personId: number; name: string }[]
+}
+
+export type CalendarWrite = {
+  id?: string
+  summary: string
+  description?: string
+  location?: string
+  startIso: string
+  endIso: string
+  attendees?: string[]
+  sendUpdates?: 'all' | 'none'
+}
+
+export function fetchHubCalendar(start: Date, end: Date) {
+  const params = new URLSearchParams({ start: start.toISOString(), end: end.toISOString() })
+  return hubRequest<CalendarPayload>(`calendar?${params}`)
+}
+
+export function createHubCalendarEvent(input: CalendarWrite) {
+  return hubRequest<{ id: string; htmlLink?: string }>('calendar', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export function updateHubCalendarEvent(input: CalendarWrite & { id: string }) {
+  return hubRequest<{ event: HubCalendarEvent }>('calendar', { method: 'PATCH', body: JSON.stringify(input) })
+}
+
+export function deleteHubCalendarEvent(id: string, sendUpdates: 'all' | 'none') {
+  const params = new URLSearchParams({ id, sendUpdates })
+  return hubRequest<{ deleted: string }>(`calendar?${params}`, { method: 'DELETE' })
+}
+
+export function searchHubPeople(query: string) {
+  return hubRequest<{ people: { id: number; name: string; email?: string }[] }>(`people?q=${encodeURIComponent(query)}`)
 }

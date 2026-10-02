@@ -1,7 +1,7 @@
 import { env, isDemoMode } from './env'
 import { resolveGoogleAccessToken } from './googleAuth'
-import { loadHubExtras, rememberHubEvent, rememberHubTask } from './hubExtras'
-import type { HubCalendarEvent, HubTask } from './hubTypes'
+import { forgetHubEvent, loadHubExtras, rememberHubEvent, rememberHubTask } from './hubExtras'
+import type { CalendarAttendee, HubCalendarEvent, HubTask } from './hubTypes'
 import { shiftDateKey } from './hubTypes'
 
 let demoSeq = 0
@@ -109,9 +109,59 @@ type GCalEvent = {
   status?: string
   summary?: string
   description?: string
+  location?: string
   htmlLink?: string
   start?: { dateTime?: string; date?: string }
   end?: { dateTime?: string; date?: string }
+  attendees?: CalendarAttendee[]
+}
+
+export const CALENDAR_TIME_ZONE = 'America/New_York'
+
+export function mergeAttendees(existing: CalendarAttendee[] | undefined, emails: string[]): CalendarAttendee[] {
+  const wanted = [...new Set(emails.map((email) => email.trim()).filter(Boolean))]
+  const byEmail = new Map((existing ?? []).map((attendee) => [attendee.email.toLowerCase(), attendee]))
+  return wanted.map((email) => {
+    const prev = byEmail.get(email.toLowerCase())
+    if (!prev) return { email }
+    return {
+      email: prev.email,
+      ...(prev.displayName ? { displayName: prev.displayName } : {}),
+      ...(prev.responseStatus ? { responseStatus: prev.responseStatus } : {}),
+      ...(prev.optional ? { optional: true } : {}),
+    }
+  })
+}
+
+export function calendarWriteBody(input: {
+  summary: string
+  description?: string
+  location?: string
+  startIso: string
+  endIso: string
+  allDay?: boolean
+  attendees?: CalendarAttendee[]
+  timeZone?: string
+}): Record<string, unknown> {
+  const timeZone = input.timeZone
+  const start = input.allDay ? { date: input.startIso.slice(0, 10) } : { dateTime: input.startIso, ...(timeZone ? { timeZone } : {}) }
+  const end = input.allDay ? { date: input.endIso.slice(0, 10) } : { dateTime: input.endIso, ...(timeZone ? { timeZone } : {}) }
+  const body: Record<string, unknown> = {
+    summary: input.summary,
+    description: input.description,
+    start,
+    end,
+  }
+  if (input.location != null) body.location = input.location
+  if (input.attendees) {
+    body.attendees = input.attendees.map((attendee) => ({
+      email: attendee.email,
+      ...(attendee.displayName ? { displayName: attendee.displayName } : {}),
+      ...(attendee.responseStatus ? { responseStatus: attendee.responseStatus } : {}),
+      ...(attendee.optional ? { optional: true } : {}),
+    }))
+  }
+  return body
 }
 
 function mapGCal(item: GCalEvent): HubCalendarEvent | null {
@@ -127,7 +177,16 @@ function mapGCal(item: GCalEvent): HubCalendarEvent | null {
     id: item.id,
     summary: item.summary?.trim() || '(No title)',
     description: item.description,
+    location: item.location,
     htmlLink: item.htmlLink,
+    attendees: item.attendees?.map((attendee) => ({
+      email: attendee.email,
+      displayName: attendee.displayName,
+      responseStatus: attendee.responseStatus,
+      optional: attendee.optional,
+      self: attendee.self,
+      organizer: attendee.organizer,
+    })),
     startIso,
     endIso,
     allDay,
@@ -178,14 +237,16 @@ export async function listUpcomingEvents(days = 7): Promise<{ events: HubCalenda
   const { accessToken: token } = await resolveGoogleAccessToken()
   if (!token) {
     if (!isDemoMode()) return { events: [], demo: false }
-    const extras = (await loadHubExtras()).events.filter((event) => inWindow(event.startIso, now, safeDays))
+    const stored = await loadHubExtras()
+    const hidden = new Set(stored.hiddenEventIds ?? [])
+    const extras = stored.events.filter((event) => inWindow(event.startIso, now, safeDays))
     const events = [...extras, ...demoUpcomingEvents(now, safeDays)]
     const seen = new Set<string>()
     return {
       demo: true,
       events: events
         .filter((event) => {
-          if (seen.has(event.id)) return false
+          if (hidden.has(event.id) || seen.has(event.id)) return false
           seen.add(event.id)
           return true
         })
@@ -193,23 +254,7 @@ export async function listUpcomingEvents(days = 7): Promise<{ events: HubCalenda
     }
   }
 
-  const calendarId = encodeURIComponent(env('GOOGLE_CALENDAR_ID', 'primary'))
-  const params = new URLSearchParams({
-    timeMin: now.toISOString(),
-    timeMax: new Date(now.getTime() + safeDays * 86_400_000).toISOString(),
-    singleEvents: 'true',
-    orderBy: 'startTime',
-    maxResults: '40',
-  })
-  const res = await fetch(
-    `https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events?${params}`,
-    { headers: { Authorization: `Bearer ${token}` } },
-  )
-  if (!res.ok) throw new Error(await googleError(res, 'Calendar list'))
-  const data = (await res.json()) as { items?: GCalEvent[] }
-  const events = (data.items ?? [])
-    .map(mapGCal)
-    .filter((event): event is HubCalendarEvent => event != null)
+  const events = await listGoogleEvents(now.toISOString(), new Date(now.getTime() + safeDays * 86_400_000).toISOString(), 40)
   return { events, demo: false }
 }
 
@@ -284,48 +329,70 @@ export async function createGoogleTask(input: {
   return mapped
 }
 
+async function calendarFetch(pathAndQuery: string, init?: RequestInit): Promise<Response> {
+  const { accessToken: token } = await resolveGoogleAccessToken()
+  if (!token) throw new Error('Google Calendar is not connected')
+  const calendarId = encodeURIComponent(env('GOOGLE_CALENDAR_ID', 'primary'))
+  return fetch(`https://www.googleapis.com/calendar/v3/calendars/${calendarId}${pathAndQuery}`, {
+    ...init,
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
+  })
+}
+
+function guestEmails(input: { attendees?: string[]; attendeeEmail?: string }): string[] {
+  return [...new Set([...(input.attendees ?? []), ...(input.attendeeEmail ? [input.attendeeEmail] : [])].map((email) => email.trim()).filter(Boolean))]
+}
+
 export async function createCalendarEvent(input: {
   summary: string
   description?: string
+  location?: string
   startIso: string
   endIso: string
   attendeeEmail?: string
   attendees?: string[]
   sendUpdates?: 'all' | 'externalOnly' | 'none'
+  timeZone?: string
 }): Promise<{ id: string; htmlLink?: string }> {
   const { accessToken: token } = await resolveGoogleAccessToken()
   if (!token) {
     if (!isDemoMode()) throw new Error('Google Calendar is not connected')
     const id = nextDemoId('cal-demo')
+    const emails = guestEmails(input)
     await rememberHubEvent({
       id,
       summary: input.summary,
       description: input.description,
+      location: input.location,
       startIso: input.startIso,
       endIso: input.endIso,
       htmlLink: 'https://calendar.google.com/',
       allDay: false,
       source: 'demo',
+      attendees: emails.map((email) => ({ email })),
     })
     return { id, htmlLink: 'https://calendar.google.com/' }
   }
 
-  const calendarId = encodeURIComponent(env('GOOGLE_CALENDAR_ID', 'primary'))
-  const guests = [...(input.attendees ?? []), ...(input.attendeeEmail ? [input.attendeeEmail] : [])].filter(Boolean)
+  const emails = guestEmails(input)
   const params = input.sendUpdates ? `?sendUpdates=${input.sendUpdates}` : ''
-  const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events${params}`, {
+  const res = await calendarFetch(`/events${params}`, {
     method: 'POST',
-    headers: {
-      Authorization: `Bearer ${token}`,
-      'Content-Type': 'application/json',
-    },
-    body: JSON.stringify({
-      summary: input.summary,
-      description: input.description,
-      start: { dateTime: input.startIso, timeZone: env('COMMAND_TIMEZONE', 'America/New_York') },
-      end: { dateTime: input.endIso, timeZone: env('COMMAND_TIMEZONE', 'America/New_York') },
-      attendees: guests.length ? guests.map((email) => ({ email })) : undefined,
-    }),
+    body: JSON.stringify(
+      calendarWriteBody({
+        summary: input.summary,
+        description: input.description,
+        location: input.location,
+        startIso: input.startIso,
+        endIso: input.endIso,
+        timeZone: input.timeZone ?? env('COMMAND_TIMEZONE', CALENDAR_TIME_ZONE),
+        attendees: emails.length ? emails.map((email) => ({ email })) : undefined,
+      }),
+    ),
   })
   if (!res.ok) throw new Error(await googleError(res, 'Calendar create'))
   const data = (await res.json()) as { id: string; htmlLink?: string }
@@ -353,4 +420,120 @@ export async function holdFollowUpSlot(input: {
     attendeeEmail: input.attendeeEmail,
   })
   return { ...event, startIso: start.toISOString() }
+}
+
+async function listGoogleEvents(timeMin: string, timeMax: string, max = 250): Promise<HubCalendarEvent[]> {
+  const events: HubCalendarEvent[] = []
+  let pageToken = ''
+  for (let page = 0; page < 5 && events.length < max; page += 1) {
+    const params = new URLSearchParams({
+      timeMin,
+      timeMax,
+      singleEvents: 'true',
+      orderBy: 'startTime',
+      maxResults: '50',
+      showDeleted: 'false',
+    })
+    if (pageToken) params.set('pageToken', pageToken)
+    const res = await calendarFetch(`/events?${params}`)
+    if (!res.ok) throw new Error(await googleError(res, 'Calendar list'))
+    const data = (await res.json()) as { items?: GCalEvent[]; nextPageToken?: string }
+    for (const item of data.items ?? []) {
+      const mapped = mapGCal(item)
+      if (mapped) events.push(mapped)
+    }
+    if (!data.nextPageToken) break
+    pageToken = data.nextPageToken
+  }
+  return events.slice(0, max)
+}
+
+function overlaps(event: HubCalendarEvent, start: Date, end: Date): boolean {
+  const a = new Date(event.startIso).getTime()
+  const b = new Date(event.endIso).getTime()
+  return a < end.getTime() && b > start.getTime()
+}
+
+export async function listEventsBetween(start: Date, end: Date): Promise<{ events: HubCalendarEvent[]; demo: boolean }> {
+  const { accessToken: token } = await resolveGoogleAccessToken()
+  if (!token) {
+    if (!isDemoMode()) return { events: [], demo: false }
+    const extras = await loadHubExtras()
+    const hidden = new Set(extras.hiddenEventIds ?? [])
+    const span = Math.max(1, Math.ceil((end.getTime() - start.getTime()) / 86_400_000) + 1)
+    const merged = [...extras.events, ...demoUpcomingEvents(start, span)]
+    const seen = new Set<string>()
+    const events = merged
+      .filter((event) => {
+        if (hidden.has(event.id) || seen.has(event.id) || !overlaps(event, start, end)) return false
+        seen.add(event.id)
+        return true
+      })
+      .sort((a, b) => a.startIso.localeCompare(b.startIso))
+    return { events, demo: true }
+  }
+  const events = await listGoogleEvents(start.toISOString(), end.toISOString())
+  return { events, demo: false }
+}
+
+export async function updateCalendarEvent(input: {
+  id: string
+  summary: string
+  description?: string
+  location?: string
+  startIso: string
+  endIso: string
+  attendees?: string[]
+  existingAttendees?: CalendarAttendee[]
+  sendUpdates?: 'all' | 'none' | 'externalOnly'
+  timeZone?: string
+}): Promise<HubCalendarEvent> {
+  const attendees = input.attendees ? mergeAttendees(input.existingAttendees, input.attendees) : undefined
+  const { accessToken: token } = await resolveGoogleAccessToken()
+  if (!token) {
+    if (!isDemoMode()) throw new Error('Google Calendar is not connected')
+    const event: HubCalendarEvent = {
+      id: input.id,
+      summary: input.summary,
+      description: input.description,
+      location: input.location,
+      startIso: input.startIso,
+      endIso: input.endIso,
+      allDay: false,
+      source: 'demo',
+      attendees,
+    }
+    await rememberHubEvent(event)
+    return event
+  }
+  const sendUpdates = input.sendUpdates ?? 'none'
+  const res = await calendarFetch(`/events/${encodeURIComponent(input.id)}?sendUpdates=${sendUpdates}`, {
+    method: 'PATCH',
+    body: JSON.stringify(
+      calendarWriteBody({
+        summary: input.summary,
+        description: input.description,
+        location: input.location ?? '',
+        startIso: input.startIso,
+        endIso: input.endIso,
+        timeZone: input.timeZone ?? CALENDAR_TIME_ZONE,
+        attendees,
+      }),
+    ),
+  })
+  if (!res.ok) throw new Error(await googleError(res, 'Calendar update'))
+  const mapped = mapGCal((await res.json()) as GCalEvent)
+  if (!mapped) throw new Error('Calendar update returned no event')
+  return mapped
+}
+
+export async function deleteCalendarEvent(id: string, sendUpdates: 'all' | 'none' | 'externalOnly' = 'none'): Promise<void> {
+  const { accessToken: token } = await resolveGoogleAccessToken()
+  if (!token) {
+    if (!isDemoMode()) throw new Error('Google Calendar is not connected')
+    await forgetHubEvent(id)
+    return
+  }
+  const res = await calendarFetch(`/events/${encodeURIComponent(id)}?sendUpdates=${sendUpdates}`, { method: 'DELETE' })
+  if (!res.ok && res.status !== 410) throw new Error(await googleError(res, 'Calendar delete'))
 }

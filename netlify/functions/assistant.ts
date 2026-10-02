@@ -1,4 +1,5 @@
 import type { Config, Context } from '@netlify/functions'
+import { requireHubSession } from './_shared/hubSession'
 import { listActivity, loadSettings, saveSettings } from './_shared/store'
 import { processIncomingMessage } from './_shared/pipeline'
 import { sweepInboxes } from './_shared/sweep'
@@ -6,6 +7,8 @@ import type { AssistantSettings, IncomingMessage } from './_shared/types'
 import { DEFAULT_SETTINGS } from './_shared/types'
 
 export default async (req: Request, context: Context) => {
+  const denied = requireHubSession(req)
+  if (denied) return denied
   const url = new URL(req.url)
   const action = context.params.action ?? url.pathname.split('/').pop()
 

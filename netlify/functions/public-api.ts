@@ -1,5 +1,6 @@
 import type { Config, Context } from '@netlify/functions'
 import { apiKeyIsValid, extractApiKey } from './_shared/apiAuth'
+import { hubSessionFromRequest } from './_shared/hubSession'
 import { env, isDemoMode } from './_shared/env'
 import { listGoogleTasks, listUpcomingEvents } from './_shared/calendar'
 import { listOpenFubTasks } from './_shared/followupboss'
@@ -10,7 +11,8 @@ import { listActivity, loadSettings } from './_shared/store'
 import type { Channel, IncomingMessage } from './_shared/types'
 
 function authorized(req: Request): boolean {
-  return apiKeyIsValid(extractApiKey(req.headers), env('LOANPILOT_API_KEY'), isDemoMode())
+  if (apiKeyIsValid(extractApiKey(req.headers), env('LOANPILOT_API_KEY'), isDemoMode())) return true
+  return hubSessionFromRequest(req)
 }
 
 function v1Path(url: URL): string {

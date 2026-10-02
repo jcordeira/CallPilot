@@ -313,11 +313,17 @@ Google Calendar stays optional. The Hub lead board works when Google is disconne
 
 | Path | Purpose |
 |---|---|
-| `/hub` | Home desk: lead heat, calendar, Google + FUB tasks, assistant activity, quick actions |
+| `/hub` | Home desk: lead heat, calendar summary, Google + FUB tasks, assistant activity, quick actions |
+| `/calendar` | Joseph's Google Calendar: day, week, and agenda, with create, edit, move, and delete |
+| `/login` | Hub password. Set `HUB_PASSWORD` before the Hub or `/api` will answer. |
 | `/assistant` | Activity feed, inbox sweep, reply previews |
 | `/assistant/settings` | Auto-reply, draft-only, channels, voice, env checklist |
 | `/week`, `/book`, `/settings` | Appointment booking calendar (CallPilot) |
 | `/team` | Team calendars (still available; not in the primary nav) |
+
+## Hub sign-in
+
+`HUB_PASSWORD` is required. A signed `lp_hub` cookie (7 days, or `HUB_SESSION_DAYS`) unlocks `/hub`, `/calendar`, `/assistant`, and `/api`. Webhooks (`/api/webhooks/*`), scheduled functions, and `GET /api/google/callback` stay open. `/api/v1` still accepts `LOANPILOT_API_KEY`. Optional `HUB_SESSION_SECRET` signs the cookie; otherwise the password is the key. The OAuth connect URL already requests `https://www.googleapis.com/auth/calendar`, which includes event writes, plus `calendar.events`. Reconnect Google shows up only when a stored OAuth grant is missing both of those.
 
 ## Hub API (app)
 
