@@ -57,6 +57,7 @@ export type GoogleConnection = {
   connected: boolean
   email?: string
   source: 'oauth' | 'env' | null
+  needsCalendarWrite?: boolean
 }
 
 export type HubSummary = {

@@ -8,12 +8,16 @@ import {
   fetchHubSummary,
   fetchLeadHeat,
   fetchReminderPanel,
+  fetchCalendarGuestPanel,
   fetchWhatsappPanel,
   googleConnectUrl,
+  previewCalendarGuests,
   previewReminders,
   previewWhatsappAutoreply,
   rescoreLeads,
   type ReminderPanel,
+  type CalendarGuestPreview,
+  type CalendarGuestPanel,
   type WhatsappPanel,
   type HubCalendarEvent,
   type HubSummary,
@@ -91,6 +95,8 @@ export function HubPage() {
   const [leads, setLeads] = useState<ScoredLead[]>([])
   const [reminders, setReminders] = useState<ReminderPanel | null>(null)
   const [whatsapp, setWhatsapp] = useState<WhatsappPanel | null>(null)
+  const [guests, setGuests] = useState<CalendarGuestPanel | null>(null)
+  const [guestPreview, setGuestPreview] = useState<CalendarGuestPreview[] | null>(null)
   const [leadDemo, setLeadDemo] = useState(false)
   const [activity, setActivity] = useState<ActivityItem[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -111,17 +117,19 @@ export function HubPage() {
 
   const load = useCallback(async () => {
     try {
-      const [nextSummary, nextActivity, heat, reminderPanel, whatsappPanel] = await Promise.all([
+      const [nextSummary, nextActivity, heat, reminderPanel, whatsappPanel, guestPanel] = await Promise.all([
         fetchHubSummary(),
         fetchActivity(12),
         fetchLeadHeat().catch(() => null),
         fetchReminderPanel().catch(() => null),
         fetchWhatsappPanel().catch(() => null),
+        fetchCalendarGuestPanel().catch(() => null),
       ])
       setSummary(nextSummary)
       setActivity(nextActivity.items)
       setReminders(reminderPanel && Array.isArray(reminderPanel.recent) ? reminderPanel : null)
       setWhatsapp(whatsappPanel && Array.isArray(whatsappPanel.recent) ? whatsappPanel : null)
+      setGuests(guestPanel && Array.isArray(guestPanel.recent) ? guestPanel : null)
       setLeads(heat?.leads ?? nextSummary.leads ?? [])
       setLeadDemo(heat?.demo ?? nextSummary.stats.demo)
       setError(null)
@@ -260,6 +268,31 @@ export function HubPage() {
     }
   }
 
+  const onPreviewGuests = async () => {
+    setBusy(true)
+    try {
+      const result = await previewCalendarGuests()
+      if (result.skipped === 'demo') {
+        setNotice('Calendar preview skipped in demo mode. Nobody was invited.')
+      } else if (result.skipped === 'scope') {
+        setNotice('Google needs a reconnect before LoanPilot can add guests.')
+      } else {
+        const adds = (result.previews ?? []).filter((item) => item.action === 'add')
+        setGuestPreview(result.previews ?? [])
+        setNotice(
+          `Calendar preview only — ${adds.length} ${adds.length === 1 ? 'event' : 'events'} would add a guest. Nobody was invited.`,
+        )
+      }
+      await load()
+      setError(null)
+    } catch (e) {
+      setNotice(null)
+      setError(e instanceof Error ? e.message : 'Could not preview calendar guests')
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const onHoldSlot = async () => {
     if (!leadName.trim()) {
       setError('Name the lead for this slot.')
@@ -323,6 +356,11 @@ export function HubPage() {
           ) : null}
         </div>
         <div className="hub__actions">
+          {summary?.google?.needsCalendarWrite ? (
+            <a className="btn btn--primary" href={googleConnectUrl()}>
+              Reconnect Google
+            </a>
+          ) : null}
           {summary?.google?.connected ? (
             <button
               type="button"
@@ -562,6 +600,54 @@ export function HubPage() {
             <div className="hub__form-actions hub__reminder-actions">
               <button type="button" className="btn" disabled={busy} onClick={() => void onPreviewReminders()}>
                 {busy ? 'Working…' : 'Preview reminders'}
+              </button>
+            </div>
+          </section>
+        )}
+        {summary?.google?.needsCalendarWrite && (
+          <p className="hub__error" role="status">
+            Google is connected without Calendar write access. Reconnect Google so LoanPilot can add guests to events.
+          </p>
+        )}
+        {guests && (
+          <section className="card hub__card" aria-labelledby="hub-guests">
+            <div className="hub__card-head">
+              <h2 id="hub-guests">Calendar guests</h2>
+              <span className="mono hub__count">{guests.enabled ? (guests.dryRun ? 'Dry run' : 'On') : 'Off'}</span>
+            </div>
+            <p className="hub__form-help hub__heat-note">
+              {guests.enabled
+                ? `Adds ${guests.emails.join(', ')} to client appointments in the next ${guests.days} days.`
+                : 'Off until CALENDAR_AUTO_GUEST_ENABLED=true. Preview does not change the calendar.'}
+            </p>
+            <p className="hub__item-meta">
+              {guests.notify === 'ics'
+                ? guests.gmailCanInvite
+                  ? 'New guests get an email invite. Existing guests are not notified.'
+                  : 'Guests are added quietly unless Gmail is connected or notify is set to all.'
+                : 'Google notifies guests on each update.'}
+            </p>
+            <h3 className="hub__subhead">Would add</h3>
+            {!guestPreview ? (
+              <p className="hub__empty">Preview to see upcoming client appointments.</p>
+            ) : guestPreview.filter((item) => item.action === 'add').length === 0 ? (
+              <p className="hub__empty">No upcoming events need a guest added.</p>
+            ) : (
+              <ul className="hub__list">
+                {guestPreview
+                  .filter((item) => item.action === 'add')
+                  .slice(0, 8)
+                  .map((item) => (
+                    <li key={item.id} className="hub__row">
+                      <div className="hub__item-title">{item.summary}</div>
+                      <p className="hub__item-meta">{item.reason}</p>
+                    </li>
+                  ))}
+              </ul>
+            )}
+            <div className="hub__form-actions hub__reminder-actions">
+              <button type="button" className="btn" disabled={busy} onClick={() => void onPreviewGuests()}>
+                {busy ? 'Working…' : 'Preview calendar guests'}
               </button>
             </div>
           </section>

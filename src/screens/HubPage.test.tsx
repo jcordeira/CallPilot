@@ -287,6 +287,94 @@ describe('Hub', () => {
     expect(calls.some((call) => call.startsWith('POST') && call.includes('/api/hub/whatsapp'))).toBe(true)
   })
 
+  it('previews calendar guests without inviting anyone and asks to reconnect when write scope is missing', async () => {
+    const calls: string[] = []
+    const connected = {
+      ...summary,
+      data: {
+        ...summary.data,
+        google: {
+          configured: true,
+          connected: true,
+          email: 'Joseph@teamcordeira.com',
+          source: 'oauth',
+          needsCalendarWrite: true,
+        },
+      },
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        calls.push(`${init?.method ?? 'GET'} ${url}`)
+        if (url.includes('/api/hub/calendar-guests') && (init?.method ?? 'GET') === 'GET') {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              data: {
+                enabled: false,
+                dryRun: false,
+                emails: ['fcordeirajr@cliffcomortgage.com'],
+                days: 60,
+                notify: 'ics',
+                gmailCanInvite: false,
+                needsCalendarWrite: true,
+                recent: [],
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        if (url.includes('/api/hub/calendar-guests') && init?.method === 'POST') {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              data: {
+                enabled: false,
+                dryRun: true,
+                added: 0,
+                previews: [
+                  {
+                    id: 'evt-1',
+                    summary: 'Siddick Chowdhury call refi',
+                    startIso: '2026-10-05T15:00:00.000Z',
+                    action: 'add',
+                    reason: 'client call',
+                  },
+                ],
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        if (url.includes('/api/hub/summary')) {
+          return new Response(JSON.stringify(connected), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        if (url.includes('/api/hub/leads')) {
+          return new Response(JSON.stringify({ ok: true, data: { leads: summary.data.leads, demo: true } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/assistant/activity')) {
+          return new Response(JSON.stringify(activity), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        return new Response(JSON.stringify({ ok: false, error: 'missing' }), { status: 404 })
+      }),
+    )
+    const user = userEvent.setup()
+    renderApp(<App />, { route: '/hub' })
+    expect(await screen.findByRole('heading', { name: 'Calendar guests' })).toBeInTheDocument()
+    expect(screen.getByRole('link', { name: 'Reconnect Google' })).toBeInTheDocument()
+    expect(screen.getByText(/without Calendar write access/)).toBeInTheDocument()
+    expect(screen.getByText(/Off until CALENDAR_AUTO_GUEST_ENABLED=true/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Preview calendar guests' }))
+    expect(await screen.findByText('Siddick Chowdhury call refi')).toBeInTheDocument()
+    expect(screen.getByText(/Calendar preview only — 1 event would add a guest. Nobody was invited./)).toBeInTheDocument()
+    expect(calls.some((call) => call.startsWith('POST') && call.includes('/api/hub/calendar-guests'))).toBe(true)
+    expect(calls.some((call) => call.includes('/api/google'))).toBe(false)
+  })
+
   it('opens the add-task and hold-slot forms', async () => {
     mockHub()
     const user = userEvent.setup()

@@ -37,7 +37,7 @@ Demo mode used to block Google even when a token was set. That is fixed. Live sy
 4. Set `GOOGLE_CLIENT_ID` + `GOOGLE_CLIENT_SECRET` on Netlify (and optionally `GOOGLE_REDIRECT_URI`)  
 5. Open **Hub** → **Connect Google Calendar**
 
-Tokens refresh automatically and are stored in Netlify Blobs. The old Settings page toggle only flipped a local demo switch — it never talked to Google.
+Tokens refresh automatically and are stored in Netlify Blobs. Connect requests `https://www.googleapis.com/auth/calendar` (full calendar, including event writes) and `https://www.googleapis.com/auth/calendar.events`. A token that only has `calendar.readonly` or `calendar.events.readonly` cannot add guests. The Hub shows **Reconnect Google** when the saved grant is missing a write scope. A token that already includes the full `calendar` scope does not need a reconnect.
 
 ## AI model (Grok)
 
@@ -204,6 +204,27 @@ Subscribe to `whatsapp.message.received` and `whatsapp.message.sent`. `whatsapp.
 
 Open tasks on the Hub are Joseph’s and Frank’s (`FUB_LO_USER_ID`, `FUB_LOA_USER_ID`), incomplete, due in a recent window, with person names filled from Follow Up Boss. Set `FUB_LO_USER_ID=1`, `FUB_LOA_USER_ID=16`, and `FOLLOW_UP_BOSS_USER_ID=1` for this account. The first live Hub load (or the 5-minute inbox sweep) deletes sample rows previously stored in Netlify Blobs.
 
+## Calendar guests
+
+Off until `CALENDAR_AUTO_GUEST_ENABLED=true`. Every 15 minutes LoanPilot looks at Joseph’s calendar (`Joseph@teamcordeira.com`, `GOOGLE_CALENDAR_ID` or `primary`) from now through `CALENDAR_AUTO_GUEST_DAYS` (default 60), including events already on the calendar. Frankie Cordeira (`fcordeirajr@cliffcomortgage.com`, FUB user 16) is added with `events.patch` when she is not already a guest. Existing attendees and their responses stay on the event. Nothing else on the event changes. A second run sees her on the attendee list and skips the event.
+
+Included: Google appointment-page bookings titled like `Joe & Emily Cordeira (Client Name)` or whose description starts with `Booked by`, and timed events that name a client and mention call, appt, appointment, consult, refi, purchase, preapproval, or HELOC, or whose title contains a Follow Up Boss lead’s full name. Excluded: all-day events, birthdays, and internal or personal titles such as `Galligan Group / Team Cordeira Weekly Meetings`, `Week Setup`, `Joe Cordeira + Alicia Meeting`, `Heloc steps`, and `Eric / Joe`. Unclear titles are left alone. `CALENDAR_AUTO_GUEST_INCLUDE` and `CALENDAR_AUTO_GUEST_EXCLUDE` are comma-separated.
+
+**Notifications.** The Calendar API’s `sendUpdates` is `all`, `externalOnly`, or `none`. There is no “new guest only” value. Google once fixed a bug so `all` would email only new guests ([issue 323087133](https://issuetracker.google.com/issues/323087133)), and later reports said existing guests still got “this event has been updated.” The default is `CALENDAR_AUTO_GUEST_NOTIFY=ics`: patch with `sendUpdates=none`, then email Frankie an `.ics` invite through `GMAIL_ACCESS_TOKEN` when that token is set. Clients are not re-notified. Gmail is a separate token, not part of the Calendar OAuth scopes, so this path does not ask Joseph to grant Gmail again. If Gmail is not connected she is still added and the Hub says no email went out. Set `CALENDAR_AUTO_GUEST_NOTIFY=all` (or `externalOnly`) to let Google send the invitation instead; existing guests, including the client, may get an update.
+
+Hub → Preview calendar guests lists what would change and does not patch. `POST /api/hub/calendar-guests` is preview-only.
+
+| Env | Default | Purpose |
+|---|---|---|
+| `CALENDAR_AUTO_GUEST_ENABLED` | `false` | Master switch |
+| `CALENDAR_AUTO_GUEST_DRY_RUN` | `false` | Classify and log only |
+| `CALENDAR_AUTO_GUEST_EMAILS` | `fcordeirajr@cliffcomortgage.com` | Guests to add |
+| `CALENDAR_AUTO_GUEST_DAYS` | `60` | How far ahead to look |
+| `CALENDAR_AUTO_GUEST_NOTIFY` | `ics` | `ics`, `all`, or `externalOnly` |
+| `CALENDAR_AUTO_GUEST_INCLUDE` | call, appt, appointment, consult, refi, purchase, preapproval, pre-approval, heloc | Title keywords |
+| `CALENDAR_AUTO_GUEST_EXCLUDE` | birthday, galligan group, team cordeira weekly, week setup, joe cordeira + alicia, heloc steps, eric / joe | Phrases that block an add |
+| `GMAIL_ACCESS_TOKEN` | | Sends the `.ics` when notify is `ics` |
+
 ## Lead heat (Joseph and Frank)
 
 Scores run in demo mode with no Follow Up Boss key (sample leads on the Hub). With a key, the hourly `score-leads` function and the FUB webhook rescore open people.
@@ -281,6 +302,7 @@ curl -s -H "Authorization: Bearer demo-key" -H "Content-Type: application/json" 
 | `netlify/functions/process-inbox.ts` | Cron every 5 minutes |
 | `netlify/functions/score-leads.ts` | Cron hourly — rescore FUB leads |
 | `netlify/functions/loa-reminders.ts` | Cron every 15 minutes — LOA/LO miss reminders (off until enabled) |
+| `netlify/functions/calendar-guest.ts` | Cron every 15 minutes — add Frankie to client appointments (off until enabled) |
 | `netlify/functions/whatsapp-autoreply.ts` | Cron every minute — WhatsApp away reply (off until enabled) |
 | `netlify/functions/whatsapp-webhook.ts` | Kapso webhook `/api/webhooks/whatsapp` |
 | `netlify/functions/sms-webhook.ts` | Quo inbound SMS |

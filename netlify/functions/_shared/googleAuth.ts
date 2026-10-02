@@ -157,13 +157,29 @@ export function googleRedirectUri(reqUrl?: string): string {
   return `${site.replace(/\/$/, '')}/api/google/callback`
 }
 
+/**
+ * `calendar` already includes event writes. `calendar.events` is listed as well so a
+ * token that only has the narrower write scope still counts. Readonly scopes do not.
+ */
+export const GOOGLE_CALENDAR_WRITE_SCOPES = [
+  'https://www.googleapis.com/auth/calendar',
+  'https://www.googleapis.com/auth/calendar.events',
+]
+
 export const GOOGLE_SCOPES = [
   'openid',
   'email',
   'profile',
-  'https://www.googleapis.com/auth/calendar',
+  ...GOOGLE_CALENDAR_WRITE_SCOPES,
   'https://www.googleapis.com/auth/tasks',
 ].join(' ')
+
+/** True when the granted scope string can patch events. Readonly grants return false. */
+export function calendarCanWriteEvents(scope: string | undefined): boolean {
+  if (!scope) return false
+  const granted = new Set(scope.split(/\s+/).filter(Boolean))
+  return GOOGLE_CALENDAR_WRITE_SCOPES.some((item) => granted.has(item))
+}
 
 export function buildGoogleAuthUrl(state: string, reqUrl?: string): string {
   const params = new URLSearchParams({
@@ -268,6 +284,9 @@ export async function getGoogleConnectionStatus(): Promise<{
   source: 'oauth' | 'env' | null
   expiresAt?: number
   connectedAt?: string
+  scope?: string
+  /** OAuth is connected, but the saved grant cannot patch events. */
+  needsCalendarWrite: boolean
 }> {
   const configured = googleOAuthConfigured()
   const stored = await loadGoogleTokens()
@@ -279,10 +298,12 @@ export async function getGoogleConnectionStatus(): Promise<{
       source: 'oauth',
       expiresAt: stored.expiresAt,
       connectedAt: stored.connectedAt,
+      scope: stored.scope,
+      needsCalendarWrite: !calendarCanWriteEvents(stored.scope),
     }
   }
   if (env('GOOGLE_CALENDAR_ACCESS_TOKEN') || env('GOOGLE_TASKS_ACCESS_TOKEN')) {
-    return { configured, connected: true, source: 'env' }
+    return { configured, connected: true, source: 'env', needsCalendarWrite: false }
   }
-  return { configured, connected: false, source: null }
+  return { configured, connected: false, source: null, needsCalendarWrite: false }
 }
