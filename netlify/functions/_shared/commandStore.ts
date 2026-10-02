@@ -9,6 +9,8 @@ export type CommandLog = {
   summary: string
   status: 'preview' | 'done' | 'denied' | 'error'
   dryRun: boolean
+  /** Hub chat or the Quo SMS webhook. Older rows without this field are SMS. */
+  source?: 'hub' | 'sms'
 }
 
 export type CommandPending = {
@@ -57,7 +59,7 @@ export async function loadCommandState(): Promise<CommandState> {
         memory = {
           seen: raw.seen.slice(0, 300),
           pending: Array.isArray(raw.pending) ? raw.pending.slice(0, 40) : [],
-          recent: raw.recent.slice(0, 40),
+          recent: raw.recent.slice(0, 80),
           busyUntil: raw.busyUntil,
         }
         return memory
@@ -78,7 +80,7 @@ export async function saveCommandState(next: CommandState) {
   memory = {
     seen: next.seen.slice(0, 300),
     pending: next.pending.slice(0, 40),
-    recent: next.recent.slice(0, 40),
+    recent: next.recent.slice(0, 80),
     busyUntil: next.busyUntil,
   }
   const blob = store()

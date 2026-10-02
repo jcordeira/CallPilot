@@ -378,3 +378,63 @@ export function deleteHubCalendarEvent(id: string, sendUpdates: 'all' | 'none') 
 export function searchHubPeople(query: string) {
   return hubRequest<{ people: { id: number; name: string; email?: string }[] }>(`people?q=${encodeURIComponent(query)}`)
 }
+
+export type CommandThreadItem = {
+  id: string
+  at: string
+  actor: string
+  role: 'owner' | 'team'
+  source: 'hub' | 'sms'
+  command: string
+  reply: string
+  status: 'preview' | 'done' | 'denied' | 'error'
+  dryRun: boolean
+}
+
+export type CommandPendingPrompt = {
+  id: string
+  kind: 'confirm' | 'choice' | 'approval'
+  summary: string
+  choices: { n: number; label: string }[]
+}
+
+export type CommandChip = { label: string; text: string; send: boolean }
+
+export type CommandCenter = {
+  enabled: boolean
+  dryRun: boolean
+  ownerName: string
+  team: { name: string; phone: string; title?: string }[]
+  thread: CommandThreadItem[]
+  pending: CommandPendingPrompt | null
+  chips: CommandChip[]
+  reply?: string
+  error?: string
+}
+
+export type QuoHistoryMessage = { id: string; at: string; direction: 'in' | 'out'; text: string }
+
+export type MessageLead = { id: number; name: string; phone?: string; stage?: string }
+
+export function fetchCommandCenter() {
+  return hubRequest<CommandCenter>('command-center')
+}
+
+export function postCommandCenter(input: { text?: string; choice?: string }) {
+  return hubRequest<CommandCenter>('command-center', { method: 'POST', body: JSON.stringify(input) })
+}
+
+export function searchMessageLeads(query: string) {
+  return hubRequest<{ leads: MessageLead[] }>(`messages?q=${encodeURIComponent(query)}`)
+}
+
+export function fetchContactMessages(phone: string) {
+  return hubRequest<{ messages: QuoHistoryMessage[]; quoError?: string }>(`messages?phone=${encodeURIComponent(phone)}`)
+}
+
+export function sendHubText(input: { to: string; name: string; content: string; kind: 'team' | 'lead'; confirmed?: boolean }) {
+  return hubRequest<{ sent: boolean; id?: string; needsConfirm?: boolean; preview?: string; error?: string }>('messages', {
+    method: 'POST',
+    body: JSON.stringify(input),
+  })
+}

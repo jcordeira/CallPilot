@@ -65,6 +65,6 @@ export default async (req: Request, context: { next: () => Promise<Response> }) 
 }
 
 export const config = {
-  path: ['/hub', '/hub/*', '/calendar', '/calendar/*', '/assistant', '/assistant/*', '/api/*'],
+  path: ['/hub', '/hub/*', '/command', '/command/*', '/calendar', '/calendar/*', '/assistant', '/assistant/*', '/api/*'],
   excludedPath: ['/api/webhooks/*', '/api/google/callback', '/api/auth', '/api/auth/*'],
 }

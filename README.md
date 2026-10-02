@@ -230,6 +230,8 @@ Hub → Preview calendar guests lists what would change and does not patch or em
 
 Joseph and the team text the Quo Sales line and LoanPilot acts on it. Off until `COMMAND_MODE_ENABLED=true`. `COMMAND_MODE_DRY_RUN` defaults to true: LoanPilot still texts the sender, prefixed `[preview]`, and does not book, reassign, or text anyone else.
 
+The Hub **Command Center** (`/command`) uses that same engine for Joseph. Confirmations are Confirm and Cancel buttons, and ambiguous leads are numbered choices. The thread mixes Hub commands with SMS commands from the audit log. Messages on the right send a Quo text to a teammate, or to a Follow Up Boss lead after an extra Confirm click, and list that contact’s recent Quo messages. The thread and sent texts are stored in Netlify Blobs.
+
 Only these cells are commands. Every other sender, including clients on the same line, is ignored with no reply. The team comes from `TEAM_MEMBERS` (JSON). If that is empty, `TEAM_MEMBER_1_NAME` / `_PHONE` / `_EMAIL` / `_USER_ID` / `_TITLE` (through `_20_`) is used. If neither is set, the FUB LOA phones (`FUB_LOA_PHONE_<id>`) are the team.
 
 | Phone | Who | Role |
