@@ -5,6 +5,7 @@ import { requireHubSession } from './_shared/hubSession'
 import { listLeadHeat } from './_shared/leadHeat'
 import { getReminderPanel, runLoaReminders } from './_shared/loaReminders'
 import { getCommandPanel } from './_shared/commandMode'
+import { probeCommandGateway } from './_shared/commandParse'
 import { getWhatsappPanel, runWhatsappAutoreply } from './_shared/whatsappAutoreply'
 import { getCalendarGuestPanel, runCalendarGuest } from './_shared/calendarGuest'
 import { errorResponse, jsonFail, jsonOk, readJson } from './_shared/http'
@@ -82,6 +83,7 @@ export default async (req: Request, context: Context) => {
       if (req.method === 'GET') return jsonOk(await getCalendarGuestPanel())
       if (req.method !== 'POST') return jsonFail('Method not allowed', 405)
       const text = await req.text()
+      let live = false
       if (text.trim()) {
         let body: unknown
         try {
@@ -90,8 +92,13 @@ export default async (req: Request, context: Context) => {
           return jsonFail('Invalid JSON body', 400)
         }
         if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonFail('JSON object body is required', 400)
+        live = (body as { live?: unknown }).live === true
       }
-      return jsonOk(await runCalendarGuest({ trigger: 'hub', dryRun: true }))
+      return jsonOk(await runCalendarGuest({ trigger: live ? 'hub-live' : 'hub', dryRun: !live }))
+    }
+    if (action === 'command-check') {
+      if (req.method !== 'GET') return jsonFail('Method not allowed', 405)
+      return jsonOk(await probeCommandGateway())
     }
     if (action === 'commands') {
       if (req.method !== 'GET') return jsonFail('Method not allowed', 405)

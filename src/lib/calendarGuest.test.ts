@@ -171,6 +171,76 @@ describe('calendar guest updates', () => {
     expect(fetch).not.toHaveBeenCalled()
   })
 
+  it('emails an invite when Frankie is already a guest and none was recorded', async () => {
+    const client = event({
+      id: 'evt-backfill',
+      summary: 'Siddick Chowdhury call refi',
+      attendees: [
+        { email: 'client@example.com', responseStatus: 'accepted' },
+        { email: frankie, responseStatus: 'needsAction' },
+      ],
+    })
+    const invites: string[] = []
+    const patch = vi.fn()
+    const first = await runCalendarGuest({
+      events: [client],
+      patch,
+      sendInvite: async (input) => {
+        invites.push(input.to)
+      },
+    })
+    expect(patch).not.toHaveBeenCalled()
+    expect(invites).toEqual([frankie])
+    expect(first.invitesSent).toBe(1)
+    expect(first.qualifyingWithGuest).toBe(1)
+    expect(first.previews[0]?.action).toBe('invite')
+    expect(first.added).toBe(0)
+
+    const second = await runCalendarGuest({
+      events: [client],
+      patch: async () => {
+        throw new Error('should not patch')
+      },
+      sendInvite: async () => {
+        throw new Error('should not email')
+      },
+    })
+    expect(second.invitesSent).toBe(0)
+    expect(second.previews[0]?.action).toBe('already')
+  })
+
+  it('does not record an invite when Gmail rejects it', async () => {
+    const client = event({
+      id: 'evt-gmail-fail',
+      summary: 'Siddick Chowdhury call refi',
+      attendees: [{ email: 'client@example.com' }, { email: frankie }],
+    })
+    const first = await runCalendarGuest({
+      events: [client],
+      patch: async () => {
+        throw new Error('should not patch')
+      },
+      sendInvite: async () => {
+        throw new Error('Gmail invite failed: 403 Gmail API has not been used in project data-region-510401-g4 before or it is disabled. Enable it by visiting https://console.developers.google.com/apis/api/gmail.googleapis.com/overview?project=data-region-510401-g4')
+      },
+    })
+    expect(first.invitesSent).toBe(0)
+    expect(first.gmailErrors[0]).toContain('gmail.googleapis.com/overview?project=data-region-510401-g4')
+
+    const invites: string[] = []
+    const second = await runCalendarGuest({
+      events: [client],
+      patch: async () => {
+        throw new Error('should not patch')
+      },
+      sendInvite: async (input) => {
+        invites.push(input.to)
+      },
+    })
+    expect(invites).toEqual([frankie])
+    expect(second.invitesSent).toBe(1)
+  })
+
   it('uses Google notifications only when notify is all', async () => {
     process.env.CALENDAR_AUTO_GUEST_NOTIFY = 'all'
     expect(calendarGuestSettings().notify).toBe('all')

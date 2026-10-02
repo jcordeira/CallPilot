@@ -248,7 +248,7 @@ export type CalendarGuestPreview = {
   summary: string
   startIso: string
   htmlLink?: string
-  action: 'add' | 'already' | 'skip'
+  action: 'add' | 'invite' | 'already' | 'skip'
   reason: string
 }
 
@@ -269,6 +269,11 @@ export type CalendarGuestRun = {
   dryRun: boolean
   previews: CalendarGuestPreview[]
   added: number
+  invitesSent?: number
+  withGuest?: number
+  qualifyingWithGuest?: number
+  invitesRecorded?: number
+  gmailErrors?: string[]
 }
 
 export function fetchCalendarGuestPanel() {

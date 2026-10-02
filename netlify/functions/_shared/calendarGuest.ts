@@ -68,7 +68,7 @@ export type GuestPreview = {
   summary: string
   startIso: string
   htmlLink?: string
-  action: 'add' | 'already' | 'skip'
+  action: 'add' | 'invite' | 'already' | 'skip'
   reason: string
 }
 
@@ -77,13 +77,24 @@ export type GuestLog = {
   at: string
   eventId: string
   summary: string
-  status: 'added' | 'preview' | 'already' | 'skipped' | 'error'
+  status: 'added' | 'invited' | 'preview' | 'already' | 'skipped' | 'error'
   detail: string
 }
 
-type GuestState = { recent: GuestLog[] }
+type GuestState = { recent: GuestLog[]; invites: Record<string, string> }
 
-let memory: GuestState = { recent: [] }
+let memory: GuestState = { recent: [], invites: {} }
+
+function inviteKey(eventId: string, email: string): string {
+  return `${eventId} ${email.trim().toLowerCase()}`
+}
+
+function capInvites(invites: Record<string, string>): Record<string, string> {
+  const entries = Object.entries(invites).filter((entry) => entry[0] && entry[1])
+  if (entries.length <= 800) return Object.fromEntries(entries)
+  entries.sort((a, b) => (a[1] < b[1] ? -1 : 1))
+  return Object.fromEntries(entries.slice(entries.length - 800))
+}
 
 function store() {
   try {
@@ -94,7 +105,7 @@ function store() {
 }
 
 export async function resetCalendarGuestStateForTests() {
-  memory = { recent: [] }
+  memory = { recent: [], invites: {} }
   const blob = store()
   if (!blob) return
   try {
@@ -104,24 +115,33 @@ export async function resetCalendarGuestStateForTests() {
   }
 }
 
+function invitesFrom(raw: unknown): Record<string, string> {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw)) return {}
+  const invites: Record<string, string> = {}
+  for (const [key, value] of Object.entries(raw)) {
+    if (typeof value === 'string' && value) invites[key] = value
+  }
+  return invites
+}
+
 async function loadState(): Promise<GuestState> {
   const blob = store()
   if (blob) {
     try {
       const raw = (await blob.get('state', { type: 'json' })) as GuestState | null
       if (raw && Array.isArray(raw.recent)) {
-        memory = { recent: raw.recent.slice(0, 40) }
-        return memory
+        memory = { recent: raw.recent.slice(0, 40), invites: invitesFrom(raw.invites) }
+        return { recent: [...memory.recent], invites: { ...memory.invites } }
       }
     } catch {
       /* memory */
     }
   }
-  return { recent: [...memory.recent] }
+  return { recent: [...memory.recent], invites: { ...memory.invites } }
 }
 
 async function saveState(next: GuestState) {
-  memory = { recent: next.recent.slice(0, 40) }
+  memory = { recent: next.recent.slice(0, 40), invites: capInvites(next.invites) }
   const blob = store()
   if (!blob) return
   try {
@@ -421,7 +441,17 @@ async function defaultSendInvite(input: { to: string; subject: string; ics: stri
     headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
     body: JSON.stringify({ raw }),
   })
-  if (!res.ok) throw new Error(`Gmail invite failed: ${res.status}`)
+  if (!res.ok) {
+    const body = (await res.text()).slice(0, 800)
+    let message = body
+    try {
+      const parsed = JSON.parse(body) as { error?: { message?: string } }
+      if (parsed.error?.message) message = parsed.error.message
+    } catch {
+      /* plain text */
+    }
+    throw new Error(`Gmail invite failed: ${res.status} ${message}`.slice(0, 700))
+  }
 }
 
 export async function calendarWriteMissing(): Promise<boolean> {
@@ -469,11 +499,27 @@ export async function runCalendarGuest(options?: {
   skipped?: 'disabled' | 'demo' | 'scope'
   previews: GuestPreview[]
   added: number
+  invitesSent: number
+  withGuest: number
+  qualifyingWithGuest: number
+  invitesRecorded: number
+  gmailErrors: string[]
 }> {
   const now = options?.now ?? new Date()
   const settings = calendarGuestSettings()
   const dryRun = options?.dryRun === true || (settings.enabled && settings.dryRun)
-  const base = { ok: true as const, enabled: settings.enabled, dryRun, previews: [] as GuestPreview[], added: 0 }
+  const base = {
+    ok: true as const,
+    enabled: settings.enabled,
+    dryRun,
+    previews: [] as GuestPreview[],
+    added: 0,
+    invitesSent: 0,
+    withGuest: 0,
+    qualifyingWithGuest: 0,
+    invitesRecorded: 0,
+    gmailErrors: [] as string[],
+  }
   if (!settings.enabled && options?.dryRun !== true) return { ...base, skipped: 'disabled' }
   if (!options?.events && isDemoMode()) return { ...base, skipped: 'demo' }
   if (!dryRun && !options?.patch && (await calendarWriteMissing())) return { ...base, skipped: 'scope' }
@@ -483,18 +529,93 @@ export async function runCalendarGuest(options?: {
   const patch = options?.patch ?? defaultPatch
   const sendInvite = options?.sendInvite ?? defaultSendInvite
   const organizer = (await loadGoogleTokens())?.email
+  const canEmail = Boolean(options?.sendInvite) || ((await gmailInviteReady()) && !isDemoMode())
+  const state = await loadState()
+  const invites = { ...state.invites }
   const previews: GuestPreview[] = []
   const logs: GuestLog[] = []
+  const gmailErrors: string[] = []
   let added = 0
+  let invitesSent = 0
+  let withGuest = 0
+  let qualifyingWithGuest = 0
+
+  const onEvent = (event: GuestEvent, email: string) =>
+    (event.attendees ?? []).some((attendee) => attendee.email.trim().toLowerCase() === email.toLowerCase())
+  const recorded = (eventId: string, email: string) => Boolean(invites[inviteKey(eventId, email)])
+  const pendingInvites = (event: GuestEvent) =>
+    settings.notify === 'ics' ? settings.emails.filter((email) => onEvent(event, email) && !recorded(event.id, email)) : []
+
+  const sendOne = async (event: GuestEvent, email: string) => {
+    await sendInvite({
+      to: email,
+      subject: `Invitation: ${event.summary}`,
+      ics: guestInviteIcs(event, email, organizer),
+    })
+    invites[inviteKey(event.id, email)] = now.toISOString()
+    invitesSent += 1
+  }
+
+  const noteGmailError = (event: GuestEvent, err: unknown) => {
+    const message = err instanceof Error && err.message ? err.message : 'Gmail invite failed'
+    if (!gmailErrors.includes(message)) gmailErrors.push(message)
+    logs.push({
+      id: `${now.getTime()}-err-${event.id}`,
+      at: now.toISOString(),
+      eventId: event.id,
+      summary: event.summary,
+      status: 'error',
+      detail: message,
+    })
+  }
 
   for (const event of events) {
+    if (settings.emails.some((email) => onEvent(event, email))) withGuest += 1
     const decision = classifyClientAppointment(event, leadNames)
     if (!decision.include) {
       previews.push({ id: event.id, summary: event.summary, startIso: event.startIso, htmlLink: event.htmlLink, action: 'skip', reason: decision.reason })
       continue
     }
-    if (guestAlreadyPresent(event, settings.emails)) {
+    if (guestAlreadyPresent(event, settings.emails)) qualifyingWithGuest += 1
+    const waiting = pendingInvites(event)
+    if (guestAlreadyPresent(event, settings.emails) && waiting.length === 0) {
       previews.push({ id: event.id, summary: event.summary, startIso: event.startIso, htmlLink: event.htmlLink, action: 'already', reason: 'guest already on the event' })
+      continue
+    }
+    if (guestAlreadyPresent(event, settings.emails) && waiting.length) {
+      previews.push({
+        id: event.id,
+        summary: event.summary,
+        startIso: event.startIso,
+        htmlLink: event.htmlLink,
+        action: 'invite',
+        reason: 'guest already on the event; invite not sent yet',
+      })
+      if (dryRun) continue
+      if (!canEmail) {
+        logs.push({
+          id: `${now.getTime()}-wait-${event.id}`,
+          at: now.toISOString(),
+          eventId: event.id,
+          summary: event.summary,
+          status: 'skipped',
+          detail: 'invite not sent (Gmail is not connected)',
+        })
+        continue
+      }
+      try {
+        for (const email of waiting) await sendOne(event, email)
+        logs.push({
+          id: `${now.getTime()}-invite-${event.id}`,
+          at: now.toISOString(),
+          eventId: event.id,
+          summary: event.summary,
+          status: 'invited',
+          detail: 'invite emailed; other guests were not changed',
+        })
+      } catch (err) {
+        noteGmailError(event, err)
+      }
       continue
     }
     previews.push({ id: event.id, summary: event.summary, startIso: event.startIso, htmlLink: event.htmlLink, action: 'add', reason: decision.reason })
@@ -505,19 +626,11 @@ export async function runCalendarGuest(options?: {
       await patch({ event, attendees, sendUpdates })
       let detail = decision.reason
       if (settings.notify === 'ics') {
-        const fresh = settings.emails.filter(
-          (email) => !(event.attendees ?? []).some((attendee) => attendee.email.trim().toLowerCase() === email.toLowerCase()),
-        )
-        if (fresh.length && (options?.sendInvite || ((await gmailInviteReady()) && !isDemoMode()))) {
-          for (const email of fresh) {
-            await sendInvite({
-              to: email,
-              subject: `Invitation: ${event.summary}`,
-              ics: guestInviteIcs(event, email, organizer),
-            })
-          }
+        const fresh = settings.emails.filter((email) => !recorded(event.id, email))
+        if (fresh.length && canEmail) {
+          for (const email of fresh) await sendOne(event, email)
           detail = `${decision.reason}; invite emailed`
-        } else {
+        } else if (fresh.length) {
           detail = `${decision.reason}; added without an email (Gmail is not connected)`
         }
       }
@@ -532,6 +645,7 @@ export async function runCalendarGuest(options?: {
       })
     } catch (err) {
       const message = err instanceof Error && err.message ? err.message : 'Calendar update failed'
+      if (message.startsWith('Gmail invite failed') && !gmailErrors.includes(message)) gmailErrors.push(message)
       logs.push({
         id: `${now.getTime()}-err-${event.id}`,
         at: now.toISOString(),
@@ -543,11 +657,19 @@ export async function runCalendarGuest(options?: {
     }
   }
 
-  if (logs.length) {
-    const state = await loadState()
-    await saveState({ recent: [...logs.reverse(), ...state.recent].slice(0, 40) })
+  if (logs.length || invitesSent) {
+    await saveState({ recent: [...logs.reverse(), ...state.recent].slice(0, 40), invites })
   }
-  const actionable = previews.filter((item) => item.action === 'add').length
-  console.log(`[calendar-guest] ${dryRun ? 'dry-run' : 'run'} trigger=${options?.trigger ?? 'schedule'} add=${actionable} wrote=${added}`)
-  return { ...base, previews: previews.filter((item) => item.action !== 'skip'), added }
+  const actionable = previews.filter((item) => item.action === 'add' || item.action === 'invite').length
+  console.log(`[calendar-guest] ${dryRun ? 'dry-run' : 'run'} trigger=${options?.trigger ?? 'schedule'} add=${actionable} wrote=${added} invites=${invitesSent} withGuest=${withGuest}`)
+  return {
+    ...base,
+    previews: previews.filter((item) => item.action !== 'skip'),
+    added,
+    invitesSent,
+    withGuest,
+    qualifyingWithGuest,
+    invitesRecorded: Object.keys(invites).length,
+    gmailErrors,
+  }
 }

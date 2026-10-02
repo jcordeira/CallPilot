@@ -291,6 +291,26 @@ export async function completeWithGateway(text: string, role: CommandRole): Prom
   return { name: call.function.name, arguments: args }
 }
 
+/** One short completion so a signed-in Hub session can confirm the gateway answers. */
+export async function probeCommandGateway(): Promise<{ ok: boolean; model: string; reply?: string; error?: string }> {
+  const model = commandModel()
+  const client = commandClient()
+  if (!client) return { ok: false, model, error: 'Command mode needs the Netlify AI Gateway or OPENAI_API_KEY' }
+  try {
+    const completion = await client.chat.completions.create({
+      model,
+      temperature: 0,
+      max_tokens: 8,
+      messages: [{ role: 'user', content: 'Reply with the single word ok.' }],
+    })
+    const reply = (completion.choices[0]?.message?.content ?? '').trim().slice(0, 80)
+    return reply ? { ok: true, model, reply } : { ok: false, model, error: 'The gateway returned an empty reply' }
+  } catch (err) {
+    const message = err instanceof Error && err.message ? err.message : 'gateway failed'
+    return { ok: false, model, error: message.slice(0, 400) }
+  }
+}
+
 export async function parseCommand(text: string, role: CommandRole, complete: ToolCompletion = completeWithGateway): Promise<CommandCall> {
   const result = await complete(text, role)
   return commandFromToolCall(result.name, result.arguments, role)

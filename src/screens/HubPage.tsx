@@ -700,6 +700,38 @@ export function HubPage() {
                   ))}
               </ul>
             )}
+            {guestPreview && guestPreview.some((item) => item.action === 'invite') && (
+              <>
+                <h3 className="hub__subhead">Would email an invite</h3>
+                <ul className="hub__list">
+                  {guestPreview
+                    .filter((item) => item.action === 'invite')
+                    .slice(0, 8)
+                    .map((item) => (
+                      <li key={item.id} className="hub__row">
+                        <div className="hub__item-title">{item.summary}</div>
+                        <p className="hub__item-meta">{item.reason}</p>
+                      </li>
+                    ))}
+                </ul>
+              </>
+            )}
+            {guests.recent.length > 0 && (
+              <>
+                <h3 className="hub__subhead">Recent</h3>
+                <ul className="hub__list">
+                  {guests.recent.slice(0, 6).map((item) => (
+                    <li key={item.id} className="hub__row">
+                      <div className="hub__row-top">
+                        <span className={`pill pill--${item.status}`}>{item.status}</span>
+                      </div>
+                      <div className="hub__item-title">{item.summary}</div>
+                      <p className="hub__item-meta">{item.detail}</p>
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
             <div className="hub__form-actions hub__reminder-actions">
               <button type="button" className="btn" disabled={busy} onClick={() => void onPreviewGuests()}>
                 {busy ? 'Working…' : 'Preview calendar guests'}
