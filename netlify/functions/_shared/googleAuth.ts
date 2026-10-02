@@ -166,12 +166,16 @@ export const GOOGLE_CALENDAR_WRITE_SCOPES = [
   'https://www.googleapis.com/auth/calendar.events',
 ]
 
+/** Send-only. Used to email Frankie an .ics without notifying other guests. */
+export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send'
+
 export const GOOGLE_SCOPES = [
   'openid',
   'email',
   'profile',
   ...GOOGLE_CALENDAR_WRITE_SCOPES,
   'https://www.googleapis.com/auth/tasks',
+  GMAIL_SEND_SCOPE,
 ].join(' ')
 
 /** True when the granted scope string can patch events. Readonly grants return false. */
@@ -192,6 +196,12 @@ export function calendarCanReadFreeBusy(scope: string | undefined): boolean {
   if (!scope) return false
   const granted = new Set(scope.split(/\s+/).filter(Boolean))
   return CALENDAR_FREEBUSY.some((item) => granted.has(item))
+}
+
+/** True when this OAuth grant can send mail as the connected user. */
+export function gmailCanSend(scope: string | undefined): boolean {
+  if (!scope) return false
+  return scope.split(/\s+/).filter(Boolean).includes(GMAIL_SEND_SCOPE)
 }
 
 export function buildGoogleAuthUrl(state: string, reqUrl?: string): string {
@@ -300,6 +310,8 @@ export async function getGoogleConnectionStatus(): Promise<{
   scope?: string
   /** OAuth is connected, but the saved grant cannot patch events. */
   needsCalendarWrite: boolean
+  /** OAuth is connected, but the saved grant cannot send Gmail. */
+  needsGmailSend: boolean
   canWrite: boolean
   reconnect: boolean
 }> {
@@ -307,6 +319,7 @@ export async function getGoogleConnectionStatus(): Promise<{
   const stored = await loadGoogleTokens()
   if (stored?.accessToken) {
     const canWrite = calendarCanWriteEvents(stored.scope)
+    const needsGmailSend = !gmailCanSend(stored.scope)
     return {
       configured,
       connected: true,
@@ -317,11 +330,12 @@ export async function getGoogleConnectionStatus(): Promise<{
       scope: stored.scope,
       canWrite,
       needsCalendarWrite: !canWrite,
-      reconnect: !canWrite,
+      needsGmailSend,
+      reconnect: !canWrite || needsGmailSend,
     }
   }
   if (env('GOOGLE_CALENDAR_ACCESS_TOKEN') || env('GOOGLE_TASKS_ACCESS_TOKEN')) {
-    return { configured, connected: true, source: 'env', canWrite: true, needsCalendarWrite: false, reconnect: false }
+    return { configured, connected: true, source: 'env', canWrite: true, needsCalendarWrite: false, needsGmailSend: false, reconnect: false }
   }
-  return { configured, connected: false, source: null, canWrite: false, needsCalendarWrite: false, reconnect: false }
+  return { configured, connected: false, source: null, canWrite: false, needsCalendarWrite: false, needsGmailSend: false, reconnect: false }
 }

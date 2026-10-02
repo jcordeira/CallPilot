@@ -294,7 +294,9 @@ export function CalendarPage() {
       </header>
       {data?.google.reconnect && (
         <p className="cal__banner">
-          Google is connected{data.google.email ? ` as ${data.google.email}` : ''}, but the saved permission cannot edit events.
+          {data.google.needsGmailSend && data.google.canWrite
+            ? 'Reconnect Google so Frankie gets a calendar invite. Clients are not emailed.'
+            : `Google is connected${data.google.email ? ` as ${data.google.email}` : ''}, but the saved permission cannot edit events.`}
           <a className="btn btn--primary" href={googleConnectUrl()}>Reconnect Google</a>
         </p>
       )}

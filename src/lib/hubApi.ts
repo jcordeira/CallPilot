@@ -49,6 +49,7 @@ export type GoogleConnection = {
   source: 'oauth' | 'env' | null
   needsCalendarWrite?: boolean
   canWrite?: boolean
+  needsGmailSend?: boolean
   reconnect?: boolean
 }
 

@@ -659,6 +659,11 @@ export function HubPage() {
             Google is connected without Calendar write access. Reconnect Google so LoanPilot can add guests to events.
           </p>
         )}
+        {summary?.google?.needsGmailSend && !summary.google.needsCalendarWrite && (
+          <p className="hub__error" role="status">
+            Reconnect Google so Frankie gets a calendar invite. Clients are not emailed.
+          </p>
+        )}
         {guests && (
           <section className="card hub__card" aria-labelledby="hub-guests">
             <div className="hub__card-head">
@@ -674,7 +679,7 @@ export function HubPage() {
               {guests.notify === 'ics'
                 ? guests.gmailCanInvite
                   ? 'New guests get an email invite. Existing guests are not notified.'
-                  : 'Guests are added quietly unless Gmail is connected or notify is set to all.'
+                  : 'Guests are added quietly. Reconnect Google to email Frankie an invite. Clients are not emailed.'
                 : 'Google notifies guests on each update.'}
             </p>
             <h3 className="hub__subhead">Would add</h3>

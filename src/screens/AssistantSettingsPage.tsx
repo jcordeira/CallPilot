@@ -300,7 +300,7 @@ export function AssistantSettingsPage() {
         </p>
         <ol className="assistant-set__keys" style={{ listStyle: 'decimal' }}>
           <li>In Google Cloud Console, create an OAuth <strong>Web</strong> client</li>
-          <li>Enable <strong>Google Calendar API</strong> and <strong>Google Tasks API</strong></li>
+          <li>Enable <strong>Google Calendar API</strong>, <strong>Google Tasks API</strong>, and <strong>Gmail API</strong></li>
           <li>
             Add authorized redirect URI:{' '}
             <span className="mono">https://YOUR_DOMAIN/api/google/callback</span>
@@ -333,7 +333,7 @@ export function AssistantSettingsPage() {
         <ul className="assistant-set__keys mono">
           <li>FOLLOW_UP_BOSS_API_KEY</li>
           <li>FOLLOW_UP_BOSS_USER_ID</li>
-          <li>GMAIL_ACCESS_TOKEN</li>
+          <li>GMAIL_ACCESS_TOKEN (optional; Frankie invites use Connect Google + gmail.send)</li>
           <li>GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REDIRECT_URI</li>
           <li>GOOGLE_CALENDAR_ID=primary · GOOGLE_TASKS_LIST_ID=@default</li>
           <li>LOANPILOT_API_KEY (public /api/v1; demo-key while ASSISTANT_DEMO_MODE=true)</li>

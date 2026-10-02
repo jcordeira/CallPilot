@@ -1,7 +1,7 @@
 import { createHmac } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { calendarCanReadFreeBusy, calendarCanWriteEvents } from '../../netlify/functions/_shared/googleAuth'
-import { commandFromToolCall, intentsForRole, parseCommand, toolSchema } from '../../netlify/functions/_shared/commandParse'
+import { commandClient, commandFromToolCall, commandModel, GATEWAY_COMMAND_MODEL, intentsForRole, parseCommand, toolSchema } from '../../netlify/functions/_shared/commandParse'
 import {
   fubMentionNote,
   handleCommandMessage,
@@ -545,6 +545,55 @@ describe('calendar scopes for command mode', () => {
   })
 })
 
+describe('command mode gateway', () => {
+  it('uses the Netlify AI Gateway model unless OpenRouter is configured', () => {
+    delete process.env.COMMAND_MODEL
+    delete process.env.OPENROUTER_API_KEY
+    delete process.env.OPENROUTER_BASE_URL
+    delete process.env.OPENAI_API_KEY
+    delete process.env.OPENAI_BASE_URL
+    delete process.env.NETLIFY_AI_GATEWAY_BASE_URL
+    delete process.env.NETLIFY_AI_GATEWAY_KEY
+    expect(commandClient()).toBeNull()
+    expect(commandModel()).toBe(GATEWAY_COMMAND_MODEL)
+
+    process.env.OPENAI_BASE_URL = 'https://gateway.ai.netlify.com/openai/v1'
+    process.env.OPENAI_API_KEY = 'n/a'
+    expect(commandClient()).not.toBeNull()
+    expect(commandModel()).toBe('gpt-4o-mini')
+
+    process.env.COMMAND_MODEL = 'gpt-4o'
+    expect(commandModel()).toBe('gpt-4o')
+    delete process.env.COMMAND_MODEL
+
+    process.env.OPENROUTER_API_KEY = 'or-test'
+    process.env.ASSISTANT_MODEL = 'x-ai/grok-4.5'
+    expect(commandModel()).toBe('x-ai/grok-4.5')
+    delete process.env.OPENROUTER_API_KEY
+    delete process.env.OPENAI_BASE_URL
+    delete process.env.OPENAI_API_KEY
+  })
+
+  it('texts the allowlisted sender when parsing fails', async () => {
+    process.env.COMMAND_MODE_DRY_RUN = 'false'
+    const fx = effects()
+    const result = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'book someone tomorrow',
+      messageId: 'm-parse-fail',
+      now,
+      parse: async () => {
+        throw new Error('The model did not call a tool')
+      },
+      effects: fx,
+    })
+    expect(result.reply).toBe("Sorry, I couldn't process that")
+    expect(fx.created).toEqual([])
+    expect(fx.sent).toEqual([])
+  })
+})
+
 describe('quo webhook endpoint', () => {
   it('rejects a missing signature and ignores a client text', async () => {
     const denied = await handler(new Request('http://localhost/api/webhooks/quo', { method: 'POST', body: '{}' }))
@@ -569,5 +618,46 @@ describe('quo webhook endpoint', () => {
     expect(body.acted).toBe(false)
     expect(body.ignored).toBe('sender')
     expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('texts the allowlisted sender when the gateway cannot parse the command', async () => {
+    process.env.COMMAND_MODE_DRY_RUN = 'false'
+    process.env.ASSISTANT_DEMO_MODE = 'false'
+    process.env.FOLLOW_UP_BOSS_API_KEY = 'fub-test'
+    process.env.QUO_API_KEY = 'quo-test'
+    delete process.env.OPENAI_API_KEY
+    delete process.env.OPENAI_BASE_URL
+    delete process.env.OPENROUTER_API_KEY
+    delete process.env.OPENROUTER_BASE_URL
+    delete process.env.NETLIFY_AI_GATEWAY_BASE_URL
+    delete process.env.NETLIFY_AI_GATEWAY_KEY
+    delete process.env.COMMAND_MODEL
+    const posts: { url: string; body: string }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      posts.push({ url: String(input), body: typeof init?.body === 'string' ? init.body : '' })
+      return new Response(JSON.stringify({ id: 'sms-1' }), { status: 200 })
+    }))
+    const secret = `whsec_${Buffer.from('supersecretkey1').toString('base64')}`
+    process.env.QUO_WEBHOOK_SECRET = secret
+    const raw = JSON.stringify({
+      type: 'message.received',
+      data: { object: { id: 'msg-parse', from: joseph, to: line, direction: 'incoming', body: 'book someone tomorrow' } },
+    })
+    const webhookId = 'wh_parse'
+    const webhookTimestamp = String(Math.floor(Date.now() / 1000))
+    const signature = createHmac('sha256', Buffer.from('supersecretkey1')).update(`${webhookId}.${webhookTimestamp}.${raw}`).digest('base64')
+    const res = await handler(new Request('http://localhost/api/webhooks/quo', {
+      method: 'POST',
+      body: raw,
+      headers: { 'webhook-id': webhookId, 'webhook-timestamp': webhookTimestamp, 'webhook-signature': `v1,${signature}` },
+    }))
+    expect(res.status).toBe(200)
+    const body = await res.json() as { acted: boolean }
+    expect(body.acted).toBe(true)
+    expect(posts.some((post) => post.url.includes('/messages') && post.body.includes("Sorry, I couldn't process that"))).toBe(true)
+    delete process.env.QUO_API_KEY
+    delete process.env.FOLLOW_UP_BOSS_API_KEY
+    process.env.ASSISTANT_DEMO_MODE = 'true'
+    process.env.COMMAND_MODE_DRY_RUN = 'true'
   })
 })

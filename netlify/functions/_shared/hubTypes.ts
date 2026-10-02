@@ -71,7 +71,9 @@ export type GoogleConnection = {
   needsCalendarWrite?: boolean
   /** True when the grant includes `calendar` or `calendar.events`. Env tokens are treated as capable. */
   canWrite?: boolean
-  /** OAuth is connected but the stored scope cannot create or edit events. */
+  /** OAuth is connected, but the saved grant cannot send Gmail. */
+  needsGmailSend?: boolean
+  /** OAuth is connected but the stored scope cannot edit events or send a Gmail invite. */
   reconnect?: boolean
 }
 

@@ -225,28 +225,41 @@ export function toolSchema(role: CommandRole): OpenAI.Chat.Completions.ChatCompl
 
 export type ToolCompletion = (text: string, role: CommandRole) => Promise<{ name: string; arguments: Record<string, unknown> }>
 
-function commandClient(): OpenAI | null {
-  const openAiKey = env('OPENAI_API_KEY').trim()
-  const model = env('COMMAND_MODEL').trim()
-  const gatewayKey = env('OPENROUTER_API_KEY').trim()
-  const gatewayBase = env('OPENROUTER_BASE_URL').trim()
-  const preferOpenAi = model.startsWith('gpt') || (Boolean(openAiKey) && !gatewayKey && !gatewayBase)
-  if (preferOpenAi && openAiKey) {
-    return new OpenAI({ apiKey: openAiKey, baseURL: env('OPENAI_BASE_URL').trim() || undefined })
+/** Tool-calling model the Netlify AI Gateway serves. Grok ids are not on that gateway. */
+export const GATEWAY_COMMAND_MODEL = 'gpt-4o-mini'
+
+function usingOpenRouter(): boolean {
+  return Boolean(env('OPENROUTER_API_KEY').trim() || env('OPENROUTER_BASE_URL').trim())
+}
+
+/**
+ * Netlify injects OPENAI_BASE_URL and OPENAI_API_KEY (or NETLIFY_AI_GATEWAY_*)
+ * into functions when AI Gateway is on. No provider key is stored in env.
+ * OpenRouter is only used when those vars are set explicitly.
+ */
+export function commandClient(): OpenAI | null {
+  if (usingOpenRouter()) {
+    return new OpenAI({
+      apiKey: env('OPENROUTER_API_KEY').trim() || env('OPENAI_API_KEY').trim() || 'unused',
+      baseURL: env('OPENROUTER_BASE_URL').trim() || undefined,
+      dangerouslyAllowBrowser: true,
+      defaultHeaders: {
+        'HTTP-Referer': env('URL', 'https://loanpilot.netlify.app'),
+        'X-Title': 'LoanPilot',
+      },
+    })
   }
-  if (!gatewayKey && !gatewayBase && !openAiKey) return null
-  return new OpenAI({
-    apiKey: gatewayKey || openAiKey || 'unused',
-    baseURL: gatewayBase || undefined,
-    defaultHeaders: {
-      'HTTP-Referer': env('URL', 'https://loanpilot.netlify.app'),
-      'X-Title': 'LoanPilot',
-    },
-  })
+  const baseURL = env('NETLIFY_AI_GATEWAY_BASE_URL').trim() || env('OPENAI_BASE_URL').trim()
+  const apiKey = env('NETLIFY_AI_GATEWAY_KEY').trim() || env('OPENAI_API_KEY').trim()
+  if (!baseURL && !apiKey) return null
+  return new OpenAI({ apiKey: apiKey || 'unused', baseURL: baseURL || undefined, dangerouslyAllowBrowser: true })
 }
 
 export function commandModel(): string {
-  return env('COMMAND_MODEL').trim() || env('ASSISTANT_MODEL').trim() || 'x-ai/grok-4.5'
+  const explicit = env('COMMAND_MODEL').trim()
+  if (explicit) return explicit
+  if (usingOpenRouter()) return env('ASSISTANT_MODEL').trim() || 'x-ai/grok-4.5'
+  return GATEWAY_COMMAND_MODEL
 }
 
 export async function completeWithGateway(text: string, role: CommandRole): Promise<{ name: string; arguments: Record<string, unknown> }> {
