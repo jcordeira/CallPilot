@@ -107,7 +107,18 @@ export function commandActors(): Actor[] {
 export function actorForPhone(phone: string | undefined): Actor | null {
   const normalized = e164(phone)
   if (!normalized) return null
-  return commandActors().find((actor) => actor.phone === normalized) ?? null
+  const owner = commandActors().find((actor) => actor.role === 'owner' && actor.phone === normalized)
+  if (owner) return owner
+  const member = teamRoster().find((item) => item.phone === normalized || item.altPhones?.includes(normalized))
+  if (!member) return null
+  return {
+    role: 'team',
+    phone: normalized,
+    name: member.name,
+    userId: member.userId,
+    email: member.email,
+    title: member.title,
+  }
 }
 
 export function guestEmails(): string[] {
