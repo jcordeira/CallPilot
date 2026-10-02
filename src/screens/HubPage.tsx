@@ -7,8 +7,11 @@ import {
   disconnectGoogle,
   fetchHubSummary,
   fetchLeadHeat,
+  fetchReminderPanel,
   googleConnectUrl,
+  previewReminders,
   rescoreLeads,
+  type ReminderPanel,
   type HubCalendarEvent,
   type HubSummary,
   type HubTask,
@@ -83,6 +86,7 @@ export function HubPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [summary, setSummary] = useState<HubSummary | null>(null)
   const [leads, setLeads] = useState<ScoredLead[]>([])
+  const [reminders, setReminders] = useState<ReminderPanel | null>(null)
   const [leadDemo, setLeadDemo] = useState(false)
   const [activity, setActivity] = useState<ActivityItem[]>([])
   const [error, setError] = useState<string | null>(null)
@@ -103,13 +107,15 @@ export function HubPage() {
 
   const load = useCallback(async () => {
     try {
-      const [nextSummary, nextActivity, heat] = await Promise.all([
+      const [nextSummary, nextActivity, heat, reminderPanel] = await Promise.all([
         fetchHubSummary(),
         fetchActivity(12),
         fetchLeadHeat().catch(() => null),
+        fetchReminderPanel().catch(() => null),
       ])
       setSummary(nextSummary)
       setActivity(nextActivity.items)
+      setReminders(reminderPanel && Array.isArray(reminderPanel.recent) ? reminderPanel : null)
       setLeads(heat?.leads ?? nextSummary.leads ?? [])
       setLeadDemo(heat?.demo ?? nextSummary.stats.demo)
       setError(null)
@@ -203,6 +209,26 @@ export function HubPage() {
     } catch (e) {
       setNotice(null)
       setError(e instanceof Error ? e.message : 'Could not add the task')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const onPreviewReminders = async () => {
+    setBusy(true)
+    try {
+      const result = await previewReminders()
+      const count = result.deliveries?.length ?? 0
+      setNotice(
+        result.skipped === 'demo'
+          ? 'Preview skipped in demo mode. Nothing was sent.'
+          : `Preview only — ${count} ${count === 1 ? 'delivery' : 'deliveries'}, nothing sent.`,
+      )
+      await load()
+      setError(null)
+    } catch (e) {
+      setNotice(null)
+      setError(e instanceof Error ? e.message : 'Could not preview reminders')
     } finally {
       setBusy(false)
     }
@@ -459,6 +485,61 @@ export function HubPage() {
       </ul>
 
       <div className="hub__grid">
+        {reminders && (
+          <section className="card hub__card hub__reminders" aria-labelledby="hub-reminders">
+            <div className="hub__card-head">
+              <h2 id="hub-reminders">Missed-item reminders</h2>
+              <span className="mono hub__count">
+                {reminders.enabled ? (reminders.dryRun ? 'Dry run' : 'On') : 'Off'}
+              </span>
+            </div>
+            <p className="hub__form-help hub__heat-note">
+              {reminders.enabled
+                ? `Looking back ${reminders.lookbackHours}h. Unanswered texts wait ${reminders.textWindowMinutes} minutes.`
+                : 'Off until LOA_REMINDERS_ENABLED=true. Preview does not text anyone or post notes.'}
+              {' '}
+              {reminders.googleMissedCalls}
+            </p>
+            <ul className="hub__list">
+              {reminders.seats.map((seat) => (
+                <li key={`${seat.role}-${seat.userId}`} className="hub__row">
+                  <div className="hub__row-top">
+                    <span className="pill">{seat.role === 'lo' ? 'LO' : 'LOA'}</span>
+                    <span className="hub__when">{seat.phoneSet ? 'SMS on' : 'No mobile'}</span>
+                  </div>
+                  <div className="hub__item-title">{seat.name}</div>
+                  <div className="hub__item-meta">
+                    {seat.fubNote ? 'FUB mention note and one SMS digest' : 'SMS digest for overdue tasks and missed FUB calls'}
+                    {seat.role === 'lo' ? ', plus overdue Google Tasks' : ''}
+                  </div>
+                </li>
+              ))}
+            </ul>
+            <h3 className="hub__subhead">Recent</h3>
+            {reminders.recent.length === 0 ? (
+              <p className="hub__empty">No reminders yet.</p>
+            ) : (
+              <ul className="hub__list">
+                {reminders.recent.slice(0, 8).map((item) => (
+                  <li key={item.id} className="hub__row">
+                    <div className="hub__row-top">
+                      <span className={`pill pill--${item.status}`}>{item.dryRun ? 'Preview' : item.status}</span>
+                      <span className="mono hub__channel">{item.channel}</span>
+                      <span className="hub__when">{relativeTime(item.at)}</span>
+                    </div>
+                    <div className="hub__item-title">{item.seatName}</div>
+                    <p className="hub__item-meta">{item.summary}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
+            <div className="hub__form-actions hub__reminder-actions">
+              <button type="button" className="btn" disabled={busy} onClick={() => void onPreviewReminders()}>
+                {busy ? 'Working…' : 'Preview reminders'}
+              </button>
+            </div>
+          </section>
+        )}
         <section className="card hub__card hub__heat" aria-labelledby="hub-heat">
           <div className="hub__card-head">
             <h2 id="hub-heat">Lead heat</h2>

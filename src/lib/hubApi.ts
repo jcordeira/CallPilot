@@ -111,6 +111,57 @@ export function createHubTask(input: {
   })
 }
 
+export type ReminderLog = {
+  id: string
+  at: string
+  trigger: string
+  dryRun: boolean
+  seatUserId: number
+  seatName: string
+  seatRole: 'lo' | 'loa'
+  channel: 'note' | 'sms'
+  personId?: number
+  personName?: string
+  summary: string
+  itemKeys: string[]
+  status: 'preview' | 'sent' | 'skipped' | 'error'
+  error?: string
+}
+
+export type ReminderPanel = {
+  enabled: boolean
+  dryRun: boolean
+  lookbackHours: number
+  textWindowMinutes: number
+  timezone: string
+  smsConfigured: boolean
+  quoFromConfigured: boolean
+  googleMissedCalls: string
+  seats: { userId: number; name: string; role: 'lo' | 'loa'; phoneSet: boolean; fubNote: boolean }[]
+  recent: ReminderLog[]
+  watermark?: string
+  subscribe: string[]
+}
+
+export type ReminderRun = {
+  skipped?: 'disabled' | 'demo'
+  enabled: boolean
+  dryRun: boolean
+  deliveries: { channel: string; seatName: string; summary: string; status: string }[]
+  deferred: number
+}
+
+export function fetchReminderPanel() {
+  return hubRequest<ReminderPanel>('reminders')
+}
+
+export function previewReminders() {
+  return hubRequest<ReminderRun>('reminders', {
+    method: 'POST',
+    body: JSON.stringify({ dryRun: true }),
+  })
+}
+
 export function createHubEvent(input: {
   summary?: string
   description?: string

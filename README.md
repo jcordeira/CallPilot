@@ -99,7 +99,66 @@ ASSISTANT_MODEL=x-ai/grok-4.5
 After the first production deploy, enable Netlify AI Gateway. Grok is served via OpenRouter (`OPENROUTER_*` vars are auto-injected — do not set your own provider keys if you want gateway routing).
 Point Quo’s inbound message webhook to `https://<your-site>/api/webhooks/sms`.
 
-Point Follow Up Boss webhooks (`peopleUpdated`, `peopleStageUpdated`, `notesCreated`, `emailsCreated`, `textMessagesCreated`) to `https://<your-site>/api/webhooks/fub`. LoanPilot rescores that person and, when heat crosses a band, writes a note plus a task. An optional custom field named **LoanPilot Score** is stored as `customLoanPilotScore`. If that field does not exist yet, scoring still saves the note and the task.
+Point Follow Up Boss webhooks (`peopleCreated`, `peopleUpdated`, `peopleStageUpdated`, `notesCreated`, `emailsCreated`, `textMessagesCreated`) to `https://<your-site>/api/webhooks/fub`. LoanPilot rescores that person and, when heat crosses a band, writes a note plus a task. An optional custom field named **LoanPilot Score** is stored as `customLoanPilotScore`. If that field does not exist yet, scoring still saves the note and the task.
+
+Also subscribe **`callsCreated`** and **`callsUpdated`** on that same URL so missed inbound calls are caught as they are logged. Overdue tasks have no “became overdue” webhook, so the 15-minute `loa-reminders` function polls them. `textMessagesCreated` is already on the list and is used for unanswered texts. Do not subscribe `tasksCreated` / `tasksUpdated` — scoring ignores task events so LoanPilot notes do not loop.
+
+## LOA and LO miss reminders
+
+Off until `LOA_REMINDERS_ENABLED=true`. `LOA_REMINDERS_DRY_RUN=true` (or Hub → Preview reminders) builds the same digest and does not post notes or send SMS.
+
+| Who | What they are reminded about | How |
+|---|---|---|
+| Frankie (`FUB_LOA_USER_IDS`, id 16) and Daniel (id 27) | Overdue FUB tasks assigned to them, unanswered inbound texts on leads assigned to them, missed inbound calls (`No Answer`, `Left Message`, `Busy`, voicemail) on those leads with no later outbound call or text | One FUB note per lead that @mentions them, plus one SMS digest |
+| Joseph (id 1) | Overdue FUB tasks assigned to him, missed inbound calls on leads assigned to him, overdue Google Tasks | One SMS digest. No FUB mention note |
+
+Scoring is unchanged: hot → Joseph Call, warm → Frank Text, cool → Frank Follow Up, cold → note only.
+
+**Mentions.** `POST /v1/notes` documents only `personId`, `subject`, `body`, and `isHtml` ([notes reference](https://docs.followupboss.com/reference/notes-post)). The [Team Mentions](https://help.followupboss.com/hc/en-us/articles/4402379946007-Team-Mentions) article says typing `@` in the yellow note emails that person. Plain `@Name` does not. A published FUB integration smoke-tested the payload the FUB app sends (`mentions` is undocumented but accepted):
+
+```json
+{
+  "personId": 123,
+  "subject": "LoanPilot reminder",
+  "isHtml": true,
+  "mentions": { "user": [16] },
+  "body": "<p><span data-user-id=\"16\">Frankie Cordeira</span> LoanPilot reminder — this lead still needs you:</p><ul><li>Overdue task: Follow up</li></ul>"
+}
+```
+
+All three of `isHtml`, the `data-user-id` span, and `mentions.user` are required. The span text is the display name, not `@Name`. `mentions.user` alone can add the person as a collaborator and does not email them. Mentioning an agent also adds them as a collaborator.
+
+**SMS.** Outbound texts use the existing Quo / OpenPhone client (`QUO_API_KEY`, `QUO_FROM_NUMBER`, optional `QUO_API_BASE`). `QUO_FROM_NUMBER` is Joseph’s Quo inbox — the From line — not his cell. In Quo open Settings → Phone numbers, or `GET https://api.openphone.com/v1/phone-numbers` with `Authorization: $QUO_API_KEY` and copy `number`. If Quo is not configured, notes still post and SMS is skipped. Nothing is sent while `ASSISTANT_DEMO_MODE=true`.
+
+**Recipients** (env only — see `.env.example`; these are not hardcoded):
+
+| Env | Who |
+|---|---|
+| `FUB_LO_PHONE` | Joseph’s mobile |
+| `FUB_LOA_PHONE_16` | Frankie’s mobile |
+| `FUB_LOA_PHONE_27` | Daniel’s mobile |
+| `FUB_LOA_NAME_16` / `FUB_LOA_NAME_27` | Names inside the mention chip |
+| `FUB_LOA_USER_IDS` | `16,27` (the single `FUB_LOA_USER_ID` is still included) |
+
+If a phone env is empty, LoanPilot tries `GET /users/:id` (`phone`) once per run.
+
+**Dedupe and backlog.** The first enabled run stores a watermark in the `loanpilot-reminders` Netlify Blobs store at `now - LOA_REMINDER_LOOKBACK_HOURS` (default 24). An item is eligible only when it became missed at or after both that watermark and the current lookback. Raising the lookback later cannot reach Frankie’s older open tasks. Each task, text, call, and Google Task id is reminded at most once. An LOA with many leads gets at most `LOA_REMINDER_MAX_NOTES` mention notes per run (default 15); the rest wait for the next 15-minute run. SMS is one digest per person per run. Dry runs do not consume the dedupe keys.
+
+**Google.** There is no Google missed-call source. Joseph’s digest includes overdue Google Tasks from the connected account (`Joseph@teamcordeira.com` via the existing OAuth token). Past calendar events are not treated as missed calls.
+
+**Hub.** `GET /api/hub/reminders` shows seats, whether SMS is configured, and recent deliveries (no phone numbers). `POST /api/hub/reminders` always previews and does not post notes or send SMS. The Hub has the same panel.
+
+| Env | Default | Purpose |
+|---|---|---|
+| `LOA_REMINDERS_ENABLED` | `false` | Master switch |
+| `LOA_REMINDERS_DRY_RUN` | `false` | Compute and log only |
+| `LOA_REMINDER_LOOKBACK_HOURS` | `24` | How far back a new miss counts |
+| `LOA_REMINDER_TEXT_WINDOW_MINUTES` | `120` | How long an inbound text may sit unanswered |
+| `LOA_REMINDER_CALL_GRACE_MINUTES` | `15` | Ignore unlabeled inbound calls newer than this |
+| `LOA_REMINDER_TIMEZONE` | `America/New_York` | When a date-only task becomes overdue |
+| `LOA_REMINDER_MAX_NOTES` | `15` | Mention notes per person per run |
+| `LOA_REMINDER_MAX_PEOPLE` | `8` | Recent assigned people scanned per seat per run |
+| `FUB_PERSON_URL_BASE` | `https://teamcordeira.followupboss.com/2/people/view` | Link in the SMS |
 
 Signature checks are off until `FUB_WEBHOOK_VERIFY=true` (or `FUB_WEBHOOK_SECRET` is set). When enabled, the `FUB-Signature` header must be the hex HMAC-SHA256 of the base64-encoded raw body, using `FOLLOW_UP_BOSS_SYSTEM_KEY`.
 
@@ -181,6 +240,7 @@ curl -s -H "Authorization: Bearer demo-key" -H "Content-Type: application/json" 
 | `netlify/functions/_shared/` | Classify, AI reply, FUB, Gmail, Neo, Quo, Calendar, pipeline |
 | `netlify/functions/process-inbox.ts` | Cron every 5 minutes |
 | `netlify/functions/score-leads.ts` | Cron hourly — rescore FUB leads |
+| `netlify/functions/loa-reminders.ts` | Cron every 15 minutes — LOA/LO miss reminders (off until enabled) |
 | `netlify/functions/sms-webhook.ts` | Quo inbound SMS |
 | `netlify/functions/fub-webhook.ts` | Follow Up Boss webhook `/api/webhooks/fub` |
 | `netlify/functions/assistant.ts` | `/api/assistant/:action` |
