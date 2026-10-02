@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState, type PointerEvent as ReactPointerEvent } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { FubPersonLink } from '../components/FubPersonLink'
 import { Modal } from '../components/Modal'
 import { clientCallTitle, externalGuestEmails, TEAM_GUESTS } from '../lib/calendarGuests'
@@ -6,11 +6,17 @@ import { matchPersonInText } from '../lib/fubLink'
 import {
   addZonedDays,
   dateKey,
+  focusHour,
   formatDayLabel,
+  formatHourLabel,
+  formatNowClock,
   formatTimeLabel,
+  formatUntil,
+  parseWallTime,
   startOfZonedDay,
   startOfZonedWeek,
   timeValue,
+  wallTimeValue,
   zonedDateTimeToUtc,
   zonedParts,
 } from '../lib/calendarTime'
@@ -43,9 +49,10 @@ type Draft = {
 }
 type Pending = { write: CalendarWrite; label: string }
 
-const HOUR_START = 8
-const HOUR_END = 19
+const HOUR_START = 0
+const HOUR_END = 24
 const HOUR_PX = 52
+const HOURS = Array.from({ length: HOUR_END - HOUR_START }, (_, index) => HOUR_START + index)
 
 function rangeFor(view: View, anchor: Date): { start: Date; end: Date } {
   if (view === 'week') {
@@ -59,7 +66,7 @@ function rangeFor(view: View, anchor: Date): { start: Date; end: Date } {
 function blankDraft(anchor: Date): Draft {
   const parts = zonedParts(anchor)
   const day = dateKey(anchor)
-  const startHour = Math.min(HOUR_END - 1, Math.max(HOUR_START, parts.hour))
+  const startHour = Math.min(23, Math.max(0, parts.hour))
   return {
     summary: '',
     description: '',
@@ -108,6 +115,44 @@ function toWrite(draft: Draft, sendUpdates: 'all' | 'none'): CalendarWrite {
   }
 }
 
+function TimeField({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+  const wall = parseWallTime(value)
+  const minutes = Array.from({ length: 12 }, (_, index) => index * 5)
+  if (!minutes.includes(wall.minute)) minutes.push(wall.minute)
+  minutes.sort((a, b) => a - b)
+  const commit = (hour12: number, minute: number, period: 'AM' | 'PM') => onChange(wallTimeValue(hour12, minute, period))
+  return (
+    <div className="cal__field">
+      <span id={`${label}-time`}>{label}</span>
+      <div className="cal__clockpick" role="group" aria-labelledby={`${label}-time`}>
+        <select className="select" aria-label={`${label} hour`} value={wall.hour12} onChange={(e) => commit(Number(e.target.value), wall.minute, wall.period)}>
+          {Array.from({ length: 12 }, (_, index) => index + 1).map((hour) => (
+            <option key={hour} value={hour}>{hour}</option>
+          ))}
+        </select>
+        <select className="select" aria-label={`${label} minute`} value={wall.minute} onChange={(e) => commit(wall.hour12, Number(e.target.value), wall.period)}>
+          {minutes.map((minute) => (
+            <option key={minute} value={minute}>{String(minute).padStart(2, '0')}</option>
+          ))}
+        </select>
+        <select className="select" aria-label={`${label} AM or PM`} value={wall.period} onChange={(e) => commit(wall.hour12, wall.minute, e.target.value === 'PM' ? 'PM' : 'AM')}>
+          <option value="AM">AM</option>
+          <option value="PM">PM</option>
+        </select>
+      </div>
+    </div>
+  )
+}
+
+function nextUp(events: HubCalendarEvent[], now: Date): string | null {
+  const upcoming = events
+    .filter((event) => !event.allDay && new Date(event.startIso).getTime() > now.getTime())
+    .sort((a, b) => a.startIso.localeCompare(b.startIso))[0]
+  if (!upcoming) return null
+  const minutes = (new Date(upcoming.startIso).getTime() - now.getTime()) / 60_000
+  return `Next: ${upcoming.summary} ${formatUntil(minutes)}`
+}
+
 function EventTitle({ event, leads }: { event: HubCalendarEvent; leads: { personId: number; name: string }[] }) {
   const match = matchPersonInText(event.summary, leads)
   if (!match) return <>{event.summary}</>
@@ -133,10 +178,17 @@ export function CalendarPage() {
   const [query, setQuery] = useState('')
   const [people, setPeople] = useState<{ id: number; name: string; email?: string }[]>([])
   const [busy, setBusy] = useState(false)
+  const [now, setNow] = useState(() => new Date())
+  const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     if (!pickedView) setView(narrow ? 'agenda' : 'week')
   }, [narrow, pickedView])
+
+  useEffect(() => {
+    const timer = window.setInterval(() => setNow(new Date()), 1000)
+    return () => window.clearInterval(timer)
+  }, [])
 
   const span = useMemo(() => rangeFor(view, anchor), [view, anchor])
   const load = useCallback(async () => {
@@ -173,6 +225,19 @@ export function CalendarPage() {
 
   const leads = data?.leads ?? []
   const events = data?.events ?? []
+  const todayKey = dateKey(now)
+  const showingToday = days.some((day) => dateKey(day) === todayKey)
+  const nowTop = (zonedParts(now).hour + zonedParts(now).minute / 60 - HOUR_START) * HOUR_PX
+  const upcoming = nextUp(events, now)
+
+  useEffect(() => {
+    const node = scrollRef.current
+    if (!node || view === 'agenda') return
+    const header = node.querySelector('.cal__col-label')?.clientHeight ?? 0
+    const hour = focusHour(now, showingToday)
+    const cushion = showingToday ? header + 20 : header
+    node.scrollTop = Math.max(0, hour * HOUR_PX - cushion)
+  }, [view, anchor, showingToday])
 
   async function commit(write: CalendarWrite) {
     setBusy(true)
@@ -257,6 +322,8 @@ export function CalendarPage() {
           <p className="eyebrow">Joseph@teamcordeira.com</p>
           <h1 className="page-title">Calendar</h1>
           <p className="cal__lede">Day, week, and agenda for Joseph&apos;s Google Calendar. Times are Eastern.</p>
+          <p className="cal__clock">{formatNowClock(now)}</p>
+          {upcoming && <p className="cal__next">{upcoming}</p>}
         </div>
         <div className="cal__toolbar">
           <div className="cal__views" role="tablist" aria-label="Calendar view">
@@ -315,20 +382,38 @@ export function CalendarPage() {
           ))}
         </ul>
       ) : (
-        <div className="cal__scroll">
+        <div className="cal__scroll" ref={scrollRef}>
           <div className={`cal__grid${view === 'week' ? ' cal__grid--week' : ''}`}>
+            <div className="cal__corner" />
+            {days.map((day) => {
+              const key = dateKey(day)
+              const isToday = key === todayKey
+              return (
+                <h2 key={key} className={isToday ? 'cal__col-label cal__col-label--today' : 'cal__col-label'}>
+                  {formatDayLabel(day)}
+                </h2>
+              )
+            })}
             <div className="cal__hours" aria-hidden="true">
-              {Array.from({ length: HOUR_END - HOUR_START }, (_, index) => (
-                <div key={index} className="cal__hour" style={{ height: HOUR_PX }}>{index + HOUR_START}</div>
+              {HOURS.map((hour) => (
+                <div key={hour} className="cal__hour" style={{ height: HOUR_PX }}>{formatHourLabel(hour)}</div>
               ))}
+              {showingToday && <div className="cal__now" style={{ top: nowTop }} />}
             </div>
             {days.map((day) => {
               const key = dateKey(day)
+              const isToday = key === todayKey
               const items = events.filter((event) => dateKey(new Date(event.startIso)) === key && !event.allDay)
               return (
-                <section key={key} className="cal__col" aria-label={formatDayLabel(day)}>
-                  <h2 className="cal__col-label">{formatDayLabel(day)}</h2>
+                <section key={key} className={isToday ? 'cal__col cal__col--today' : 'cal__col'} aria-label={formatDayLabel(day)} aria-current={isToday ? 'date' : undefined}>
                   <div className="cal__col-body" style={{ height: (HOUR_END - HOUR_START) * HOUR_PX }}>
+                    {showingToday && (
+                      <div
+                        className={isToday ? 'cal__now cal__now--today' : 'cal__now'}
+                        style={{ top: nowTop }}
+                        data-testid={isToday ? 'now-line' : undefined}
+                      />
+                    )}
                     {items.map((event) => {
                       const start = zonedParts(new Date(event.startIso))
                       const end = zonedParts(new Date(event.endIso))
@@ -344,6 +429,8 @@ export function CalendarPage() {
                             onDrag(event, pointer)
                           }}
                         >
+                          <span className="cal__event-time">{formatTimeLabel(new Date(event.startIso))}</span>
+                          {' '}
                           <EventTitle event={event} leads={leads} />
                         </div>
                       )
@@ -380,12 +467,8 @@ export function CalendarPage() {
             <label className="cal__field">Date
               <input className="input" type="date" value={draft.day} onChange={(e) => setDraft({ ...draft, day: e.target.value })} />
             </label>
-            <label className="cal__field">Start
-              <input className="input" type="time" value={draft.start} onChange={(e) => setDraft({ ...draft, start: e.target.value })} />
-            </label>
-            <label className="cal__field">End
-              <input className="input" type="time" value={draft.end} onChange={(e) => setDraft({ ...draft, end: e.target.value })} />
-            </label>
+            <TimeField label="Start" value={draft.start} onChange={(start) => setDraft({ ...draft, start })} />
+            <TimeField label="End" value={draft.end} onChange={(end) => setDraft({ ...draft, end })} />
           </div>
           <label className="cal__field">Location
             <input className="input" value={draft.location} onChange={(e) => setDraft({ ...draft, location: e.target.value })} />
