@@ -411,6 +411,67 @@ describe('Hub', () => {
     expect(calls.some((call) => call.includes('/api/google'))).toBe(false)
   })
 
+  it('asks to reconnect when Gmail send is missing and calendar write is already granted', async () => {
+    const connected = {
+      ...summary,
+      data: {
+        ...summary.data,
+        google: {
+          configured: true,
+          connected: true,
+          email: 'Joseph@teamcordeira.com',
+          source: 'oauth',
+          canWrite: true,
+          needsCalendarWrite: false,
+          needsGmailSend: true,
+          reconnect: true,
+        },
+      },
+    }
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/api/hub/calendar-guests')) {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              data: {
+                enabled: true,
+                dryRun: false,
+                emails: ['fcordeirajr@cliffcomortgage.com'],
+                days: 60,
+                notify: 'ics',
+                gmailCanInvite: false,
+                needsCalendarWrite: false,
+                recent: [],
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        if (url.includes('/api/hub/summary')) {
+          return new Response(JSON.stringify(connected), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        if (url.includes('/api/hub/leads')) {
+          return new Response(JSON.stringify({ ok: true, data: { leads: summary.data.leads, demo: true } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/assistant/activity')) {
+          return new Response(JSON.stringify(activity), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        return new Response(JSON.stringify({ ok: false, error: 'missing' }), { status: 404 })
+      }),
+    )
+    renderApp(<App />, { route: '/hub' })
+    expect(await screen.findByRole('link', { name: 'Reconnect Google' })).toHaveAttribute('href', '/api/google/connect')
+    expect(screen.getByText(/Frankie gets a calendar invite/)).toBeInTheDocument()
+    expect(screen.queryByText(/without Calendar write access/)).not.toBeInTheDocument()
+    expect(screen.getByText(/Reconnect Google to email Frankie an invite/)).toBeInTheDocument()
+  })
+
   it('shows the command mode card from the audit log', async () => {
     vi.stubGlobal(
       'fetch',

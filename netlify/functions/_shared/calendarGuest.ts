@@ -1,7 +1,7 @@
 import { env, isDemoMode } from './env'
 import { fubGet } from './followupboss'
 import { gmailConfigured } from './gmail'
-import { calendarCanWriteEvents, loadGoogleTokens, resolveGoogleAccessToken } from './googleAuth'
+import { calendarCanWriteEvents, gmailCanSend, loadGoogleTokens, resolveGoogleAccessToken } from './googleAuth'
 import { getStore } from '@netlify/blobs'
 
 const DEFAULT_EMAIL = 'fcordeirajr@cliffcomortgage.com'
@@ -389,9 +389,25 @@ function encodeRaw(headers: Record<string, string>, body: string): string {
   return Buffer.from(raw).toString('base64').replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '')
 }
 
+/** Static GMAIL_ACCESS_TOKEN, or Joseph's OAuth token once it includes gmail.send. */
+export async function gmailInviteReady(): Promise<boolean> {
+  if (gmailConfigured()) return true
+  const stored = await loadGoogleTokens()
+  return Boolean(stored?.accessToken && gmailCanSend(stored.scope))
+}
+
+async function gmailInviteToken(): Promise<string | null> {
+  const staticToken = env('GMAIL_ACCESS_TOKEN').trim()
+  if (staticToken) return staticToken
+  const stored = await loadGoogleTokens()
+  if (!stored?.accessToken || !gmailCanSend(stored.scope)) return null
+  const { accessToken } = await resolveGoogleAccessToken()
+  return accessToken
+}
+
 async function defaultSendInvite(input: { to: string; subject: string; ics: string }): Promise<void> {
-  if (!gmailConfigured() || isDemoMode()) throw new Error('Gmail is not connected')
-  const token = env('GMAIL_ACCESS_TOKEN')
+  const token = await gmailInviteToken()
+  if (!token || isDemoMode()) throw new Error('Gmail is not connected')
   const raw = encodeRaw(
     {
       To: input.to,
@@ -432,7 +448,7 @@ export async function getCalendarGuestPanel(): Promise<{
     emails: settings.emails,
     days: settings.days,
     notify: settings.notify,
-    gmailCanInvite: gmailConfigured() && !isDemoMode(),
+    gmailCanInvite: (await gmailInviteReady()) && !isDemoMode(),
     needsCalendarWrite: await calendarWriteMissing(),
     recent: state.recent,
   }
@@ -492,7 +508,7 @@ export async function runCalendarGuest(options?: {
         const fresh = settings.emails.filter(
           (email) => !(event.attendees ?? []).some((attendee) => attendee.email.trim().toLowerCase() === email.toLowerCase()),
         )
-        if (fresh.length && (options?.sendInvite || (gmailConfigured() && !isDemoMode()))) {
+        if (fresh.length && (options?.sendInvite || ((await gmailInviteReady()) && !isDemoMode()))) {
           for (const email of fresh) {
             await sendInvite({
               to: email,

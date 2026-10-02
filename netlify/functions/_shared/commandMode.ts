@@ -655,21 +655,33 @@ export async function handleCommandMessage(input: {
   const effects = input.effects ?? (await defaultEffects())
   const dryRun = settings.dryRun
   const pending = latestPending(state, actor.phone, now)
-  let result: RunResult
+  let result: RunResult | undefined
   try {
     if (pending && (/^\d+$/.test(text) || /^(yes|y|no|n)$/i.test(text))) {
       result = await finishPending(actor, pending, text, effects, now, dryRun)
     } else {
-      const call = await parseCommand(text, actor.role, input.parse)
-      result = await runCall(actor, call, effects, now, dryRun)
-      if (call.intent === 'busy_until' && !dryRun && result.status === 'done') {
-        const when = parseWhen(call.whenText ?? '', now, settings.timeZone)
-        if (when) state.busyUntil = when.start.toISOString()
+      let parsed: Awaited<ReturnType<typeof parseCommand>> | null = null
+      try {
+        parsed = await parseCommand(text, actor.role, input.parse)
+      } catch (err) {
+        const detail = err instanceof Error && err.message ? err.message : 'parse failed'
+        console.log(`[command-mode] parse failed: ${detail}`)
+        result = { reply: clip("Sorry, I couldn't process that", dryRun), status: 'error' }
+      }
+      if (parsed) {
+        result = await runCall(actor, parsed, effects, now, dryRun)
+        if (parsed.intent === 'busy_until' && !dryRun && result.status === 'done') {
+          const when = parseWhen(parsed.whenText ?? '', now, settings.timeZone)
+          if (when) state.busyUntil = when.start.toISOString()
+        }
       }
     }
   } catch (err) {
     const message = err instanceof Error && err.message ? err.message : 'Command failed'
     result = { reply: clip(message, dryRun), status: 'error' }
+  }
+  if (!result) {
+    result = { reply: clip("Sorry, I couldn't process that", dryRun), status: 'error' }
   }
   remember(state, {
     id: input.messageId,

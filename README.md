@@ -211,7 +211,7 @@ Off until `CALENDAR_AUTO_GUEST_ENABLED=true`. Every 15 minutes LoanPilot looks a
 
 Included: Google appointment-page bookings titled like `Joe & Emily Cordeira (Client Name)` or whose description starts with `Booked by`, and timed events that name a client and mention call, appt, appointment, consult, refi, purchase, preapproval, or HELOC, or whose title contains a Follow Up Boss lead’s full name. Excluded: all-day events, birthdays, and internal or personal titles such as `Galligan Group / Team Cordeira Weekly Meetings`, `Week Setup`, `Joe Cordeira + Alicia Meeting`, `Heloc steps`, and `Eric / Joe`. Unclear titles are left alone. `CALENDAR_AUTO_GUEST_INCLUDE` and `CALENDAR_AUTO_GUEST_EXCLUDE` are comma-separated.
 
-**Notifications.** The Calendar API’s `sendUpdates` is `all`, `externalOnly`, or `none`. There is no “new guest only” value. Google once fixed a bug so `all` would email only new guests ([issue 323087133](https://issuetracker.google.com/issues/323087133)), and later reports said existing guests still got “this event has been updated.” The default is `CALENDAR_AUTO_GUEST_NOTIFY=ics`: patch with `sendUpdates=none`, then email Frankie an `.ics` invite through `GMAIL_ACCESS_TOKEN` when that token is set. Clients are not re-notified. Gmail is a separate token, not part of the Calendar OAuth scopes, so this path does not ask Joseph to grant Gmail again. If Gmail is not connected she is still added and the Hub says no email went out. Set `CALENDAR_AUTO_GUEST_NOTIFY=all` (or `externalOnly`) to let Google send the invitation instead; existing guests, including the client, may get an update.
+**Notifications.** The Calendar API’s `sendUpdates` is `all`, `externalOnly`, or `none`. There is no “new guest only” value, so Google’s own invitation can re-notify the client. The default is `CALENDAR_AUTO_GUEST_NOTIFY=ics`: patch with `sendUpdates=none`, then email only Frankie a `METHOD:REQUEST` `.ics` through the Gmail API. The send uses Joseph’s connected Google account once that grant includes `https://www.googleapis.com/auth/gmail.send`. A static `GMAIL_ACCESS_TOKEN` still works if it is set. Clients already on the event are not emailed. Until the stored grant includes `gmail.send`, Frankie is added quietly and the Hub shows Reconnect Google. Connect Google already asks for that scope; Joseph reconnects once so the saved token picks it up. Enable the Gmail API on the same Google Cloud project. Set `CALENDAR_AUTO_GUEST_NOTIFY=all` (or `externalOnly`) only if you want Google to email every guest, including the client.
 
 Hub → Preview calendar guests lists what would change and does not patch. `POST /api/hub/calendar-guests` is preview-only.
 
@@ -224,7 +224,7 @@ Hub → Preview calendar guests lists what would change and does not patch. `POS
 | `CALENDAR_AUTO_GUEST_NOTIFY` | `ics` | `ics`, `all`, or `externalOnly` |
 | `CALENDAR_AUTO_GUEST_INCLUDE` | call, appt, appointment, consult, refi, purchase, preapproval, pre-approval, heloc | Title keywords |
 | `CALENDAR_AUTO_GUEST_EXCLUDE` | birthday, galligan group, team cordeira weekly, week setup, joe cordeira + alicia, heloc steps, eric / joe | Phrases that block an add |
-| `GMAIL_ACCESS_TOKEN` | | Sends the `.ics` when notify is `ics` |
+| `GMAIL_ACCESS_TOKEN` | | Optional. Overrides the connected Google account for the `.ics` send |
 
 ## Command mode
 
@@ -241,13 +241,13 @@ Only these cells are commands. Every other sender, including clients on the same
 
 The line is `QUO_FROM_NUMBER` (+15163869773, the Sales inbox). `COMMAND_PREFIX` is empty by default. Set it to `LP ` or `@lp` if you want a prefix on top of the allowlist.
 
-**Parsing.** Tool calls go through the Netlify AI Gateway already used for Grok (`OPENROUTER_API_KEY` / `OPENROUTER_BASE_URL`, model `ASSISTANT_MODEL` or `COMMAND_MODEL`). Add `OPENAI_API_KEY` and `COMMAND_MODEL=gpt-4o-mini` only if you want OpenAI instead. Lead names are matched against Follow Up Boss. Two close matches get a numbered reply; `1` or `2` picks one. Confirmations expire after 15 minutes.
+**Parsing.** Tool calls use the Netlify AI Gateway. Functions receive `OPENAI_BASE_URL` and `OPENAI_API_KEY` (or `NETLIFY_AI_GATEWAY_BASE_URL` and `NETLIFY_AI_GATEWAY_KEY`) automatically when AI is enabled on the site. Do not set `OPENAI_API_KEY` or `OPENROUTER_API_KEY` yourself; a provider key turns that injection off. The command model is `gpt-4o-mini` unless `COMMAND_MODEL` is set. OpenRouter and `ASSISTANT_MODEL` are used only when `OPENROUTER_API_KEY` or `OPENROUTER_BASE_URL` is set. If the model call fails, the allowlisted sender gets `Sorry, I couldn't process that`. Lead names are matched against Follow Up Boss. Two close matches get a numbered reply; `1` or `2` picks one. Confirmations expire after 15 minutes.
 
 Owner can book, move, and cancel calls (cancel waits for YES), text any teammate or the whole team immediately (`text Debra: ...`, `text the team: ...`), draft a client text that waits for YES, ask what's on today, brief a lead, add a note, create a task, assign a lead (YES, then a FUB @mention note and a Quo text to that person, including Debra), list open slots, and hold calls until a time. Frankie, Daniel, and Debra can ask when Joe is free (free/busy only, no event titles, 9–6 ET Mon–Fri, up to five 30-minute slots), request a booking that texts Joseph for YES/NO, and brief, note, or task a lead.
 
 Booked calls are titled `<Client Name> call <topic>` for 30 minutes in America/New_York. Conflicts are booked and called out. `book Siddick tomorrow 2pm and add Debra` puts that teammate's email on the invite. When `CALENDAR_AUTO_GUEST_ENABLED=true`, Frankie is also added from `CALENDAR_AUTO_GUEST_EMAILS`. `hold calls till 2` sets a busy flag the WhatsApp auto-reply honors (it sends immediately and adds the hold time).
 
-**Google.** The Hub connect button already requests `https://www.googleapis.com/auth/calendar`, which covers event writes and free/busy. Joseph does not need to reconnect for command mode if that grant is the one on file. A token that only has `calendar.events` can book but cannot read free/busy; the Hub then shows Reconnect Google.
+**Google.** The Hub connect button requests `https://www.googleapis.com/auth/calendar` (event writes and free/busy) and `https://www.googleapis.com/auth/gmail.send` (Frankie’s invite only). A grant that already has full `calendar` can book and read free/busy. Reconnect once so the saved token also includes `gmail.send`. A token that only has `calendar.events` can book but cannot read free/busy; the Hub then shows Reconnect Google.
 
 **Quo webhook.** `POST /api/webhooks/quo`. A missing or bad signature returns 401. Set `QUO_WEBHOOK_SECRET` to the key Quo returns (`whsec_...`) or the base64 secret from the webhook details page. Current deliveries sign `{webhook-id}.{webhook-timestamp}.{raw body}` (HMAC-SHA256, base64, header `webhook-signature`). Older UI deliveries use `openphone-signature` (`hmac;1;timestamp;signature` over `timestamp.rawBody`). Both are accepted. Message id is the idempotency key.
 
@@ -289,7 +289,7 @@ The Hub Command mode card lists recent commands. It does not send anything.
 | `COMMAND_HOURS_START` / `COMMAND_HOURS_END` | `9` / `18` | Working hours for open slots |
 | `COMMAND_WORK_DAYS` | `1,2,3,4,5` | Mon–Fri |
 | `COMMAND_CONFIRM_MINUTES` | `15` | YES / numbered-choice expiry |
-| `COMMAND_MODEL` | `ASSISTANT_MODEL` | Tool-calling model |
+| `COMMAND_MODEL` | `gpt-4o-mini` | Tool-calling model on the Netlify AI Gateway |
 | `QUO_FROM_NUMBER` | | Sales line, +15163869773 |
 | `QUO_WEBHOOK_SECRET` | | Required. Unsigned posts are 401 |
 | `TEAM_MEMBERS` | FUB LOA phones | JSON roster: name, phone, email, optional userId, title |

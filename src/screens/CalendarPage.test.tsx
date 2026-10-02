@@ -26,7 +26,7 @@ function payload() {
       ],
       demo: true,
       timezone: 'America/New_York',
-      google: { configured: true, connected: true, email: 'joseph@teamcordeira.com', source: 'oauth', canWrite: false, reconnect: true },
+      google: { configured: true, connected: true, email: 'joseph@teamcordeira.com', source: 'oauth' as const, canWrite: false, needsGmailSend: false, reconnect: true },
       leads: [{ personId: 1001, name: 'Alex Buyer' }],
     },
   }
@@ -69,5 +69,33 @@ describe('Calendar page', () => {
     expect(await screen.findByRole('dialog', { name: 'Notify guests?' })).toBeInTheDocument()
     await user.click(screen.getByRole('button', { name: "Don't notify" }))
     expect(calls.some((call) => call.startsWith('POST') && call.includes('/api/hub/calendar'))).toBe(true)
+    expect(screen.getByText(/cannot edit events/)).toBeInTheDocument()
+  })
+
+  it('asks to reconnect for Frankie invites when calendar write is already granted', async () => {
+    const body = payload()
+    body.data.google = {
+      configured: true,
+      connected: true,
+      email: 'joseph@teamcordeira.com',
+      source: 'oauth',
+      canWrite: true,
+      needsGmailSend: true,
+      reconnect: true,
+    }
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input)
+      if (url.includes('/api/hub/people')) {
+        return new Response(JSON.stringify({ ok: true, data: { people: [] } }), { status: 200 })
+      }
+      if (url.includes('/api/hub/calendar')) {
+        return new Response(JSON.stringify(body), { status: 200 })
+      }
+      return new Response(JSON.stringify({ ok: false, error: 'missing' }), { status: 404 })
+    }))
+    renderApp(<CalendarPage />, { route: '/calendar' })
+    expect(await screen.findByRole('link', { name: 'Reconnect Google' })).toHaveAttribute('href', '/api/google/connect')
+    expect(screen.getByText(/Frankie gets a calendar invite/)).toBeInTheDocument()
+    expect(screen.queryByText(/cannot edit events/)).not.toBeInTheDocument()
   })
 })

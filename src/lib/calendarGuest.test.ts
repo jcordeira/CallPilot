@@ -9,7 +9,7 @@ import {
   runCalendarGuest,
   type GuestEvent,
 } from '../../netlify/functions/_shared/calendarGuest'
-import { calendarCanWriteEvents, clearGoogleTokens, saveGoogleTokens } from '../../netlify/functions/_shared/googleAuth'
+import { calendarCanWriteEvents, clearGoogleTokens, getGoogleConnectionStatus, gmailCanSend, GOOGLE_SCOPES, saveGoogleTokens } from '../../netlify/functions/_shared/googleAuth'
 
 const frankie = 'fcordeirajr@cliffcomortgage.com'
 const start = '2026-10-05T15:00:00.000Z'
@@ -53,6 +53,7 @@ afterEach(() => {
     'CALENDAR_AUTO_GUEST_EXCLUDE',
     'CALENDAR_AUTO_GUEST_NOTIFY',
     'GMAIL_ACCESS_TOKEN',
+    'FOLLOW_UP_BOSS_API_KEY',
   ]) {
     delete process.env[key]
   }
@@ -195,6 +196,9 @@ describe('calendar write scope', () => {
     expect(calendarCanWriteEvents('https://www.googleapis.com/auth/calendar.events.readonly')).toBe(false)
     expect(calendarCanWriteEvents(undefined)).toBe(false)
     expect(calendarCanWriteEvents('')).toBe(false)
+    expect(GOOGLE_SCOPES).toContain('https://www.googleapis.com/auth/gmail.send')
+    expect(gmailCanSend(GOOGLE_SCOPES)).toBe(true)
+    expect(gmailCanSend('https://www.googleapis.com/auth/calendar')).toBe(false)
   })
 
   it('refuses to patch when the stored OAuth grant cannot write events', async () => {
@@ -219,5 +223,60 @@ describe('calendar write scope', () => {
       connectedAt: new Date().toISOString(),
     })
     expect(await calendarWriteMissing()).toBe(false)
+  })
+
+  it('emails Frankie from the OAuth token when gmail.send is granted', async () => {
+    process.env.ASSISTANT_DEMO_MODE = 'false'
+    process.env.FOLLOW_UP_BOSS_API_KEY = 'fub-test'
+    await saveGoogleTokens({
+      accessToken: 'oauth-token',
+      refreshToken: 'refresh-token',
+      expiresAt: Date.now() + 3_600_000,
+      scope: 'openid email https://www.googleapis.com/auth/calendar https://www.googleapis.com/auth/gmail.send',
+      email: 'joseph@teamcordeira.com',
+      connectedAt: new Date().toISOString(),
+    })
+    const calls: { url: string; auth: string | null; body: string }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const headers = new Headers(init?.headers)
+      calls.push({ url: String(input), auth: headers.get('authorization'), body: typeof init?.body === 'string' ? init.body : '' })
+      return new Response('{}', { status: 200 })
+    }))
+    const result = await runCalendarGuest({
+      events: [event({ id: 'evt-ics', summary: 'Siddick Chowdhury call refi' })],
+      patch: async () => undefined,
+    })
+    expect(result.added).toBe(1)
+    const gmail = calls.find((call) => call.url.includes('gmail.googleapis.com/gmail/v1/users/me/messages/send'))
+    expect(gmail?.auth).toBe('Bearer oauth-token')
+    expect(gmail?.body).toContain('"raw"')
+    expect(calls.some((call) => call.url.includes('sendUpdates=all'))).toBe(false)
+  })
+
+  it('adds Frankie quietly when the stored grant cannot send mail', async () => {
+    process.env.ASSISTANT_DEMO_MODE = 'false'
+    process.env.FOLLOW_UP_BOSS_API_KEY = 'fub-test'
+    await saveGoogleTokens({
+      accessToken: 'oauth-token',
+      expiresAt: Date.now() + 3_600_000,
+      scope: 'openid email https://www.googleapis.com/auth/calendar',
+      email: 'joseph@teamcordeira.com',
+      connectedAt: new Date().toISOString(),
+    })
+    const urls: string[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL) => {
+      urls.push(String(input))
+      return new Response('{}', { status: 200 })
+    }))
+    const status = await getGoogleConnectionStatus()
+    expect(status.canWrite).toBe(true)
+    expect(status.needsGmailSend).toBe(true)
+    expect(status.reconnect).toBe(true)
+    const result = await runCalendarGuest({
+      events: [event({ id: 'evt-quiet', summary: 'Siddick Chowdhury call refi' })],
+      patch: async () => undefined,
+    })
+    expect(result.added).toBe(1)
+    expect(urls.some((url) => url.includes('gmail.googleapis.com'))).toBe(false)
   })
 })
