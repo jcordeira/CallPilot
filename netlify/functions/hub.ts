@@ -3,6 +3,7 @@ import { createHubEvent, createHubTask, eventInputFromBody, getHubSummary, score
 import { listLeadHeat } from './_shared/leadHeat'
 import { getReminderPanel, runLoaReminders } from './_shared/loaReminders'
 import { getWhatsappPanel, runWhatsappAutoreply } from './_shared/whatsappAutoreply'
+import { getCalendarGuestPanel, runCalendarGuest } from './_shared/calendarGuest'
 import { errorResponse, jsonFail, jsonOk, readJson } from './_shared/http'
 
 export default async (req: Request, context: Context) => {
@@ -60,6 +61,21 @@ export default async (req: Request, context: Context) => {
         if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonFail('JSON object body is required', 400)
       }
       return jsonOk(await runWhatsappAutoreply({ trigger: 'hub', dryRun: true }))
+    }
+    if (action === 'calendar-guests') {
+      if (req.method === 'GET') return jsonOk(await getCalendarGuestPanel())
+      if (req.method !== 'POST') return jsonFail('Method not allowed', 405)
+      const text = await req.text()
+      if (text.trim()) {
+        let body: unknown
+        try {
+          body = JSON.parse(text)
+        } catch {
+          return jsonFail('Invalid JSON body', 400)
+        }
+        if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonFail('JSON object body is required', 400)
+      }
+      return jsonOk(await runCalendarGuest({ trigger: 'hub', dryRun: true }))
     }
     return jsonFail('Unknown action', 404)
   } catch (err) {

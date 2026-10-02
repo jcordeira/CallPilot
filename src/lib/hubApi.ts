@@ -44,6 +44,7 @@ export type GoogleConnection = {
   connected: boolean
   email?: string
   source: 'oauth' | 'env' | null
+  needsCalendarWrite?: boolean
 }
 
 export type HubSummary = {
@@ -198,6 +199,45 @@ export function fetchWhatsappPanel() {
 
 export function previewWhatsappAutoreply() {
   return hubRequest<WhatsappRun>('whatsapp', {
+    method: 'POST',
+    body: JSON.stringify({ dryRun: true }),
+  })
+}
+
+export type CalendarGuestPreview = {
+  id: string
+  summary: string
+  startIso: string
+  htmlLink?: string
+  action: 'add' | 'already' | 'skip'
+  reason: string
+}
+
+export type CalendarGuestPanel = {
+  enabled: boolean
+  dryRun: boolean
+  emails: string[]
+  days: number
+  notify: string
+  gmailCanInvite: boolean
+  needsCalendarWrite: boolean
+  recent: { id: string; at: string; summary: string; status: string; detail: string }[]
+}
+
+export type CalendarGuestRun = {
+  skipped?: 'disabled' | 'demo' | 'scope'
+  enabled: boolean
+  dryRun: boolean
+  previews: CalendarGuestPreview[]
+  added: number
+}
+
+export function fetchCalendarGuestPanel() {
+  return hubRequest<CalendarGuestPanel>('calendar-guests')
+}
+
+export function previewCalendarGuests() {
+  return hubRequest<CalendarGuestRun>('calendar-guests', {
     method: 'POST',
     body: JSON.stringify({ dryRun: true }),
   })

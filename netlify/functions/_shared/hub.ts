@@ -100,6 +100,7 @@ export async function getHubSummary(): Promise<HubSummary> {
       connected: google.connected,
       email: google.email,
       source: google.source,
+      needsCalendarWrite: google.needsCalendarWrite,
     },
     leads: heat.leads,
     stats: {
