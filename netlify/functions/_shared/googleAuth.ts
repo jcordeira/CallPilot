@@ -193,7 +193,6 @@ export function calendarCanReadFreeBusy(scope: string | undefined): boolean {
   const granted = new Set(scope.split(/\s+/).filter(Boolean))
   return CALENDAR_FREEBUSY.some((item) => granted.has(item))
 }
-}
 
 export function buildGoogleAuthUrl(state: string, reqUrl?: string): string {
   const params = new URLSearchParams({
