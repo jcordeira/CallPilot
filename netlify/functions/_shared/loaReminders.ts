@@ -531,7 +531,8 @@ export function collectMissedItems(input: {
 }
 
 export function digestSms(name: string, items: MissedItem[]): string {
-  const header = `LoanPilot: ${name}, ${items.length} item${items.length === 1 ? '' : 's'} need you.`
+  const count = items.length
+  const header = `LoanPilot: ${name}, ${count} ${count === 1 ? 'item needs' : 'items need'} you.`
   const shown = items.slice(0, 8)
   const lines = shown.map((item) => {
     const label = item.kind === 'google_task' ? item.line : `${item.personName} — ${item.line}`

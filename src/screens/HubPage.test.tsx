@@ -220,6 +220,73 @@ describe('Hub', () => {
     expect(post).toBeTruthy()
   })
 
+  it('shows the WhatsApp auto-reply card and previews without sending', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        calls.push(`${init?.method ?? 'GET'} ${url}`)
+        if (url.includes('/api/hub/whatsapp') && (init?.method ?? 'GET') === 'GET') {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              data: {
+                enabled: false,
+                dryRun: false,
+                waitMinutes: 5,
+                cooldownHours: 4,
+                kapsoConfigured: false,
+                quoConfigured: false,
+                loPhoneSet: true,
+                pending: 0,
+                recent: [
+                  {
+                    id: 'w1',
+                    at: '2026-10-02T14:00:00.000Z',
+                    trigger: 'schedule',
+                    dryRun: true,
+                    contactLabel: 'Alex Buyer',
+                    summary: "LoanPilot: WhatsApp from Alex Buyer, no reply in 5 min, auto-replied. 'Hi'",
+                    status: 'preview',
+                  },
+                ],
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        if (url.includes('/api/hub/whatsapp') && init?.method === 'POST') {
+          return new Response(
+            JSON.stringify({ ok: true, data: { enabled: false, dryRun: true, deliveries: [], skipped: 'disabled' } }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        if (url.includes('/api/hub/summary')) {
+          return new Response(JSON.stringify(summary), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        if (url.includes('/api/hub/leads')) {
+          return new Response(JSON.stringify({ ok: true, data: { leads: summary.data.leads, demo: true } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/assistant/activity')) {
+          return new Response(JSON.stringify(activity), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        return new Response(JSON.stringify({ ok: false, error: 'missing' }), { status: 404 })
+      }),
+    )
+    const user = userEvent.setup()
+    renderApp(<App />, { route: '/hub' })
+    expect(await screen.findByRole('heading', { name: 'WhatsApp auto-reply' })).toBeInTheDocument()
+    expect(screen.getByText(/Off until WHATSAPP_AUTOREPLY_ENABLED=true/)).toBeInTheDocument()
+    expect(screen.getByText(/WhatsApp from Alex Buyer/)).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Preview WhatsApp' }))
+    expect(await screen.findByText(/WhatsApp preview only — 0 auto-replies, nothing sent/)).toBeInTheDocument()
+    expect(calls.some((call) => call.startsWith('POST') && call.includes('/api/hub/whatsapp'))).toBe(true)
+  })
+
   it('opens the add-task and hold-slot forms', async () => {
     mockHub()
     const user = userEvent.setup()

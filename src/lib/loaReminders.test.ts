@@ -3,6 +3,7 @@ import fubWebhook from '../../netlify/functions/fub-webhook'
 import { scoreLead } from '../../netlify/functions/_shared/leadScore'
 import {
   collectMissedItems,
+  digestSms,
   mentionNoteHtml,
   normalizePhone,
   reminderSeats,
@@ -202,6 +203,20 @@ describe('miss detection', () => {
     expect(keys).toContain('google-task:g1')
     expect(keys).not.toContain('google-task:g2')
     expect(keys).not.toContain('google-task:g3')
+  })
+
+  it('says needs for one digest item and need for several', () => {
+    const item = (key: string): Parameters<typeof digestSms>[1][number] => ({
+      key,
+      kind: 'task',
+      seatUserId: 1,
+      personName: 'Alex Buyer',
+      title: 'Follow up',
+      line: 'Overdue task: Follow up',
+      missedAt: now.toISOString(),
+    })
+    expect(digestSms('Joseph Cordeira', [item('a')])).toMatch(/^LoanPilot: Joseph Cordeira, 1 item needs you\./)
+    expect(digestSms('Joseph Cordeira', [item('a'), item('b')])).toMatch(/^LoanPilot: Joseph Cordeira, 2 items need you\./)
   })
 })
 
