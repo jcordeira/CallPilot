@@ -392,6 +392,14 @@ export async function setLoanPilotScore(personId: number, score: number): Promis
   }
 }
 
+export async function assignPerson(personId: number, userId: number): Promise<void> {
+  if (isDemoMode() || !personId || !userId) return
+  await fubFetch(`/people/${personId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ assignedUserId: userId }),
+  })
+}
+
 export async function fubGet(path: string): Promise<unknown | null> {
   if (isDemoMode()) return null
   try {

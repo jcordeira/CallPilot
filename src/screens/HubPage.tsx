@@ -7,6 +7,7 @@ import {
   disconnectGoogle,
   fetchHubSummary,
   fetchLeadHeat,
+  fetchCommandPanel,
   fetchReminderPanel,
   fetchCalendarGuestPanel,
   fetchWhatsappPanel,
@@ -15,6 +16,7 @@ import {
   previewReminders,
   previewWhatsappAutoreply,
   rescoreLeads,
+  type CommandPanel,
   type ReminderPanel,
   type CalendarGuestPreview,
   type CalendarGuestPanel,
@@ -127,6 +129,7 @@ export function HubPage() {
   const [summary, setSummary] = useState<HubSummary | null>(null)
   const [leads, setLeads] = useState<ScoredLead[]>([])
   const [reminders, setReminders] = useState<ReminderPanel | null>(null)
+  const [commands, setCommands] = useState<CommandPanel | null>(null)
   const [whatsapp, setWhatsapp] = useState<WhatsappPanel | null>(null)
   const [guests, setGuests] = useState<CalendarGuestPanel | null>(null)
   const [guestPreview, setGuestPreview] = useState<CalendarGuestPreview[] | null>(null)
@@ -150,19 +153,21 @@ export function HubPage() {
 
   const load = useCallback(async () => {
     try {
-      const [nextSummary, nextActivity, heat, reminderPanel, whatsappPanel, guestPanel] = await Promise.all([
+      const [nextSummary, nextActivity, heat, reminderPanel, whatsappPanel, guestPanel, commandPanel] = await Promise.all([
         fetchHubSummary(),
         fetchActivity(12),
         fetchLeadHeat().catch(() => null),
         fetchReminderPanel().catch(() => null),
         fetchWhatsappPanel().catch(() => null),
         fetchCalendarGuestPanel().catch(() => null),
+        fetchCommandPanel().catch(() => null),
       ])
       setSummary(nextSummary)
       setActivity(nextActivity.items)
       setReminders(reminderPanel && Array.isArray(reminderPanel.recent) ? reminderPanel : null)
       setWhatsapp(whatsappPanel && Array.isArray(whatsappPanel.recent) ? whatsappPanel : null)
       setGuests(guestPanel && Array.isArray(guestPanel.recent) ? guestPanel : null)
+      setCommands(commandPanel && Array.isArray(commandPanel.recent) ? commandPanel : null)
       setLeads(heat?.leads ?? nextSummary.leads ?? [])
       setLeadDemo(heat?.demo ?? nextSummary.stats.demo)
       setError(null)
@@ -695,6 +700,44 @@ export function HubPage() {
                 {busy ? 'Working…' : 'Preview calendar guests'}
               </button>
             </div>
+          </section>
+        )}
+        {commands && (
+          <section className="card hub__card" aria-labelledby="hub-commands">
+            <div className="hub__card-head">
+              <h2 id="hub-commands">Command mode</h2>
+              <span className="mono hub__count">{commands.enabled ? (commands.dryRun ? 'Dry run' : 'On') : 'Off'}</span>
+            </div>
+            <p className="hub__form-help hub__heat-note">
+              {commands.enabled
+                ? `Texts from Joseph and the team on ${commands.line ?? 'the Quo line'}${commands.dryRun ? ' are previews.' : '.'}`
+                : 'Off until COMMAND_MODE_ENABLED=true. Client texts are ignored.'}
+            </p>
+            {commands.needsGoogleReconnect ? (
+              <p className="hub__error" role="status">
+                Reconnect Google so command mode can book and check free/busy.
+              </p>
+            ) : null}
+            {commands.busyUntil ? (
+              <p className="hub__item-meta">Holding calls until {new Date(commands.busyUntil).toLocaleString()}</p>
+            ) : null}
+            <h3 className="hub__subhead">Recent</h3>
+            {commands.recent.length === 0 ? (
+              <p className="hub__empty">No commands yet.</p>
+            ) : (
+              <ul className="hub__list">
+                {commands.recent.slice(0, 8).map((item) => (
+                  <li key={item.id} className="hub__row">
+                    <div className="hub__row-top">
+                      <span className={`pill pill--${item.status === 'error' ? 'error' : item.status === 'done' ? 'sent' : 'skipped'}`}>{item.dryRun ? 'Preview' : item.status}</span>
+                      <span className="hub__when">{relativeTime(item.at)}</span>
+                    </div>
+                    <div className="hub__item-title">{item.actor}</div>
+                    <p className="hub__item-meta">{item.summary}</p>
+                  </li>
+                ))}
+              </ul>
+            )}
           </section>
         )}
         {whatsapp && (

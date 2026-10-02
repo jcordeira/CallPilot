@@ -2,6 +2,7 @@ import type { Config, Context } from '@netlify/functions'
 import { createHubEvent, createHubTask, eventInputFromBody, getHubSummary, scoreHubLeads, taskInputFromBody } from './_shared/hub'
 import { listLeadHeat } from './_shared/leadHeat'
 import { getReminderPanel, runLoaReminders } from './_shared/loaReminders'
+import { getCommandPanel } from './_shared/commandMode'
 import { getWhatsappPanel, runWhatsappAutoreply } from './_shared/whatsappAutoreply'
 import { getCalendarGuestPanel, runCalendarGuest } from './_shared/calendarGuest'
 import { errorResponse, jsonFail, jsonOk, readJson } from './_shared/http'
@@ -76,6 +77,10 @@ export default async (req: Request, context: Context) => {
         if (!body || typeof body !== 'object' || Array.isArray(body)) return jsonFail('JSON object body is required', 400)
       }
       return jsonOk(await runCalendarGuest({ trigger: 'hub', dryRun: true }))
+    }
+    if (action === 'commands') {
+      if (req.method !== 'GET') return jsonFail('Method not allowed', 405)
+      return jsonOk(await getCommandPanel())
     }
     return jsonFail('Unknown action', 404)
   } catch (err) {

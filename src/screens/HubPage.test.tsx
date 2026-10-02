@@ -410,6 +410,59 @@ describe('Hub', () => {
     expect(calls.some((call) => call.includes('/api/google'))).toBe(false)
   })
 
+  it('shows the command mode card from the audit log', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        if (url.includes('/api/hub/commands')) {
+          return new Response(
+            JSON.stringify({
+              ok: true,
+              data: {
+                enabled: false,
+                dryRun: true,
+                line: '+15163869773',
+                prefix: '',
+                needsGoogleReconnect: false,
+                recent: [
+                  {
+                    id: 'c1',
+                    at: '2026-10-02T14:00:00.000Z',
+                    actor: 'Joseph Cordeira',
+                    role: 'owner',
+                    command: 'book Siddick tomorrow 2pm',
+                    summary: '[preview] Would book Siddick Chowdhury call refi Sat, Oct 3, 2:00 PM (30 min).',
+                    status: 'preview',
+                    dryRun: true,
+                  },
+                ],
+              },
+            }),
+            { status: 200, headers: { 'Content-Type': 'application/json' } },
+          )
+        }
+        if (url.includes('/api/hub/summary')) {
+          return new Response(JSON.stringify(summary), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        if (url.includes('/api/hub/leads')) {
+          return new Response(JSON.stringify({ ok: true, data: { leads: summary.data.leads, demo: true } }), {
+            status: 200,
+            headers: { 'Content-Type': 'application/json' },
+          })
+        }
+        if (url.includes('/api/assistant/activity')) {
+          return new Response(JSON.stringify(activity), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        return new Response(JSON.stringify({ ok: false, error: 'missing' }), { status: 404 })
+      }),
+    )
+    renderApp(<App />, { route: '/hub' })
+    expect(await screen.findByRole('heading', { name: 'Command mode' })).toBeInTheDocument()
+    expect(screen.getByText(/Off until COMMAND_MODE_ENABLED=true/)).toBeInTheDocument()
+    expect(screen.getByText(/Would book Siddick Chowdhury call refi/)).toBeInTheDocument()
+  })
+
   it('opens the add-task and hold-slot forms', async () => {
     mockHub()
     const user = userEvent.setup()

@@ -2,6 +2,7 @@ import { env, isDemoMode } from './env'
 import { kapsoConfigured, sendKapsoText } from './kapso'
 import { normalizePhone } from './loaReminders'
 import { sendSmsIfConfigured } from './quo'
+import { commandBusyUntil } from './commandStore'
 import {
   loadWhatsappState,
   saveWhatsappState,
@@ -368,10 +369,16 @@ export async function runWhatsappAutoreply(options?: {
   const sendAlert = options?.sendAlert ?? sendSmsIfConfigured
   const loPhone = normalizePhone(env('FUB_LO_PHONE'))
   const waitMs = settings.waitMinutes * 60_000
+  const busyUntil = await commandBusyUntil(now)
+  const busyLabel = busyUntil
+    ? new Intl.DateTimeFormat('en-US', { timeZone: env('COMMAND_TIMEZONE', 'America/New_York'), hour: 'numeric', minute: '2-digit' }).format(new Date(busyUntil))
+    : ''
+  const replyBody = busyLabel ? `${settings.replyText} Holding calls until ${busyLabel} ET.` : settings.replyText
   const deliveries: WhatsappDelivery[] = []
 
   for (const [key, pending] of Object.entries(state.pending)) {
-    if (new Date(pending.inboundAt).getTime() + waitMs > now.getTime()) continue
+    const waited = new Date(pending.inboundAt).getTime() + waitMs <= now.getTime()
+    if (!busyUntil && !waited) continue
     if (inCooldown(state, key, now)) {
       delete state.pending[key]
       continue
@@ -384,7 +391,7 @@ export async function runWhatsappAutoreply(options?: {
         contactLabel: pending.label,
         status: 'preview',
         summary,
-        whatsappBody: settings.replyText,
+        whatsappBody: replyBody,
         alertBody: summary,
       }
       deliveries.push(delivery)
@@ -403,7 +410,7 @@ export async function runWhatsappAutoreply(options?: {
       continue
     }
     try {
-      const sent = await sendWhatsapp({ to: pending.phone, recipient: pending.recipient, body: settings.replyText })
+      const sent = await sendWhatsapp({ to: pending.phone, recipient: pending.recipient, body: replyBody })
       rememberId(state, sent.id)
       state.cooldownUntil[key] = new Date(now.getTime() + settings.cooldownHours * 3_600_000).toISOString()
       delete state.pending[key]
@@ -424,7 +431,7 @@ export async function runWhatsappAutoreply(options?: {
         contactLabel: pending.label,
         status: 'sent',
         summary: note ? `${summary} (${note})` : summary,
-        whatsappBody: settings.replyText,
+        whatsappBody: replyBody,
         alertBody,
         error: note,
       }

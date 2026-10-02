@@ -66,6 +66,8 @@ function clearReminderEnv() {
     'FUB_LOA_PHONE_16',
     'FUB_LOA_NAME_27',
     'FUB_LOA_PHONE_27',
+    'FUB_LOA_NAME_32',
+    'FUB_LOA_PHONE_32',
     'FUB_LOA_PHONE',
     'QUO_API_KEY',
     'QUO_FROM_NUMBER',
@@ -266,6 +268,25 @@ describe('runLoaReminders', () => {
       })
     return { notes, texts, fetchMock, run }
   }
+
+  it('reminds a third teammate with a mention note and one SMS', async () => {
+    process.env.FUB_LOA_USER_IDS = '16,27,32'
+    process.env.FUB_LOA_NAME_32 = 'Debra Rose'
+    process.env.FUB_LOA_PHONE_32 = '+12013946798'
+    expect(reminderSeats().map((seat) => seat.userId)).toEqual([1, 16, 27, 32])
+    const extra = source()
+    extra.people.push({ id: 400, name: 'Pat Buyer', assignedUserId: 32 })
+    extra.tasks.push({ id: 8, name: 'Order appraisal', isCompleted: 0, dueDate: '2026-10-01', personId: 400, assignedUserId: 32 })
+    const { notes, texts, run } = harness()
+    await run(extra)
+    const note = notes.find((item) => item.mentionUserIds[0] === 32 && item.personId === 400)
+    expect(note?.isHtml).toBe(true)
+    expect(note?.body).toContain('<span data-user-id="32">Debra Rose</span>')
+    expect(note?.body).toContain('Overdue task: Order appraisal')
+    const sms = texts.find((text) => text.to === '+12013946798')
+    expect(sms?.content).toContain('Pat Buyer')
+    expect(texts.filter((text) => text.to === '+12013946798')).toHaveLength(1)
+  })
 
   it('posts one mention note per lead and one SMS digest per person', async () => {
     const { notes, texts, fetchMock, run } = harness()
