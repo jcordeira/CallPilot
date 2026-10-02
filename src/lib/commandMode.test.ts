@@ -80,6 +80,12 @@ beforeEach(async () => {
   process.env.FUB_LOA_PHONE_27 = '+15165213121'
   delete process.env.COMMAND_PREFIX
   delete process.env.CALENDAR_AUTO_GUEST_ENABLED
+  delete process.env.TEAM_MEMBERS
+  for (const key of ['NAME', 'PHONE', 'EMAIL', 'USER_ID', 'TITLE']) {
+    delete process.env[`TEAM_MEMBER_1_${key}`]
+    delete process.env[`TEAM_MEMBER_2_${key}`]
+    delete process.env[`TEAM_MEMBER_3_${key}`]
+  }
   await resetCommandStateForTests()
   vi.stubGlobal('fetch', vi.fn(() => {
     throw new Error('network')
@@ -330,6 +336,140 @@ describe('command mode', () => {
   it('parses tomorrow 2pm in Eastern time', () => {
     const when = parseWhen('tomorrow 2pm', now, 'America/New_York')
     expect(when?.start.toISOString()).toBe('2026-10-03T18:00:00.000Z')
+  })
+})
+
+const debbra = '+12013946798'
+const roster = [
+  { name: 'Frankie Cordeira', phone: frankie, email: 'fcordeirajr@cliffcomortgage.com', userId: 16, title: 'LOA' },
+  { name: 'Daniel Ebbecke', phone: '+15165213121', email: 'debbecke@cliffcomortgage.com', userId: 27, title: 'LOA' },
+  { name: 'Debra Rose', phone: debbra, email: 'drose@cliffcomortgage.com', title: 'Processor' },
+]
+
+describe('team roster', () => {
+  it('lets Debra ask for open slots and lets Joseph text her or the whole team', async () => {
+    process.env.TEAM_MEMBERS = JSON.stringify(roster)
+    const fx = effects()
+    const fromDebra = await handleCommandMessage({
+      from: debbra,
+      to: line,
+      body: 'when is Joe free Thursday?',
+      messageId: 'm-debra',
+      now,
+      parse: async () => ({ name: 'availability', arguments: { whenText: 'Thursday' } }),
+      effects: fx,
+    })
+    expect(fromDebra.ignored).toBeUndefined()
+    expect(fromDebra.reply).toMatch(/^\[preview\] Open:/)
+    expect(fromDebra.reply).not.toContain('Secret')
+
+    const one = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'text Debra: file is in',
+      messageId: 'm-text-debra',
+      now,
+      parse: async () => ({ name: 'text_team', arguments: { who: 'Debra', body: 'File is in' } }),
+      effects: fx,
+    })
+    expect(one.reply).toBe('[preview] Would text Debra: File is in')
+
+    const all = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'text the team: standup moved',
+      messageId: 'm-text-team',
+      now,
+      parse: async () => ({ name: 'text_team', arguments: { who: 'the team', body: 'Standup moved' } }),
+      effects: fx,
+    })
+    expect(all.reply).toBe('[preview] Would text Frankie, Daniel, and Debra: Standup moved')
+    expect(fx.sent).toEqual([])
+
+    process.env.COMMAND_MODE_DRY_RUN = 'false'
+    const live = effects()
+    const sent = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'text Debra: file is in',
+      messageId: 'm-text-debra-live',
+      now,
+      parse: async () => ({ name: 'text_team', arguments: { who: 'Debra', body: 'File is in' } }),
+      effects: live,
+    })
+    expect(sent.reply).toBe('Texted Debra: File is in')
+    expect(live.sent).toEqual([{ to: debbra, content: 'File is in' }])
+  })
+
+  it('adds a teammate email on a booking and refuses to assign a non-FUB teammate', async () => {
+    process.env.TEAM_MEMBERS = JSON.stringify(roster)
+    const fx = effects()
+    const preview = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'book Siddick Chowdhury tomorrow 2pm refi and add Debra',
+      messageId: 'm-add-debra',
+      now,
+      parse: async () => ({
+        name: 'book_call',
+        arguments: { clientName: 'Siddick Chowdhury', whenText: 'tomorrow 2pm', topic: 'refi', guests: ['Debra'] },
+      }),
+      effects: fx,
+    })
+    expect(preview.reply).toMatch(/\[preview\] Would book Siddick Chowdhury call refi/)
+    expect(preview.reply).toContain('Guest: drose@cliffcomortgage.com')
+    expect(fx.created).toEqual([])
+
+    process.env.COMMAND_MODE_DRY_RUN = 'false'
+    process.env.CALENDAR_AUTO_GUEST_ENABLED = 'true'
+    const live = effects()
+    const booked = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'book Siddick Chowdhury tomorrow 2pm refi and add Debra',
+      messageId: 'm-add-debra-live',
+      now,
+      parse: async () => ({
+        name: 'book_call',
+        arguments: { clientName: 'Siddick Chowdhury', whenText: 'tomorrow 2pm', topic: 'refi', guests: ['Debra'] },
+      }),
+      effects: live,
+    })
+    expect(booked.reply).toContain('drose@cliffcomortgage.com')
+    expect(live.created[0]?.guests).toEqual(['fcordeirajr@cliffcomortgage.com', 'drose@cliffcomortgage.com'])
+
+    process.env.COMMAND_MODE_DRY_RUN = 'true'
+    const assign = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'assign Siddick to Debra',
+      messageId: 'm-assign-debra',
+      now,
+      parse: async () => ({ name: 'assign_lead', arguments: { clientName: 'Siddick Chowdhury', assignee: 'Debra' } }),
+      effects: fx,
+    })
+    expect(assign.reply).toContain('Debra Rose is not in Follow Up Boss')
+  })
+
+  it('accepts per-member env vars when TEAM_MEMBERS is unset', async () => {
+    process.env.TEAM_MEMBER_1_NAME = 'Debra Rose'
+    process.env.TEAM_MEMBER_1_PHONE = debbra
+    process.env.TEAM_MEMBER_1_EMAIL = 'drose@cliffcomortgage.com'
+    process.env.TEAM_MEMBER_1_TITLE = 'Processor'
+    const fx = effects()
+    const result = await handleCommandMessage({
+      from: debbra,
+      to: line,
+      body: 'when is Joe free Thursday?',
+      messageId: 'm-debra-env',
+      now,
+      parse: async () => ({ name: 'availability', arguments: { whenText: 'Thursday' } }),
+      effects: fx,
+    })
+    expect(result.ignored).toBeUndefined()
+    expect(result.reply).toMatch(/^\[preview\] Open:/)
+    expect(commandFromToolCall('text_team', { who: 'the team', body: 'hi' }, 'owner').who).toBe('team')
+    expect(commandFromToolCall('book_call', { clientName: 'Siddick', whenText: 'tomorrow 2pm', guests: ['Debra'] }, 'owner').guests).toEqual(['Debra'])
   })
 })
 

@@ -18,11 +18,12 @@ import {
   saveCommandState,
 } from './commandStore'
 import { addDays, formatSlot, formatWhen, openSlots, parseWhen, zonedDate, zonedParts } from './commandTime'
+import { membersForLabel, teamRoster } from './teamRoster'
 
 export type { CommandCall, CommandRole }
 export { commandBusyUntil }
 
-export type Actor = { role: CommandRole; phone: string; name: string; userId: number }
+export type Actor = { role: CommandRole; phone: string; name: string; userId?: number; email?: string; title?: string }
 
 export type LeadHit = {
   id: number
@@ -91,15 +92,14 @@ export function commandActors(): Actor[] {
   const owner: Actor[] = ownerPhone
     ? [{ role: 'owner', phone: ownerPhone, name: env('FUB_LO_NAME', 'Joseph').trim() || 'Joseph', userId: Number(env('FUB_LO_USER_ID') || '1') || 1 }]
     : []
-  const ids = env('FUB_LOA_USER_IDS', '16,27')
-    .split(',')
-    .map((part) => Number(part.trim()))
-    .filter((id) => Number.isInteger(id) && id > 0)
-  const team = ids.flatMap((userId) => {
-    const phone = e164(env(`FUB_LOA_PHONE_${userId}`))
-    if (!phone) return []
-    return [{ role: 'team' as const, phone, name: env(`FUB_LOA_NAME_${userId}`).trim() || `LOA ${userId}`, userId }]
-  })
+  const team: Actor[] = teamRoster().map((member) => ({
+    role: 'team',
+    phone: member.phone,
+    name: member.name,
+    userId: member.userId,
+    email: member.email,
+    title: member.title,
+  }))
   return [...owner, ...team]
 }
 
@@ -144,11 +144,33 @@ export function matchLeads(query: string, people: LeadHit[]): { match?: LeadHit;
   return { match: scored[0].person, choices: [] }
 }
 
-function seatByWho(who: 'frankie' | 'daniel' | 'both' | undefined): Actor[] {
-  const team = commandActors().filter((actor) => actor.role === 'team')
-  if (who === 'both') return team
-  if (who === 'daniel') return team.filter((actor) => actor.userId === 27 || /daniel/i.test(actor.name))
-  return team.filter((actor) => actor.userId === 16 || /frank/i.test(actor.name))
+function actorsForLabel(label: string | undefined): { targets: Actor[]; unknown: boolean } {
+  const found = membersForLabel(label)
+  if (found.unknown) return { targets: [], unknown: true }
+  const byPhone = new Map(commandActors().filter((actor) => actor.role === 'team').map((actor) => [actor.phone, actor]))
+  return { targets: found.members.flatMap((member) => {
+    const actor = byPhone.get(member.phone)
+    return actor ? [actor] : []
+  }), unknown: false }
+}
+
+function joinNames(names: string[]): string {
+  if (names.length <= 1) return names[0] ?? ''
+  if (names.length === 2) return `${names[0]} and ${names[1]}`
+  return `${names.slice(0, -1).join(', ')}, and ${names[names.length - 1]}`
+}
+
+function inviteEmails(extra: string[] | undefined): { emails: string[]; problem?: string } {
+  const emails = new Set(guestEmails().map((email) => email.toLowerCase()))
+  for (const label of extra ?? []) {
+    const found = membersForLabel(label)
+    if (found.unknown || !found.members.length) return { emails: [...emails], problem: `I don't have ${label} on the team list.` }
+    for (const member of found.members) {
+      if (!member.email) return { emails: [...emails], problem: `${member.name} has no email on file.` }
+      emails.add(member.email.toLowerCase())
+    }
+  }
+  return { emails: [...emails] }
 }
 
 function ownerActor(): Actor | undefined {
@@ -167,10 +189,13 @@ function eventTitle(name: string, topic?: string): string {
 }
 
 function helpText(role: CommandRole): string {
+  const names = teamRoster().map((member) => member.name.split(' ')[0]).filter(Boolean)
+  const list = joinNames(names) || 'the team'
   if (role === 'team') {
     return 'You can ask: when is Joe free Thursday? book Joe with <name> <time>. brief <name>. note <name>: <text>. task <name>: <text>.'
   }
-  return 'Commands: book <name> <time> <topic>. move my 3pm to 4pm. cancel <name> (YES to confirm). text Frankie: <msg>. text <client>: <msg> (YES to send). what\'s on today. brief <name>. note <name>: <text>. task <name>: <text>. assign <name> to Frankie (YES). when am I free. hold calls till 2. help.'
+  const assignable = joinNames(teamRoster().filter((member) => member.userId).map((member) => member.name.split(' ')[0])) || 'a LOA'
+  return `Commands: book <name> <time> <topic>. book <name> <time> and add ${names.at(-1) ?? 'someone'}. move my 3pm to 4pm. cancel <name> (YES to confirm). text ${list}: <msg>. text the team: <msg>. text <client>: <msg> (YES to send). what's on today. brief <name>. note <name>: <text>. task <name>: <text>. assign <name> to ${assignable} (YES). when am I free. hold calls till 2. help.`
 }
 
 async function resolveLead(
@@ -249,6 +274,9 @@ async function runCall(
     const clashNote = clashes.length
       ? ` Overlaps ${clashes.map((event) => event.summary).slice(0, 2).join('; ')}.`
       : ''
+    const invited = inviteEmails(call.guests)
+    if (invited.problem) return { reply: clip(invited.problem, dryRun), status: 'error' }
+    const guestNote = invited.emails.length ? ` Guest: ${invited.emails.join(', ')}.` : ''
     if (call.intent === 'request_booking') {
       const owner = ownerActor()
       if (!owner) return { reply: clip('Joseph has no phone on file.', dryRun), status: 'error' }
@@ -257,7 +285,7 @@ async function runCall(
         await effects.sendSms({ to: owner.phone, content: `${summary}. Reply YES to book or NO to pass.` })
       }
       return {
-        reply: clip(dryRun ? `Would ask Joseph to approve ${title} ${whenLabel}.` : `Asked Joseph to approve ${title} ${whenLabel}.`, dryRun),
+        reply: clip(dryRun ? `Would ask Joseph to approve ${title} ${whenLabel}.${guestNote}` : `Asked Joseph to approve ${title} ${whenLabel}.${guestNote}`, dryRun),
         status: dryRun ? 'preview' : 'done',
         pending: dryRun
           ? undefined
@@ -271,16 +299,16 @@ async function runCall(
                 requesterPhone: actor.phone,
                 requesterName: actor.name,
                 title,
+                guestEmails: invited.emails,
               }),
               phone: owner.phone,
             },
       }
     }
-    const guests = guestEmails()
     if (dryRun) {
       const scopeNote = access.write ? '' : ' Reconnect Google before this can book.'
       return {
-        reply: clip(`Would book ${title} ${whenLabel} (${settings.callMinutes} min).${clashNote}${guests.length ? ` Guest: ${guests.join(', ')}.` : ''}${scopeNote}`, true),
+        reply: clip(`Would book ${title} ${whenLabel} (${settings.callMinutes} min).${clashNote}${guestNote}${scopeNote}`, true),
         status: 'preview',
       }
     }
@@ -289,9 +317,9 @@ async function runCall(
       description: 'Booked from LoanPilot command mode.',
       start: when.start,
       end,
-      guests,
+      guests: invited.emails,
     })
-    return { reply: clip(`Booked ${title} ${whenLabel}.${clashNote}`, false), status: 'done' }
+    return { reply: clip(`Booked ${title} ${whenLabel}.${clashNote}${guestNote}`, false), status: 'done' }
   }
 
   if (call.intent === 'cancel' || call.intent === 'reschedule') {
@@ -322,9 +350,13 @@ async function runCall(
   }
 
   if (call.intent === 'text_team') {
-    const targets = seatByWho(call.who)
-    if (!targets.length || !call.body) return { reply: clip('Say who and what to text. Example: text Frankie: pull appraisal.', dryRun), status: 'error' }
-    const names = targets.map((seat) => seat.name.split(' ')[0]).join(' and ')
+    const found = actorsForLabel(call.who)
+    const targets = found.targets
+    if (found.unknown || !targets.length || !call.body) {
+      const example = teamRoster()[0]?.name.split(' ')[0] ?? 'Frankie'
+      return { reply: clip(`Say who and what to text. Example: text ${example}: pull appraisal.`, dryRun), status: 'error' }
+    }
+    const names = joinNames(targets.map((seat) => seat.name.split(' ')[0]))
     if (dryRun) return { reply: clip(`Would text ${names}: ${call.body}`, true), status: 'preview' }
     for (const seat of targets) await effects.sendSms({ to: seat.phone, content: call.body })
     return { reply: clip(`Texted ${names}: ${call.body}`, false), status: 'done' }
@@ -406,9 +438,13 @@ async function runCall(
       await effects.createFubTask({ personId: lead.id, personName: lead.name, title: call.body, due: dueText })
       return { reply: clip(`Task on ${lead.name}: ${call.body}`, false), status: 'done' }
     }
-    const targets = seatByWho(call.assignee)
-    const target = targets[0]
-    if (!target) return { reply: clip('Assign to Frankie or Daniel.', dryRun), status: 'error' }
+    const found = actorsForLabel(call.assignee)
+    const assignable = teamRoster().filter((member) => member.userId).map((member) => member.name.split(' ')[0])
+    if (found.unknown || found.targets.length !== 1) {
+      return { reply: clip(`Assign to ${joinNames(assignable) || 'a LOA'}.`, dryRun), status: 'error' }
+    }
+    const target = found.targets[0]
+    if (!target.userId) return { reply: clip(`${target.name} is not in Follow Up Boss, so I can't assign a lead to them.`, dryRun), status: 'error' }
     return {
       reply: clip(`Assign ${lead.name} to ${target.name}? Reply YES.`, dryRun),
       status: 'preview',
@@ -500,8 +536,10 @@ async function finishPending(
     const end = new Date(String(pending.payload.endIso))
     const title = String(pending.payload.title ?? 'Client call')
     const requester = String(pending.payload.requesterPhone ?? '')
+    const storedGuests = Array.isArray(pending.payload.guestEmails) ? pending.payload.guestEmails.filter((email): email is string => typeof email === 'string') : []
+    const guests = [...new Set([...guestEmails(), ...storedGuests].map((email) => email.toLowerCase()))]
     if (dryRun) return { reply: clip(`Would book ${title} ${formatWhen(start, commandSettings().timeZone)}.`, true), status: 'preview' }
-    await effects.createEvent({ summary: title, description: 'Booked from LoanPilot after approval.', start, end, guests: guestEmails() })
+    await effects.createEvent({ summary: title, description: 'Booked from LoanPilot after approval.', start, end, guests })
     if (requester) await effects.sendSms({ to: requester, content: `Joseph approved ${title} ${formatWhen(start, commandSettings().timeZone)}.` })
     return { reply: clip(`Booked ${title} ${formatWhen(start, commandSettings().timeZone)}.`, false), status: 'done' }
   }

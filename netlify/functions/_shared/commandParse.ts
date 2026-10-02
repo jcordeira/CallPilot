@@ -1,5 +1,6 @@
 import OpenAI from 'openai'
 import { env } from './env'
+import { teamRoster } from './teamRoster'
 
 export type CommandRole = 'owner' | 'team'
 
@@ -27,9 +28,13 @@ export type CommandCall = {
   whenText?: string
   toWhenText?: string
   body?: string
-  who?: 'frankie' | 'daniel' | 'both'
+  /** First name, or "team" for everyone. */
+  who?: string
   personal?: boolean
-  assignee?: 'frankie' | 'daniel'
+  /** First name of a Follow Up Boss teammate. */
+  assignee?: string
+  /** Teammate first names to add on the calendar invite. */
+  guests?: string[]
 }
 
 const OWNER_INTENTS: CommandIntent[] = [
@@ -58,12 +63,17 @@ function str(value: unknown): string | undefined {
   return typeof value === 'string' && value.trim() ? value.trim() : undefined
 }
 
-function who(value: unknown): CommandCall['who'] {
-  const text = str(value)?.toLowerCase()
-  if (text === 'frankie' || text === 'frank' || text === '16') return 'frankie'
-  if (text === 'daniel' || text === '27') return 'daniel'
-  if (text === 'both' || text === 'team') return 'both'
-  return undefined
+function label(value: unknown): string | undefined {
+  const text = str(value)?.toLowerCase().replace(/^the\s+/, '')
+  if (!text) return undefined
+  if (text === 'both' || text === 'all' || text === 'everyone') return 'team'
+  return text
+}
+
+function guestsOf(value: unknown): string[] | undefined {
+  const raw = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : []
+  const names = raw.map((item) => (typeof item === 'string' ? item.trim() : '')).filter(Boolean)
+  return names.length ? names : undefined
 }
 
 export function commandFromToolCall(name: string, args: unknown, role: CommandRole): CommandCall {
@@ -77,9 +87,10 @@ export function commandFromToolCall(name: string, args: unknown, role: CommandRo
     whenText: str(bag.whenText),
     toWhenText: str(bag.toWhenText),
     body: str(bag.body),
-    who: who(bag.who ?? bag.assignee),
+    who: label(bag.who),
     personal: bag.personal === true,
-    assignee: who(bag.assignee) === 'both' ? undefined : (who(bag.assignee) as CommandCall['assignee']),
+    assignee: label(bag.assignee),
+    guests: guestsOf(bag.guests),
   }
 }
 
@@ -90,6 +101,7 @@ const TOOL_DEFS: Record<CommandIntent, { description: string; properties: Record
       clientName: { type: 'string' },
       whenText: { type: 'string', description: 'Natural time such as tomorrow 2pm or Thu 3pm' },
       topic: { type: 'string', description: 'Short topic such as refi, purchase, preapproval, HELOC' },
+      guests: { type: 'array', items: { type: 'string' }, description: 'Teammate first names to add on the invite. Example: ["Debra"]' },
     },
     required: ['clientName', 'whenText'],
   },
@@ -108,8 +120,8 @@ const TOOL_DEFS: Record<CommandIntent, { description: string; properties: Record
     required: ['clientName'],
   },
   text_team: {
-    description: 'Text Frankie, Daniel, or both immediately. Example: text Frankie: pull appraisal for Barua.',
-    properties: { who: { type: 'string', enum: ['frankie', 'daniel', 'both'] }, body: { type: 'string' } },
+    description: 'Text one teammate, or the whole team, immediately.',
+    properties: { who: { type: 'string', description: 'First name, or team' }, body: { type: 'string' } },
     required: ['who', 'body'],
   },
   text_client: {
@@ -142,8 +154,8 @@ const TOOL_DEFS: Record<CommandIntent, { description: string; properties: Record
     required: ['body'],
   },
   assign_lead: {
-    description: 'Reassign a lead to Frankie or Daniel. Confirm before doing it.',
-    properties: { clientName: { type: 'string' }, assignee: { type: 'string', enum: ['frankie', 'daniel'] } },
+    description: 'Reassign a lead to a teammate who is a Follow Up Boss user. Confirm before doing it.',
+    properties: { clientName: { type: 'string' }, assignee: { type: 'string', description: 'First name of a Follow Up Boss teammate' } },
     required: ['clientName', 'assignee'],
   },
   availability: {
@@ -161,6 +173,7 @@ const TOOL_DEFS: Record<CommandIntent, { description: string; properties: Record
       clientName: { type: 'string' },
       whenText: { type: 'string' },
       topic: { type: 'string' },
+      guests: { type: 'array', items: { type: 'string' }, description: 'Teammate first names to add on the invite once Joseph approves.' },
     },
     required: ['clientName', 'whenText'],
   },
@@ -168,14 +181,37 @@ const TOOL_DEFS: Record<CommandIntent, { description: string; properties: Record
   unknown: { description: 'Use only when the text is not a command.', properties: {} },
 }
 
+function rosterHint(): string {
+  const members = teamRoster()
+  if (!members.length) return 'No teammates are configured.'
+  return members
+    .map((member) => {
+      const bits = [member.name]
+      if (member.title) bits.push(member.title)
+      if (!member.userId) bits.push('not in Follow Up Boss')
+      return bits.join(', ')
+    })
+    .join('; ')
+}
+
 export function toolSchema(role: CommandRole): OpenAI.Chat.Completions.ChatCompletionTool[] {
+  const names = teamRoster().map((member) => member.name.split(' ')[0]).filter(Boolean)
+  const fubNames = teamRoster().filter((member) => member.userId).map((member) => member.name.split(' ')[0])
   return intentsForRole(role).map((intent) => {
     const spec = TOOL_DEFS[intent]
+    const description =
+      intent === 'text_team'
+        ? `Text a teammate immediately. who is a first name (${names.join(', ') || 'a teammate'}) or "team". Example: text ${names[0] ?? 'Frankie'}: pull the appraisal.`
+        : intent === 'assign_lead'
+          ? `Reassign a lead to ${fubNames.join(' or ') || 'a Follow Up Boss teammate'}. Confirm before doing it. Skip teammates who are not Follow Up Boss users.`
+          : intent === 'book_call'
+            ? `Book a client call on Joseph's calendar. guests lists teammate first names to invite, such as ${names.at(-1) ?? 'a teammate'}.`
+            : spec.description
     return {
       type: 'function',
       function: {
         name: intent,
-        description: spec.description,
+        description,
         parameters: {
           type: 'object',
           properties: spec.properties,
@@ -225,7 +261,7 @@ export async function completeWithGateway(text: string, role: CommandRole): Prom
       {
         role: 'system',
         content:
-          'You route LoanPilot SMS commands. Call exactly one tool. Copy names and times from the text. Do not invent a client. Team senders cannot book, cancel, text clients, or text the team; use request_booking to ask Joseph.',
+          `You route LoanPilot SMS commands. Call exactly one tool. Copy names and times from the text. Do not invent a client. Team senders cannot book, cancel, text clients, or text the team; use request_booking to ask Joseph. Teammates: ${rosterHint()}. For text_team, set who to a first name or "team". When the owner says to add someone to a booking, put those first names in guests.`,
       },
       { role: 'user', content: text },
     ],

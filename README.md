@@ -227,23 +227,24 @@ Hub → Preview calendar guests lists what would change and does not patch. `POS
 
 ## Command mode
 
-Joseph and his LOAs text the Quo Sales line and LoanPilot acts on it. Off until `COMMAND_MODE_ENABLED=true`. `COMMAND_MODE_DRY_RUN` defaults to true: LoanPilot still texts the sender, prefixed `[preview]`, and does not book, reassign, or text anyone else.
+Joseph and the team text the Quo Sales line and LoanPilot acts on it. Off until `COMMAND_MODE_ENABLED=true`. `COMMAND_MODE_DRY_RUN` defaults to true: LoanPilot still texts the sender, prefixed `[preview]`, and does not book, reassign, or text anyone else.
 
-Only these cells are commands. Every other sender, including clients on the same line, is ignored with no reply.
+Only these cells are commands. Every other sender, including clients on the same line, is ignored with no reply. The team comes from `TEAM_MEMBERS` (JSON). If that is empty, `TEAM_MEMBER_1_NAME` / `_PHONE` / `_EMAIL` / `_USER_ID` / `_TITLE` (through `_20_`) is used. If neither is set, the FUB LOA phones (`FUB_LOA_PHONE_<id>`) are the team.
 
-| Phone | Env | Role |
+| Phone | Who | Role |
 |---|---|---|
-| +15169969070 | `FUB_LO_PHONE` | owner (Joseph) |
-| +16315126480 | `FUB_LOA_PHONE_16` | team (Frankie) |
-| +15165213121 | `FUB_LOA_PHONE_27` | team (Daniel) |
+| +15169969070 | Joseph (`FUB_LO_PHONE`) | owner |
+| +16315126480 | Frankie Cordeira, LOA, FUB user 16, fcordeirajr@cliffcomortgage.com | team |
+| +15165213121 | Daniel Ebbecke, LOA, FUB user 27, debbecke@cliffcomortgage.com | team |
+| +12013946798 | Debra Rose, Processor, not a FUB user, drose@cliffcomortgage.com | team |
 
 The line is `QUO_FROM_NUMBER` (+15163869773, the Sales inbox). `COMMAND_PREFIX` is empty by default. Set it to `LP ` or `@lp` if you want a prefix on top of the allowlist.
 
 **Parsing.** Tool calls go through the Netlify AI Gateway already used for Grok (`OPENROUTER_API_KEY` / `OPENROUTER_BASE_URL`, model `ASSISTANT_MODEL` or `COMMAND_MODEL`). Add `OPENAI_API_KEY` and `COMMAND_MODEL=gpt-4o-mini` only if you want OpenAI instead. Lead names are matched against Follow Up Boss. Two close matches get a numbered reply; `1` or `2` picks one. Confirmations expire after 15 minutes.
 
-Owner can book, move, and cancel calls (cancel waits for YES), text Frankie or Daniel immediately, draft a client text that waits for YES, ask what's on today, brief a lead, add a note, create a task, assign a lead (YES, then a FUB mention and a text to that LOA), list open slots, and hold calls until a time. Team can ask when Joe is free (free/busy only, no event titles, 9–6 ET Mon–Fri, up to five 30-minute slots), request a booking that texts Joseph for YES/NO, and brief, note, or task a lead.
+Owner can book, move, and cancel calls (cancel waits for YES), text any teammate or the whole team immediately (`text Debra: ...`, `text the team: ...`), draft a client text that waits for YES, ask what's on today, brief a lead, add a note, create a task, assign a lead to a Follow Up Boss user (YES, then a FUB mention and a text to that LOA; Debra cannot take an assignment), list open slots, and hold calls until a time. Frankie, Daniel, and Debra can ask when Joe is free (free/busy only, no event titles, 9–6 ET Mon–Fri, up to five 30-minute slots), request a booking that texts Joseph for YES/NO, and brief, note, or task a lead.
 
-Booked calls are titled `<Client Name> call <topic>` for 30 minutes in America/New_York. Conflicts are booked and called out. When `CALENDAR_AUTO_GUEST_ENABLED=true`, Frankie is added from `CALENDAR_AUTO_GUEST_EMAILS` on that new event. `hold calls till 2` sets a busy flag the WhatsApp auto-reply honors (it sends immediately and adds the hold time).
+Booked calls are titled `<Client Name> call <topic>` for 30 minutes in America/New_York. Conflicts are booked and called out. `book Siddick tomorrow 2pm and add Debra` puts that teammate's email on the invite. When `CALENDAR_AUTO_GUEST_ENABLED=true`, Frankie is also added from `CALENDAR_AUTO_GUEST_EMAILS`. `hold calls till 2` sets a busy flag the WhatsApp auto-reply honors (it sends immediately and adds the hold time).
 
 **Google.** The Hub connect button already requests `https://www.googleapis.com/auth/calendar`, which covers event writes and free/busy. Joseph does not need to reconnect for command mode if that grant is the one on file. A token that only has `calendar.events` can book but cannot read free/busy; the Hub then shows Reconnect Google.
 
@@ -290,6 +291,7 @@ The Hub Command mode card lists recent commands. It does not send anything.
 | `COMMAND_MODEL` | `ASSISTANT_MODEL` | Tool-calling model |
 | `QUO_FROM_NUMBER` | | Sales line, +15163869773 |
 | `QUO_WEBHOOK_SECRET` | | Required. Unsigned posts are 401 |
+| `TEAM_MEMBERS` | FUB LOA phones | JSON roster: name, phone, email, optional userId, title |
 
 ## Lead heat (Joseph and Frank)
 
