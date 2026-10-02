@@ -8,6 +8,7 @@ import { getCommandPanel } from './_shared/commandMode'
 import { probeCommandGateway } from './_shared/commandParse'
 import { getWhatsappPanel, runWhatsappAutoreply } from './_shared/whatsappAutoreply'
 import { getCalendarGuestPanel, runCalendarGuest } from './_shared/calendarGuest'
+import { getCommandCenter, listContactMessages, postCommandCenter, searchMessageLeads, sendHubText } from './_shared/commandCenter'
 import { errorResponse, jsonFail, jsonOk, readJson } from './_shared/http'
 
 export default async (req: Request, context: Context) => {
@@ -103,6 +104,35 @@ export default async (req: Request, context: Context) => {
     if (action === 'commands') {
       if (req.method !== 'GET') return jsonFail('Method not allowed', 405)
       return jsonOk(await getCommandPanel())
+    }
+    if (action === 'command-center') {
+      if (req.method === 'GET') return jsonOk(await getCommandCenter())
+      if (req.method !== 'POST') return jsonFail('Method not allowed', 405)
+      const body = await readJson(req)
+      return jsonOk(await postCommandCenter({
+        text: typeof body.text === 'string' ? body.text : undefined,
+        choice: typeof body.choice === 'string' ? body.choice : undefined,
+      }))
+    }
+    if (action === 'messages') {
+      if (req.method === 'GET') {
+        const q = url.searchParams.get('q')?.trim() ?? ''
+        const phone = url.searchParams.get('phone')?.trim() ?? ''
+        if (q) return jsonOk({ leads: await searchMessageLeads(q) })
+        if (phone) return jsonOk(await listContactMessages(phone))
+        return jsonOk({ messages: [] })
+      }
+      if (req.method !== 'POST') return jsonFail('Method not allowed', 405)
+      const body = await readJson(req)
+      const kind = body.kind === 'lead' ? 'lead' : body.kind === 'team' ? 'team' : ''
+      if (!kind) return jsonFail('Pick a team member or a lead', 400)
+      return jsonOk(await sendHubText({
+        to: typeof body.to === 'string' ? body.to : '',
+        name: typeof body.name === 'string' ? body.name : '',
+        content: typeof body.content === 'string' ? body.content : '',
+        kind,
+        confirmed: body.confirmed === true,
+      }))
     }
     return jsonFail('Unknown action', 404)
   } catch (err) {

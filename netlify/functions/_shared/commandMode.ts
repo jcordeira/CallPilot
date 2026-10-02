@@ -617,9 +617,32 @@ function latestPending(state: CommandState, phone: string, now: Date): CommandPe
 }
 
 function remember(state: CommandState, log: CommandLog, pending?: CommandPending, dropPhone?: string) {
-  state.recent = [log, ...state.recent].slice(0, 40)
+  state.recent = [log, ...state.recent].slice(0, 80)
   state.pending = state.pending.filter((item) => item.phone !== (dropPhone ?? log.actor) && new Date(item.expiresAt).getTime() > Date.now())
   if (pending) state.pending.push(pending)
+}
+
+export type PendingPrompt = {
+  id: string
+  kind: CommandPending['kind']
+  summary: string
+  choices: { n: number; label: string }[]
+}
+
+/** Labels for Hub buttons. The SMS path still answers with YES or a number. */
+export function pendingPrompt(pending: CommandPending | undefined | null): PendingPrompt | null {
+  if (!pending) return null
+  const choices = Array.isArray(pending.payload.choices) ? (pending.payload.choices as { name?: string }[]) : []
+  const events = Array.isArray(pending.payload.events) ? (pending.payload.events as { summary?: string }[]) : []
+  const labels = choices.length
+    ? choices.map((item, index) => ({ n: index + 1, label: item.name || 'Lead' }))
+    : events.map((item, index) => ({ n: index + 1, label: item.summary || 'Event' }))
+  return {
+    id: pending.id,
+    kind: pending.kind,
+    summary: pending.summary,
+    choices: pending.kind === 'choice' ? labels : [],
+  }
 }
 
 export async function handleCommandMessage(input: {
@@ -630,7 +653,14 @@ export async function handleCommandMessage(input: {
   now?: Date
   parse?: ToolCompletion
   effects?: CommandEffects
-}): Promise<{ ignored?: 'disabled' | 'line' | 'sender' | 'duplicate' | 'prefix'; reply?: string; actor?: string }> {
+  source?: 'hub' | 'sms'
+}): Promise<{
+  ignored?: 'disabled' | 'line' | 'sender' | 'duplicate' | 'prefix'
+  reply?: string
+  actor?: string
+  pending?: PendingPrompt | null
+  status?: CommandLog['status']
+}> {
   const settings = commandSettings()
   if (!settings.enabled) return { ignored: 'disabled' }
   const toList = (Array.isArray(input.to) ? input.to : input.to ? [input.to] : []).map((value) => e164(value)).filter((value): value is string => Boolean(value))
@@ -692,13 +722,14 @@ export async function handleCommandMessage(input: {
     summary: result.reply,
     status: result.status,
     dryRun,
+    source: input.source ?? 'sms',
   }, result.pending, actor.phone)
   if (result.pending && result.pending.phone !== actor.phone) {
     state.pending = state.pending.filter((item) => item.phone !== result.pending?.phone)
     state.pending.push(result.pending)
   }
   await saveCommandState(state)
-  return { reply: result.reply, actor: actor.name }
+  return { reply: result.reply, actor: actor.name, pending: pendingPrompt(result.pending), status: result.status }
 }
 
 export function readQuoInbound(payload: unknown): { id: string; from: string; to: string[]; body: string; incoming: boolean; type: string } | null {

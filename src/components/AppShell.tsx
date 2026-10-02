@@ -9,6 +9,7 @@ import './AppShell.css'
 
 const LIVE_NAV = [
   { to: '/hub', label: 'Hub', end: true },
+  { to: '/command', label: 'Command', end: true },
   { to: '/calendar', label: 'Calendar', end: true },
   { to: '/assistant', label: 'Assistant', end: false },
 ]

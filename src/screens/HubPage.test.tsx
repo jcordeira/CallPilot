@@ -135,6 +135,7 @@ describe('Hub', () => {
     const nav = screen.getByRole('navigation', { name: 'Primary' })
     expect(Array.from(nav.querySelectorAll('a')).map((link) => link.textContent)).toEqual([
       'Hub',
+      'Command',
       'Calendar',
       'Assistant',
       'Week',
@@ -568,7 +569,7 @@ describe('Hub', () => {
     renderApp(<App />, { route: '/hub' })
     expect(await screen.findByText(/real events and tasks/i)).toBeInTheDocument()
     const nav = screen.getByRole('navigation', { name: 'Primary' })
-    expect(Array.from(nav.querySelectorAll('a')).map((link) => link.textContent)).toEqual(['Hub', 'Calendar', 'Assistant'])
+    expect(Array.from(nav.querySelectorAll('a')).map((link) => link.textContent)).toEqual(['Hub', 'Command', 'Calendar', 'Assistant'])
     expect(screen.queryByText(/sample events/i)).not.toBeInTheDocument()
     expect(screen.queryByLabelText('Maya Cordeira')).not.toBeInTheDocument()
     expect(screen.getByText('Connect Google Calendar to see upcoming events.')).toBeInTheDocument()
