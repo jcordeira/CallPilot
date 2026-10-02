@@ -84,7 +84,7 @@ export default async (req: Request, context: Context) => {
       return jsonOk(
         {
           tasks: [...google.tasks, ...fub],
-          demo: google.demo || isDemoMode(),
+          demo: isDemoMode(),
         },
         200,
         PUBLIC_CORS,
@@ -116,7 +116,7 @@ export default async (req: Request, context: Context) => {
         body: text,
         receivedAt: new Date().toISOString(),
       }
-      const result = await processIncomingMessage(message, { ...settings, draftOnly: true })
+      const result = await processIncomingMessage(message, { ...settings, draftOnly: true }, { dryRun: !isDemoMode() })
       return jsonOk(
         {
           activity: result.activity,

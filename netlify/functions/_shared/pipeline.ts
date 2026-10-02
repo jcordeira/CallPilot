@@ -47,7 +47,9 @@ async function recordLeadHeat(
 export async function processIncomingMessage(
   message: IncomingMessage,
   settings: AssistantSettings,
+  options?: { dryRun?: boolean },
 ): Promise<ProcessResult> {
+  const dryRun = options?.dryRun === true
   let person =
     (message.fromEmail ? await findPersonByEmail(message.fromEmail) : null) ??
     (message.fromPhone ? await findPersonByPhone(message.fromPhone) : null)
@@ -72,7 +74,7 @@ export async function processIncomingMessage(
       decision: 'skipped',
       summary: gate.reason ?? 'Skipped',
     }
-    await appendActivity(activity)
+    if (!dryRun) await appendActivity(activity)
     return { activity }
   }
 
@@ -80,7 +82,7 @@ export async function processIncomingMessage(
 
   if (!ai.canAnswer || !ai.replyBody) {
     let fubTaskId: number | undefined
-    if (settings.createFubTasks && person) {
+    if (!dryRun && settings.createFubTasks && person) {
       fubTaskId = await recordLeadHeat(message, person, {
         escalate: true,
         needsAppointment: Boolean(ai.needsAppointment),
@@ -98,12 +100,12 @@ export async function processIncomingMessage(
       summary: ai.escalateReason ?? 'Needs human reply',
       fubTaskId,
     }
-    await appendActivity(activity)
+    if (!dryRun) await appendActivity(activity)
     return { activity }
   }
 
-  // Send or draft on the right channel
-  if (message.channel === 'gmail') {
+  // Send or draft on the right channel. Dry runs never touch Follow Up Boss, inboxes, or the calendar.
+  if (!dryRun && message.channel === 'gmail') {
     const to = message.fromEmail ?? ''
     const subject = message.subject ?? 'Your mortgage question'
     if (settings.draftOnly) {
@@ -111,13 +113,13 @@ export async function processIncomingMessage(
     } else {
       await sendReply({ to, subject, body: ai.replyBody, threadId: message.threadId ?? message.id })
     }
-  } else if (message.channel === 'neo') {
+  } else if (!dryRun && message.channel === 'neo') {
     await sendNeoReply({
       to: message.fromEmail ?? '',
       subject: message.subject ?? 'Your mortgage question',
       body: ai.replyBody,
     })
-  } else if (message.channel === 'sms' && message.fromPhone) {
+  } else if (!dryRun && message.channel === 'sms' && message.fromPhone) {
     if (!settings.draftOnly) {
       await sendSms({ to: message.fromPhone, content: ai.replyBody })
     }
@@ -127,7 +129,7 @@ export async function processIncomingMessage(
   let calendarEventId: string | undefined
   let decision: ActivityItem['decision'] = 'replied'
 
-  if (settings.createFubTasks && person) {
+  if (!dryRun && settings.createFubTasks && person) {
     fubTaskId = await recordLeadHeat(message, person, {
       escalate: false,
       needsAppointment: Boolean(ai.needsAppointment),
@@ -140,7 +142,7 @@ export async function processIncomingMessage(
     })
   }
 
-  if (settings.createCalendarEvents && ai.needsAppointment) {
+  if (!dryRun && settings.createCalendarEvents && ai.needsAppointment) {
     const cal = await holdFollowUpSlot({
       leadName: message.fromName ?? person?.name ?? 'Lead',
       hint: ai.appointmentHint,
@@ -173,6 +175,6 @@ export async function processIncomingMessage(
     fubTaskId,
     calendarEventId,
   }
-  await appendActivity(activity)
+  if (!dryRun) await appendActivity(activity)
   return { activity, replyBody: ai.replyBody }
 }

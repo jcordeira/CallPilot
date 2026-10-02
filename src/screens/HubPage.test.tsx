@@ -117,6 +117,7 @@ describe('Hub', () => {
     mockHub()
     renderApp(<App />, { route: '/' })
     expect(await screen.findByRole('heading', { name: 'Hub' })).toBeInTheDocument()
+    expect(await screen.findByRole('link', { name: 'Week' })).toBeInTheDocument()
     const nav = screen.getByRole('navigation', { name: 'Primary' })
     expect(Array.from(nav.querySelectorAll('a')).map((link) => link.textContent)).toEqual([
       'Hub',
@@ -148,5 +149,71 @@ describe('Hub', () => {
     await user.click(screen.getByRole('button', { name: 'Hold calendar slot' }))
     expect(screen.getByLabelText('Lead name')).toBeInTheDocument()
     expect(screen.getByRole('button', { name: 'Hold slot' })).toBeInTheDocument()
+  })
+
+  it('hides fixture booking screens and sample copy when the hub is live', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL) => {
+        const url = String(input)
+        const live = {
+          ok: true,
+          data: {
+            events: [],
+            tasks: [],
+            activity: [],
+            warnings: [],
+            stats: { upcomingEvents: 0, openTasks: 0, recentReplies: 0, escalations: 0, demo: false },
+            google: { configured: true, connected: false, source: null },
+            leads: [],
+            demo: false,
+          },
+        }
+        if (url.includes('/api/hub/')) {
+          return new Response(JSON.stringify(live), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        if (url.includes('/api/assistant/activity')) {
+          return new Response(JSON.stringify({ items: [] }), { status: 200, headers: { 'Content-Type': 'application/json' } })
+        }
+        return new Response(JSON.stringify({ ok: false, error: 'missing' }), { status: 404 })
+      }),
+    )
+    renderApp(<App />, { route: '/hub' })
+    expect(await screen.findByText(/real events and tasks/i)).toBeInTheDocument()
+    const nav = screen.getByRole('navigation', { name: 'Primary' })
+    expect(Array.from(nav.querySelectorAll('a')).map((link) => link.textContent)).toEqual(['Hub', 'Assistant'])
+    expect(screen.queryByText(/sample events/i)).not.toBeInTheDocument()
+    expect(screen.queryByLabelText('Maya Cordeira')).not.toBeInTheDocument()
+    expect(screen.getByText('Connect Google Calendar to see upcoming events.')).toBeInTheDocument()
+    expect(screen.getByText('Connect Google to see tasks.')).toBeInTheDocument()
+  })
+
+  it('shows an empty week screen instead of sample teammates when live', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async () =>
+        new Response(
+          JSON.stringify({
+            ok: true,
+            data: {
+              events: [],
+              tasks: [],
+              activity: [],
+              warnings: [],
+              stats: { upcomingEvents: 0, openTasks: 0, recentReplies: 0, escalations: 0, demo: false },
+              google: { configured: false, connected: false, source: null },
+              leads: [],
+              demo: false,
+            },
+          }),
+          { status: 200, headers: { 'Content-Type': 'application/json' } },
+        ),
+      ),
+    )
+    renderApp(<App />, { route: '/week' })
+    expect(await screen.findByRole('heading', { name: 'Week' })).toBeInTheDocument()
+    expect(screen.getByText(/demo booking calendar/i)).toBeInTheDocument()
+    expect(screen.queryByText('Maya Cordeira')).not.toBeInTheDocument()
+    expect(screen.queryByText('Devon Reyes')).not.toBeInTheDocument()
   })
 })

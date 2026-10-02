@@ -52,6 +52,16 @@ export function loanOfficerAssistant(): Teammate {
   }
 }
 
+/** User ids that should see open tasks on the hub: LO, LOA, then FOLLOW_UP_BOSS_USER_ID. */
+export function followUpAssigneeIds(): number[] {
+  const ids = [loanOfficer().userId, loanOfficerAssistant().userId].filter((id): id is number => id != null)
+  const unique = [...new Set(ids)]
+  if (unique.length) return unique
+  const fallback = Number(env('FOLLOW_UP_BOSS_USER_ID') || '')
+  if (Number.isInteger(fallback) && fallback > 0) return [fallback]
+  return []
+}
+
 export function teammateForBand(band: ScoreBand): Teammate | null {
   if (band === 'hot') return loanOfficer()
   if (band === 'warm' || band === 'cool') return loanOfficerAssistant()

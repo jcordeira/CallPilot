@@ -36,8 +36,12 @@ function encodeRawEmail(headers: Record<string, string>, body: string): string {
     .replace(/=+$/, '')
 }
 
+export function gmailConfigured(): boolean {
+  return Boolean(env('GMAIL_ACCESS_TOKEN'))
+}
+
 export async function listUnreadLeadCandidates(max = 10): Promise<GmailThreadSummary[]> {
-  if (isDemoMode() || !env('GMAIL_ACCESS_TOKEN')) {
+  if (isDemoMode()) {
     return [
       {
         id: 'demo-thread-1',
@@ -55,6 +59,7 @@ export async function listUnreadLeadCandidates(max = 10): Promise<GmailThreadSum
       },
     ]
   }
+  if (!gmailConfigured()) return []
 
   const q = encodeURIComponent('is:unread in:inbox -category:promotions -category:social newer_than:2d')
   const list = (await gmail(`threads?q=${q}&maxResults=${max}`)) as { threads?: { id: string }[] }
@@ -86,9 +91,8 @@ export async function createDraftReply(input: {
   body: string
   threadId: string
 }): Promise<{ id: string }> {
-  if (isDemoMode() || !env('GMAIL_ACCESS_TOKEN')) {
-    return { id: `draft-demo-${Date.now()}` }
-  }
+  if (isDemoMode()) return { id: `draft-demo-${Date.now()}` }
+  if (!gmailConfigured()) throw new Error('Gmail is not connected')
   const raw = encodeRawEmail(
     {
       To: input.to,
@@ -110,9 +114,8 @@ export async function sendReply(input: {
   body: string
   threadId: string
 }): Promise<{ id: string }> {
-  if (isDemoMode() || !env('GMAIL_ACCESS_TOKEN')) {
-    return { id: `sent-demo-${Date.now()}` }
-  }
+  if (isDemoMode()) return { id: `sent-demo-${Date.now()}` }
+  if (!gmailConfigured()) throw new Error('Gmail is not connected')
   const raw = encodeRawEmail(
     {
       To: input.to,

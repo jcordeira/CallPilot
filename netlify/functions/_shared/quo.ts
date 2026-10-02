@@ -5,9 +5,8 @@ export async function sendSms(input: { to: string; content: string }): Promise<{
   const from = env('QUO_FROM_NUMBER')
   const apiKey = env('QUO_API_KEY')
 
-  if (isDemoMode() || !apiKey || !from) {
-    return { id: `sms-demo-${Date.now()}` }
-  }
+  if (isDemoMode()) return { id: `sms-demo-${Date.now()}` }
+  if (!apiKey || !from) throw new Error('Quo SMS is not configured')
 
   // Quo public API (OpenPhone-compatible). Prefer webhook-driven inbound; outbound via REST.
   const res = await fetch('https://api.openphone.com/v1/messages', {

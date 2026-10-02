@@ -2,6 +2,7 @@ import { env, isDemoMode } from './env'
 import { loadHubExtras, rememberFubTask } from './hubExtras'
 import type { HubTask } from './hubTypes'
 import { shiftDateKey } from './hubTypes'
+import { followUpAssigneeIds, loanOfficer, loanOfficerAssistant } from './team'
 
 const FUB_BASE = 'https://api.followupboss.com/v1'
 
@@ -67,7 +68,7 @@ export async function findPersonByEmail(email: string): Promise<FubPerson | null
     const local = email.split('@')[0]?.replace(/[._]+/g, ' ').trim()
     const name = local ? local.replace(/\b\w/g, (letter) => letter.toUpperCase()) : 'Demo Lead'
     return {
-      id: 2101,
+      id: -2101,
       name,
       emails: [{ value: email }],
       stage: 'Lead',
@@ -83,7 +84,7 @@ export async function findPersonByEmail(email: string): Promise<FubPerson | null
 export async function findPersonByPhone(phone: string): Promise<FubPerson | null> {
   if (isDemoMode()) {
     return {
-      id: 2102,
+      id: -2102,
       name: 'Demo SMS Lead',
       phones: [{ value: phone }],
       stage: 'Lead',
@@ -133,6 +134,74 @@ function fubTaskIsDone(value: unknown): boolean {
   return value === true || value === 1 || value === '1'
 }
 
+type FubTaskRaw = {
+  id: number
+  name?: string
+  isCompleted?: boolean | number | string
+  dueDate?: string
+  personId?: number
+  personName?: string
+  assignedTo?: string
+  AssignedTo?: string
+  assignedUserId?: number
+}
+
+const DUE_LOOKBACK_DAYS = 30
+const DUE_HORIZON_DAYS = 21
+
+function dueWindow(now = new Date()): { dueStart: string; dueEnd: string } {
+  return {
+    dueStart: new Date(now.getTime() - DUE_LOOKBACK_DAYS * 86_400_000).toISOString(),
+    dueEnd: new Date(now.getTime() + DUE_HORIZON_DAYS * 86_400_000).toISOString(),
+  }
+}
+
+function assignedLabel(task: FubTaskRaw): string | undefined {
+  const raw = task.AssignedTo ?? task.assignedTo
+  if (typeof raw === 'string' && raw.trim()) return raw.trim()
+  if (task.assignedUserId && task.assignedUserId === loanOfficer().userId) return loanOfficer().name
+  if (task.assignedUserId && task.assignedUserId === loanOfficerAssistant().userId) return loanOfficerAssistant().name
+  return undefined
+}
+
+async function fetchOpenTasksForUser(userId: number, now = new Date()): Promise<FubTaskRaw[]> {
+  const window = dueWindow(now)
+  const params = new URLSearchParams({
+    assignedUserId: String(userId),
+    // FUB stores 0/1. The string "false" is truthy in their PHP API, so send 0.
+    isCompleted: '0',
+    sort: 'dueDate',
+    limit: '100',
+    dueStart: window.dueStart,
+    dueEnd: window.dueEnd,
+  })
+  const data = (await fubFetch(`/tasks?${params}`)) as { tasks?: FubTaskRaw[] }
+  return data?.tasks ?? []
+}
+
+async function lookupPeopleNames(ids: number[]): Promise<Map<number, string>> {
+  const unique = [...new Set(ids.filter((id) => Number.isInteger(id) && id > 0))]
+  const names = new Map<number, string>()
+  for (let i = 0; i < unique.length; i += 40) {
+    const chunk = unique.slice(i, i + 40)
+    const joined = chunk.join(',')
+    const limit = String(chunk.length)
+    let people = await fetchPeople(`ids=${joined}&limit=${limit}&fields=id,name`)
+    if (!people.some((person) => chunk.includes(person.id))) {
+      people = await fetchPeople(`id=${joined}&limit=${limit}&fields=id,name`)
+    }
+    for (const person of people) {
+      if (chunk.includes(person.id) && person.name?.trim()) names.set(person.id, person.name.trim())
+    }
+  }
+  return names
+}
+
+async function fetchPeople(query: string): Promise<FubPerson[]> {
+  const data = (await fubFetch(`/people?${query}`)) as { people?: FubPerson[] }
+  return data?.people ?? []
+}
+
 export async function listOpenFubTasks(): Promise<HubTask[]> {
   if (isDemoMode()) {
     const seen = new Set<string>()
@@ -144,29 +213,42 @@ export async function listOpenFubTasks(): Promise<HubTask[]> {
     })
   }
 
-  const data = (await fubFetch('/tasks?limit=50')) as {
-    tasks?: {
-      id: number
-      name?: string
-      isCompleted?: boolean | number | string
-      dueDate?: string
-      personId?: number
-      personName?: string
-      assignedTo?: string
-    }[]
+  const assigneeIds = followUpAssigneeIds()
+  if (!assigneeIds.length) return []
+
+  const settled = await Promise.allSettled(assigneeIds.map((id) => fetchOpenTasksForUser(id)))
+  const raw = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+  if (!raw.length && settled.every((result) => result.status === 'rejected')) {
+    const failed = settled.find((result) => result.status === 'rejected')
+    if (failed?.status === 'rejected') throw failed.reason
   }
-  return (data?.tasks ?? [])
-    .filter((task) => task?.id != null && !fubTaskIsDone(task.isCompleted))
+
+  const seen = new Set<number>()
+  const open = raw.filter((task) => {
+    if (task?.id == null || fubTaskIsDone(task.isCompleted) || seen.has(task.id)) return false
+    seen.add(task.id)
+    return true
+  })
+
+  let names = new Map<number, string>()
+  try {
+    names = await lookupPeopleNames(open.map((task) => task.personId).filter((id): id is number => id != null))
+  } catch {
+    /* tasks still list; person name stays blank */
+  }
+
+  return open
     .map((task) => ({
       id: String(task.id),
       title: task.name?.trim() || 'Follow up',
       due: task.dueDate,
       status: 'needsAction' as const,
       source: 'fub' as const,
-      personName: task.personName,
+      personName: (task.personId != null ? names.get(task.personId) : undefined) ?? task.personName?.trim() ?? undefined,
       personId: task.personId,
-      assignedTo: typeof task.assignedTo === 'string' ? task.assignedTo : undefined,
+      assignedTo: assignedLabel(task),
     }))
+    .sort((a, b) => (a.due ?? '9999-99-99').localeCompare(b.due ?? '9999-99-99') || a.title.localeCompare(b.title))
 }
 
 function resolveAssignee(input: { assignedUserId?: number; assignedTo?: string }): { name: string; userId?: number } {

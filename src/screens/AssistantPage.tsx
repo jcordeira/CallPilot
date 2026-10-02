@@ -1,5 +1,6 @@
 import { useEffect, useState, useTransition } from 'react'
 import { Link } from 'react-router-dom'
+import { useDemoMode } from '../state/demoMode'
 import {
   fetchActivity,
   previewReply,
@@ -51,6 +52,7 @@ const PRESETS: { label: string; channel: Channel; subject: string; body: string;
 ]
 
 export function AssistantPage() {
+  const demo = useDemoMode() === true
   const [items, setItems] = useState<ActivityItem[]>([])
   const [error, setError] = useState<string | null>(null)
   const [preview, setPreview] = useState<{ summary: string; reply?: string } | null>(null)
@@ -145,7 +147,11 @@ export function AssistantPage() {
           </div>
           {error && <p className="assistant__error">{error}</p>}
           {items.length === 0 && !error && (
-            <p className="assistant__empty">No activity yet. Run a sweep or try a preview scenario.</p>
+            <p className="assistant__empty">
+              {demo
+                ? 'No activity yet. Run a sweep or try a preview scenario.'
+                : 'No activity yet. Connected inboxes are checked every 5 minutes.'}
+            </p>
           )}
           <ul className="activity">
             {items.map((item) => (
@@ -173,24 +179,32 @@ export function AssistantPage() {
 
         <section className="assistant__panel" aria-labelledby="try-heading">
           <h2 id="try-heading" className="assistant__h">
-            Try a scenario
+            {demo ? 'Try a scenario' : 'Inboxes'}
           </h2>
-          <p className="assistant__help">
-            Previews always draft — they never send. Lead-only filtering skips operations senders.
-          </p>
-          <div className="assistant__presets">
-            {PRESETS.map((p) => (
-              <button
-                key={p.label}
-                type="button"
-                className="btn btn--ghost"
-                disabled={busy}
-                onClick={() => onPreset(p)}
-              >
-                {p.label}
-              </button>
-            ))}
-          </div>
+          {demo ? (
+            <>
+              <p className="assistant__help">
+                Previews always draft — they never send. Lead-only filtering skips operations senders.
+              </p>
+              <div className="assistant__presets">
+                {PRESETS.map((p) => (
+                  <button
+                    key={p.label}
+                    type="button"
+                    className="btn btn--ghost"
+                    disabled={busy}
+                    onClick={() => onPreset(p)}
+                  >
+                    {p.label}
+                  </button>
+                ))}
+              </div>
+            </>
+          ) : (
+            <p className="assistant__help">
+              Live mode only reads Gmail, Neo, and SMS when those channels are configured. Disconnected inboxes stay empty.
+            </p>
+          )}
           {preview && (
             <div className="assistant__preview-result">
               <div className="eyebrow">Result</div>

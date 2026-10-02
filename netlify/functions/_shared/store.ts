@@ -1,10 +1,15 @@
 import { getStore } from '@netlify/blobs'
+import { isDemoArtifactId } from './demoData'
 import type { ActivityItem, AssistantSettings } from './types'
 import { DEFAULT_SETTINGS } from './types'
 import { isDemoMode } from './env'
 
 const memoryActivity: ActivityItem[] = []
 let memorySettings: AssistantSettings | null = null
+
+export function resetActivityForTests() {
+  memoryActivity.length = 0
+}
 
 async function activityStore() {
   try {
@@ -56,15 +61,32 @@ export async function appendActivity(item: ActivityItem): Promise<void> {
   }
 }
 
+function visibleActivity(items: ActivityItem[], limit: number): ActivityItem[] {
+  const source = isDemoMode() ? items : items.filter((item) => !isDemoArtifactId(item.id))
+  return source.slice(0, limit)
+}
+
 export async function listActivity(limit = 50): Promise<ActivityItem[]> {
   const store = await activityStore()
   if (store) {
     const existing = ((await store.get('items', { type: 'json' })) as ActivityItem[] | null) ?? []
-    if (existing.length) return existing.slice(0, limit)
+    if (existing.length) return visibleActivity(existing, limit)
   }
-  if (memoryActivity.length) return memoryActivity.slice(0, limit)
+  if (memoryActivity.length) return visibleActivity(memoryActivity, limit)
   if (isDemoMode()) return seedDemoActivity().slice(0, limit)
   return []
+}
+
+/** Drop sample activity rows (ids containing "demo" or "seed-") from memory and blobs. */
+export async function purgeDemoActivity(): Promise<void> {
+  const keptMemory = memoryActivity.filter((item) => !isDemoArtifactId(item.id))
+  memoryActivity.length = 0
+  memoryActivity.push(...keptMemory)
+  const store = await activityStore()
+  if (!store) return
+  const existing = ((await store.get('items', { type: 'json' })) as ActivityItem[] | null) ?? []
+  const kept = existing.filter((item) => !isDemoArtifactId(item.id))
+  if (kept.length !== existing.length) await store.setJSON('items', kept)
 }
 
 function seedDemoActivity(): ActivityItem[] {
@@ -80,7 +102,7 @@ function seedDemoActivity(): ActivityItem[] {
       decision: 'replied',
       summary: 'Drafted reply listing typical pre-approval docs; FUB task created.',
       replyPreview: 'Thanks for asking. For a typical pre-approval we start with…',
-      fubPersonId: 1001,
+      fubPersonId: -1001,
       fubTaskId: 5102,
     },
     {

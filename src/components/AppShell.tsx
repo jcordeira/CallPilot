@@ -2,12 +2,17 @@ import { NavLink, Outlet } from 'react-router-dom'
 import { useStore } from '../state/store'
 import { HOST_ID } from '../data/fixtures'
 import { initials } from '../lib/people'
+import { useDemoMode } from '../state/demoMode'
 import { useTimeZone } from '../state/timezone'
 import './AppShell.css'
 
-const NAV = [
+const LIVE_NAV = [
   { to: '/hub', label: 'Hub', end: true },
   { to: '/assistant', label: 'Assistant', end: false },
+]
+
+const DEMO_NAV = [
+  ...LIVE_NAV,
   { to: '/week', label: 'Week', end: true },
   { to: '/book', label: 'Book', end: false },
   { to: '/settings', label: 'Settings', end: true },
@@ -16,7 +21,9 @@ const NAV = [
 export function AppShell() {
   const { state } = useStore()
   const { zoneShort } = useTimeZone()
-  const host = state.team.find((m) => m.id === HOST_ID) ?? state.team[0]
+  const demo = useDemoMode() === true
+  const host = demo ? (state.team.find((m) => m.id === HOST_ID) ?? state.team[0]) : null
+  const NAV = demo ? DEMO_NAV : LIVE_NAV
 
   return (
     <div className="shell">
@@ -40,7 +47,7 @@ export function AppShell() {
           </nav>
           <div className="header__right">
             <span className="header__tz mono" title="Current time zone">{zoneShort}</span>
-            <span className="avatar header__avatar" aria-label={host.name}>{initials(host.name)}</span>
+            {host && <span className="avatar header__avatar" aria-label={host.name}>{initials(host.name)}</span>}
           </div>
         </div>
       </header>

@@ -260,11 +260,15 @@ export function HubPage() {
               Google connected{summary.google.email ? ` as ${summary.google.email}` : ''}
               {summary.google.source === 'env' ? ' (env token)' : ''}.
             </p>
-          ) : (
+          ) : summary?.stats.demo ? (
             <p className="hub__demo">
               Google Calendar is not connected — you&apos;re seeing sample events until you connect.
             </p>
-          )}
+          ) : summary ? (
+            <p className="hub__demo">
+              Google Calendar is not connected. Connect it to show your real events and tasks.
+            </p>
+          ) : null}
         </div>
         <div className="hub__actions">
           {summary?.google?.connected ? (
@@ -381,7 +385,7 @@ export function HubPage() {
                   inputMode="numeric"
                   value={personId}
                   onChange={(e) => setPersonId(e.target.value)}
-                  placeholder="Optional in demo mode"
+                  placeholder={summary?.stats.demo ? 'Optional in demo mode' : 'Required — Follow Up Boss person ID'}
                 />
               </label>
             )}
@@ -501,7 +505,11 @@ export function HubPage() {
           {!ready ? (
             <p className="hub__empty">Loading calendar…</p>
           ) : events.length === 0 ? (
-            <p className="hub__empty">Nothing on the calendar for the next 7 days.</p>
+            <p className="hub__empty">
+              {summary && !summary.stats.demo && !summary.google.connected
+                ? 'Connect Google Calendar to see upcoming events.'
+                : 'Nothing on the calendar for the next 7 days.'}
+            </p>
           ) : (
             <ul className="hub__list">
               {events.map((event) => (
@@ -533,7 +541,11 @@ export function HubPage() {
           {!ready ? (
             <p className="hub__empty">Loading tasks…</p>
           ) : googleTasks.length === 0 ? (
-            <p className="hub__empty">No open Google Tasks.</p>
+            <p className="hub__empty">
+              {summary && !summary.stats.demo && !summary.google.connected
+                ? 'Connect Google to see tasks.'
+                : 'No open Google Tasks.'}
+            </p>
           ) : (
             <ul className="hub__list">
               {googleTasks.map((task) => (
