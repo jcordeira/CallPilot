@@ -3,11 +3,13 @@ import { useStore } from '../state/store'
 import { HOST_ID } from '../data/fixtures'
 import { initials } from '../lib/people'
 import { useDemoMode } from '../state/demoMode'
+import { useHubAuth } from '../state/hubAuth'
 import { useTimeZone } from '../state/timezone'
 import './AppShell.css'
 
 const LIVE_NAV = [
   { to: '/hub', label: 'Hub', end: true },
+  { to: '/calendar', label: 'Calendar', end: true },
   { to: '/assistant', label: 'Assistant', end: false },
 ]
 
@@ -22,6 +24,7 @@ export function AppShell() {
   const { state } = useStore()
   const { zoneShort } = useTimeZone()
   const demo = useDemoMode() === true
+  const { signedIn, signOut } = useHubAuth()
   const host = demo ? (state.team.find((m) => m.id === HOST_ID) ?? state.team[0]) : null
   const NAV = demo ? DEMO_NAV : LIVE_NAV
 
@@ -47,6 +50,7 @@ export function AppShell() {
           </nav>
           <div className="header__right">
             <span className="header__tz mono" title="Current time zone">{zoneShort}</span>
+            {signedIn && <button type="button" className="btn" onClick={signOut}>Sign out</button>}
             {host && <span className="avatar header__avatar" aria-label={host.name}>{initials(host.name)}</span>}
           </div>
         </div>

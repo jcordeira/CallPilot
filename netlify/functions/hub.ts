@@ -1,5 +1,7 @@
 import type { Config, Context } from '@netlify/functions'
+import { calendarOk, createCalendar, patchCalendar, peopleQuery, readCalendar, removeCalendar } from './_shared/calendarApi'
 import { createHubEvent, createHubTask, eventInputFromBody, getHubSummary, scoreHubLeads, taskInputFromBody } from './_shared/hub'
+import { requireHubSession } from './_shared/hubSession'
 import { listLeadHeat } from './_shared/leadHeat'
 import { getReminderPanel, runLoaReminders } from './_shared/loaReminders'
 import { getCommandPanel } from './_shared/commandMode'
@@ -8,6 +10,8 @@ import { getCalendarGuestPanel, runCalendarGuest } from './_shared/calendarGuest
 import { errorResponse, jsonFail, jsonOk, readJson } from './_shared/http'
 
 export default async (req: Request, context: Context) => {
+  const denied = requireHubSession(req)
+  if (denied) return denied
   const url = new URL(req.url)
   const action = context.params?.action ?? url.pathname.split('/').filter(Boolean).pop()
 
@@ -23,6 +27,17 @@ export default async (req: Request, context: Context) => {
     if (action === 'events') {
       if (req.method !== 'POST') return jsonFail('Method not allowed', 405)
       return jsonOk(await createHubEvent(eventInputFromBody(await readJson(req))), 201)
+    }
+    if (action === 'calendar') {
+      if (req.method === 'GET') return calendarOk(await readCalendar(url))
+      if (req.method === 'POST') return calendarOk(await createCalendar(await readJson(req)), 201)
+      if (req.method === 'PATCH') return calendarOk(await patchCalendar(await readJson(req)))
+      if (req.method === 'DELETE') return calendarOk(await removeCalendar(url))
+      return jsonFail('Method not allowed', 405)
+    }
+    if (action === 'people') {
+      if (req.method !== 'GET') return jsonFail('Method not allowed', 405)
+      return calendarOk(await peopleQuery(url))
     }
     if (action === 'leads') {
       if (req.method !== 'GET') return jsonFail('Method not allowed', 405)
@@ -90,5 +105,5 @@ export default async (req: Request, context: Context) => {
 
 export const config: Config = {
   path: '/api/hub/:action',
-  method: ['GET', 'POST'],
+  method: ['GET', 'POST', 'PATCH', 'DELETE'],
 }

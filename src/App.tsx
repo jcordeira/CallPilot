@@ -8,14 +8,18 @@ import { WeekPage } from './screens/WeekPage'
 import { TeamPage } from './screens/TeamPage'
 import { SettingsPage } from './screens/SettingsPage'
 import { DemoModeProvider, FixtureScreen } from './state/demoMode'
+import { HubAuthGate } from './state/hubAuth'
+import { CalendarPage } from './screens/CalendarPage'
 
 export function App() {
   return (
     <DemoModeProvider>
+      <HubAuthGate>
       <Routes>
         <Route element={<AppShell />}>
           <Route index element={<Navigate to="/hub" replace />} />
           <Route path="/hub" element={<HubPage />} />
+          <Route path="/calendar" element={<CalendarPage />} />
           <Route path="/assistant" element={<AssistantPage />} />
           <Route path="/assistant/settings" element={<AssistantSettingsPage />} />
           <Route path="/book" element={<FixtureScreen title="Book"><BookingPage /></FixtureScreen>} />
@@ -26,6 +30,7 @@ export function App() {
           <Route path="*" element={<Navigate to="/hub" replace />} />
         </Route>
       </Routes>
+      </HubAuthGate>
     </DemoModeProvider>
   )
 }

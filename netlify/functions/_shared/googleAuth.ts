@@ -300,10 +300,13 @@ export async function getGoogleConnectionStatus(): Promise<{
   scope?: string
   /** OAuth is connected, but the saved grant cannot patch events. */
   needsCalendarWrite: boolean
+  canWrite: boolean
+  reconnect: boolean
 }> {
   const configured = googleOAuthConfigured()
   const stored = await loadGoogleTokens()
   if (stored?.accessToken) {
+    const canWrite = calendarCanWriteEvents(stored.scope)
     return {
       configured,
       connected: true,
@@ -312,11 +315,13 @@ export async function getGoogleConnectionStatus(): Promise<{
       expiresAt: stored.expiresAt,
       connectedAt: stored.connectedAt,
       scope: stored.scope,
-      needsCalendarWrite: !calendarCanWriteEvents(stored.scope),
+      canWrite,
+      needsCalendarWrite: !canWrite,
+      reconnect: !canWrite,
     }
   }
   if (env('GOOGLE_CALENDAR_ACCESS_TOKEN') || env('GOOGLE_TASKS_ACCESS_TOKEN')) {
-    return { configured, connected: true, source: 'env', needsCalendarWrite: false }
+    return { configured, connected: true, source: 'env', canWrite: true, needsCalendarWrite: false, reconnect: false }
   }
-  return { configured, connected: false, source: null, needsCalendarWrite: false }
+  return { configured, connected: false, source: null, canWrite: false, needsCalendarWrite: false, reconnect: false }
 }

@@ -16,6 +16,7 @@ import {
   readCookie,
   saveGoogleTokens,
 } from './_shared/googleAuth'
+import { requireHubSession } from './_shared/hubSession'
 import { jsonFail, jsonOk } from './_shared/http'
 
 function requestIsSecure(req: Request): boolean {
@@ -46,6 +47,10 @@ export function disconnectAuthorized(req: Request): boolean {
 export default async (req: Request, context: Context) => {
   const url = new URL(req.url)
   const action = context.params?.action ?? url.pathname.split('/').filter(Boolean).pop()
+  if (action !== 'callback' && !apiKeyIsValid(extractApiKey(req.headers), env('LOANPILOT_API_KEY'), isDemoMode())) {
+    const denied = requireHubSession(req)
+    if (denied) return denied
+  }
 
   if (action === 'status' && req.method === 'GET') {
     return jsonOk(await getGoogleConnectionStatus())

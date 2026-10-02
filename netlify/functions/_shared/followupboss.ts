@@ -339,6 +339,28 @@ export async function addNote(input: {
   return { id: data?.id }
 }
 
+const DEMO_DIRECTORY: FubPerson[] = [
+  { id: -1001, name: 'Alex Buyer', emails: [{ value: 'alex.buyer@gmail.com' }] },
+  { id: -1002, name: 'Jordan Hale', emails: [{ value: 'jordan.hale@gmail.com' }] },
+  { id: -1003, name: 'Sam Rivera', emails: [{ value: 'sam.rivera@gmail.com' }] },
+]
+
+export async function searchPeople(query: string): Promise<{ id: number; name: string; email?: string }[]> {
+  const q = query.trim()
+  if (q.length < 2) return []
+  const shape = (person: FubPerson) => ({
+    id: person.id,
+    name: person.name,
+    email: person.emails?.find((item) => item.value.includes('@'))?.value,
+  })
+  if (isDemoMode()) {
+    const needle = q.toLowerCase()
+    return DEMO_DIRECTORY.filter((person) => person.name.toLowerCase().includes(needle)).map(shape)
+  }
+  const data = (await fubFetch(`/people?name=${encodeURIComponent(q)}&limit=8&fields=name,emails`)) as { people?: FubPerson[] }
+  return (data.people ?? []).map(shape).filter((person) => person.name)
+}
+
 export async function listPeople(limit = 30): Promise<FubPerson[]> {
   if (isDemoMode()) return []
   const data = (await fubFetch(`/people?limit=${limit}&sort=-updated`)) as { people?: FubPerson[] }
