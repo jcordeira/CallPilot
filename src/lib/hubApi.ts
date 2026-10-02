@@ -194,6 +194,31 @@ export type WhatsappRun = {
   deliveries: { contactLabel: string; summary: string; status: string }[]
 }
 
+export type CommandLog = {
+  id: string
+  at: string
+  actor: string
+  role: 'owner' | 'team'
+  command: string
+  summary: string
+  status: 'preview' | 'done' | 'denied' | 'error'
+  dryRun: boolean
+}
+
+export type CommandPanel = {
+  enabled: boolean
+  dryRun: boolean
+  line?: string
+  prefix: string
+  busyUntil?: string
+  needsGoogleReconnect: boolean
+  recent: CommandLog[]
+}
+
+export function fetchCommandPanel() {
+  return hubRequest<CommandPanel>('commands')
+}
+
 export function fetchWhatsappPanel() {
   return hubRequest<WhatsappPanel>('whatsapp')
 }

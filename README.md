@@ -225,6 +225,72 @@ Hub → Preview calendar guests lists what would change and does not patch. `POS
 | `CALENDAR_AUTO_GUEST_EXCLUDE` | birthday, galligan group, team cordeira weekly, week setup, joe cordeira + alicia, heloc steps, eric / joe | Phrases that block an add |
 | `GMAIL_ACCESS_TOKEN` | | Sends the `.ics` when notify is `ics` |
 
+## Command mode
+
+Joseph and his LOAs text the Quo Sales line and LoanPilot acts on it. Off until `COMMAND_MODE_ENABLED=true`. `COMMAND_MODE_DRY_RUN` defaults to true: LoanPilot still texts the sender, prefixed `[preview]`, and does not book, reassign, or text anyone else.
+
+Only these cells are commands. Every other sender, including clients on the same line, is ignored with no reply.
+
+| Phone | Env | Role |
+|---|---|---|
+| +15169969070 | `FUB_LO_PHONE` | owner (Joseph) |
+| +16315126480 | `FUB_LOA_PHONE_16` | team (Frankie) |
+| +15165213121 | `FUB_LOA_PHONE_27` | team (Daniel) |
+
+The line is `QUO_FROM_NUMBER` (+15163869773, the Sales inbox). `COMMAND_PREFIX` is empty by default. Set it to `LP ` or `@lp` if you want a prefix on top of the allowlist.
+
+**Parsing.** Tool calls go through the Netlify AI Gateway already used for Grok (`OPENROUTER_API_KEY` / `OPENROUTER_BASE_URL`, model `ASSISTANT_MODEL` or `COMMAND_MODEL`). Add `OPENAI_API_KEY` and `COMMAND_MODEL=gpt-4o-mini` only if you want OpenAI instead. Lead names are matched against Follow Up Boss. Two close matches get a numbered reply; `1` or `2` picks one. Confirmations expire after 15 minutes.
+
+Owner can book, move, and cancel calls (cancel waits for YES), text Frankie or Daniel immediately, draft a client text that waits for YES, ask what's on today, brief a lead, add a note, create a task, assign a lead (YES, then a FUB mention and a text to that LOA), list open slots, and hold calls until a time. Team can ask when Joe is free (free/busy only, no event titles, 9–6 ET Mon–Fri, up to five 30-minute slots), request a booking that texts Joseph for YES/NO, and brief, note, or task a lead.
+
+Booked calls are titled `<Client Name> call <topic>` for 30 minutes in America/New_York. Conflicts are booked and called out. When `CALENDAR_AUTO_GUEST_ENABLED=true`, Frankie is added from `CALENDAR_AUTO_GUEST_EMAILS` on that new event. `hold calls till 2` sets a busy flag the WhatsApp auto-reply honors (it sends immediately and adds the hold time).
+
+**Google.** The Hub connect button already requests `https://www.googleapis.com/auth/calendar`, which covers event writes and free/busy. Joseph does not need to reconnect for command mode if that grant is the one on file. A token that only has `calendar.events` can book but cannot read free/busy; the Hub then shows Reconnect Google.
+
+**Quo webhook.** `POST /api/webhooks/quo`. A missing or bad signature returns 401. Set `QUO_WEBHOOK_SECRET` to the key Quo returns (`whsec_...`) or the base64 secret from the webhook details page. Current deliveries sign `{webhook-id}.{webhook-timestamp}.{raw body}` (HMAC-SHA256, base64, header `webhook-signature`). Older UI deliveries use `openphone-signature` (`hmac;1;timestamp;signature` over `timestamp.rawBody`). Both are accepted. Message id is the idempotency key.
+
+Register it on the Sales number only.
+
+API (version `2026-03-30`):
+
+```bash
+# `id` is the phone number id (PNxxxx). `phoneNumber` is the E.164 line.
+curl -s "https://api.quo.com/phone-numbers?phoneNumber=%2B15163869773" \
+  -H "Authorization: $QUO_API_KEY" \
+  -H "Quo-Api-Version: 2026-03-30"
+
+curl -s "https://api.quo.com/webhooks" \
+  -X POST \
+  -H "Authorization: $QUO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Quo-Api-Version: 2026-03-30" \
+  -d '{
+    "url": "https://<your-site>/api/webhooks/quo",
+    "events": ["message.received"],
+    "resourceIds": ["<PNxxxx from the list above>"],
+    "label": "LoanPilot command mode"
+  }'
+```
+
+Save the response `key` as `QUO_WEBHOOK_SECRET`.
+
+UI: Quo → Settings → Webhooks → Add webhook → URL `https://<your-site>/api/webhooks/quo` → event `message.received` → limit it to the Sales number +15163869773 → save → open the webhook → Reveal signing secret → paste that into `QUO_WEBHOOK_SECRET`.
+
+The Hub Command mode card lists recent commands. It does not send anything.
+
+| Env | Default | Purpose |
+|---|---|---|
+| `COMMAND_MODE_ENABLED` | `false` | Master switch |
+| `COMMAND_MODE_DRY_RUN` | `true` | Reply with `[preview]` and skip side effects |
+| `COMMAND_PREFIX` | empty | Optional prefix such as `LP ` |
+| `COMMAND_TIMEZONE` | `America/New_York` | Bookings and slots |
+| `COMMAND_HOURS_START` / `COMMAND_HOURS_END` | `9` / `18` | Working hours for open slots |
+| `COMMAND_WORK_DAYS` | `1,2,3,4,5` | Mon–Fri |
+| `COMMAND_CONFIRM_MINUTES` | `15` | YES / numbered-choice expiry |
+| `COMMAND_MODEL` | `ASSISTANT_MODEL` | Tool-calling model |
+| `QUO_FROM_NUMBER` | | Sales line, +15163869773 |
+| `QUO_WEBHOOK_SECRET` | | Required. Unsigned posts are 401 |
+
 ## Lead heat (Joseph and Frank)
 
 Scores run in demo mode with no Follow Up Boss key (sample leads on the Hub). With a key, the hourly `score-leads` function and the FUB webhook rescore open people.
@@ -305,6 +371,7 @@ curl -s -H "Authorization: Bearer demo-key" -H "Content-Type: application/json" 
 | `netlify/functions/calendar-guest.ts` | Cron every 15 minutes — add Frankie to client appointments (off until enabled) |
 | `netlify/functions/whatsapp-autoreply.ts` | Cron every minute — WhatsApp away reply (off until enabled) |
 | `netlify/functions/whatsapp-webhook.ts` | Kapso webhook `/api/webhooks/whatsapp` |
+| `netlify/functions/quo-webhook.ts` | Quo command mode `/api/webhooks/quo` |
 | `netlify/functions/sms-webhook.ts` | Quo inbound SMS |
 | `netlify/functions/fub-webhook.ts` | Follow Up Boss webhook `/api/webhooks/fub` |
 | `netlify/functions/assistant.ts` | `/api/assistant/:action` |

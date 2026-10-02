@@ -290,6 +290,8 @@ export async function createCalendarEvent(input: {
   startIso: string
   endIso: string
   attendeeEmail?: string
+  attendees?: string[]
+  sendUpdates?: 'all' | 'externalOnly' | 'none'
 }): Promise<{ id: string; htmlLink?: string }> {
   const { accessToken: token } = await resolveGoogleAccessToken()
   if (!token) {
@@ -309,7 +311,9 @@ export async function createCalendarEvent(input: {
   }
 
   const calendarId = encodeURIComponent(env('GOOGLE_CALENDAR_ID', 'primary'))
-  const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events`, {
+  const guests = [...(input.attendees ?? []), ...(input.attendeeEmail ? [input.attendeeEmail] : [])].filter(Boolean)
+  const params = input.sendUpdates ? `?sendUpdates=${input.sendUpdates}` : ''
+  const res = await fetch(`https://www.googleapis.com/calendar/v3/calendars/${calendarId}/events${params}`, {
     method: 'POST',
     headers: {
       Authorization: `Bearer ${token}`,
@@ -318,9 +322,9 @@ export async function createCalendarEvent(input: {
     body: JSON.stringify({
       summary: input.summary,
       description: input.description,
-      start: { dateTime: input.startIso },
-      end: { dateTime: input.endIso },
-      attendees: input.attendeeEmail ? [{ email: input.attendeeEmail }] : undefined,
+      start: { dateTime: input.startIso, timeZone: env('COMMAND_TIMEZONE', 'America/New_York') },
+      end: { dateTime: input.endIso, timeZone: env('COMMAND_TIMEZONE', 'America/New_York') },
+      attendees: guests.length ? guests.map((email) => ({ email })) : undefined,
     }),
   })
   if (!res.ok) throw new Error(await googleError(res, 'Calendar create'))
