@@ -16,6 +16,8 @@ export type FubPerson = {
   lastActivity?: string
   updated?: string
   background?: string
+  assignedUserId?: number
+  assignedTo?: string
 }
 
 export type FubEvent = {
@@ -305,21 +307,36 @@ export async function createTask(input: {
   return { id: data.id }
 }
 
+/**
+ * Post a note. Pass `mentionUserIds` to notify those FUB users.
+ * Email fires only when all three travel together (verified against the FUB notes API,
+ * which documents personId/subject/body/isHtml and does not document mentions):
+ * - body HTML contains `<span data-user-id="N">Display Name</span>`
+ * - isHtml: true
+ * - mentions: { user: [N] }
+ * Plain `@Name` does not email. `mentions.user` without the span adds a collaborator and does not email.
+ */
 export async function addNote(input: {
   personId: number
   subject: string
   body: string
-}): Promise<void> {
-  if (isDemoMode()) return
-  await fubFetch('/notes', {
+  isHtml?: boolean
+  mentionUserIds?: number[]
+}): Promise<{ id?: number }> {
+  const mentionUserIds = [...new Set((input.mentionUserIds ?? []).filter((id) => Number.isInteger(id) && id > 0))]
+  if (isDemoMode()) return {}
+  const payload: Record<string, unknown> = {
+    personId: input.personId,
+    subject: input.subject,
+    body: input.body,
+    isHtml: input.isHtml === true || mentionUserIds.length > 0,
+  }
+  if (mentionUserIds.length) payload.mentions = { user: mentionUserIds }
+  const data = (await fubFetch('/notes', {
     method: 'POST',
-    body: JSON.stringify({
-      personId: input.personId,
-      subject: input.subject,
-      body: input.body,
-      isHtml: false,
-    }),
-  })
+    body: JSON.stringify(payload),
+  })) as { id?: number } | null
+  return { id: data?.id }
 }
 
 export async function listPeople(limit = 30): Promise<FubPerson[]> {

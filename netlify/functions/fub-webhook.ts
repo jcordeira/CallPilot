@@ -1,7 +1,8 @@
-import type { Config } from '@netlify/functions'
+import type { Config, Context } from '@netlify/functions'
 import { env } from './_shared/env'
 import { fubSignatureMatches, fubWebhookVerificationEnabled } from './_shared/fubSignature'
 import { handleFubWebhook } from './_shared/leadHeat'
+import { runLoaReminders } from './_shared/loaReminders'
 
 function signatureOk(rawBody: string, req: Request): boolean {
   if (!fubWebhookVerificationEnabled()) return true
@@ -10,8 +11,24 @@ function signatureOk(rawBody: string, req: Request): boolean {
   return fubSignatureMatches(rawBody, header, systemKey)
 }
 
+function resourceIds(payload: Record<string, unknown>): number[] {
+  if (!Array.isArray(payload.resourceIds)) return []
+  return payload.resourceIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)
+}
+
+function settle(pending: Promise<unknown>) {
+  return pending.then(
+    (value) => value,
+    (err: unknown) => {
+      const message = err instanceof Error && err.message ? err.message : 'reminder failed'
+      console.log(`[loa-reminders] webhook follow-up failed: ${message}`)
+      return { error: message }
+    },
+  )
+}
+
 /** Follow Up Boss webhooks → rescore the person and route a task to Joseph or Frank. */
-export default async (req: Request) => {
+export default async (req: Request, context?: Context) => {
   if (req.method === 'GET') {
     return Response.json({ ok: true, service: 'loanpilot-fub-webhook' })
   }
@@ -32,8 +49,27 @@ export default async (req: Request) => {
     return Response.json({ ok: false, error: 'JSON object body is required' }, { status: 400 })
   }
 
-  const result = await handleFubWebhook(payload as Record<string, unknown>)
-  return Response.json({ ok: true, event: (payload as { event?: string }).event ?? null, ...result })
+  const body = payload as Record<string, unknown>
+  const event = typeof body.event === 'string' ? body.event : ''
+  const ids = resourceIds(body)
+
+  // Call events are not scored (that would change lead routing). They feed miss reminders.
+  if (/^calls/i.test(event)) {
+    const pending = settle(runLoaReminders({ trigger: event || 'calls', callIds: ids }))
+    if (context?.waitUntil) {
+      context.waitUntil(pending.then(() => undefined))
+      return Response.json({ ok: true, event, reminders: { accepted: true } })
+    }
+    return Response.json({ ok: true, event, reminders: await pending })
+  }
+
+  const result = await handleFubWebhook(body)
+  if (/^textMessages/i.test(event)) {
+    const pending = settle(runLoaReminders({ trigger: event, textIds: ids }))
+    if (context?.waitUntil) context.waitUntil(pending.then(() => undefined))
+    else await pending
+  }
+  return Response.json({ ok: true, event: event || null, ...result })
 }
 
 export const config: Config = {

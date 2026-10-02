@@ -338,6 +338,7 @@ export function AssistantSettingsPage() {
           <li>GOOGLE_CALENDAR_ID=primary · GOOGLE_TASKS_LIST_ID=@default</li>
           <li>LOANPILOT_API_KEY (public /api/v1; demo-key while ASSISTANT_DEMO_MODE=true)</li>
           <li>QUO_API_KEY / QUO_FROM_NUMBER / QUO_WEBHOOK_SECRET</li>
+          <li>LOA_REMINDERS_ENABLED / FUB_LO_PHONE / FUB_LOA_USER_IDS / FUB_LOA_PHONE_&lt;id&gt;</li>
           <li>NEO_IMAP_HOST / NEO_IMAP_USER / NEO_IMAP_PASSWORD (optional)</li>
           <li>ASSISTANT_DEMO_MODE=false when going live</li>
           <li>ASSISTANT_MODEL=x-ai/grok-4.5 (Grok via OpenRouter / AI Gateway)</li>
