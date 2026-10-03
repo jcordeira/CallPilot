@@ -250,7 +250,7 @@ describe('whatsapp auto-reply', () => {
   })
 
   it('rejects a missing or wrong Kapso signature', async () => {
-    const body = JSON.stringify(message({ id: 'wamid.in', at: started, direction: 'inbound', origin: 'cloud_api', body: 'Hi' }))
+    const body = JSON.stringify(message({ id: 'wamid.in', at: new Date(), direction: 'inbound', origin: 'cloud_api', body: 'Hi' }))
     const bad = new Request('http://local/api/webhooks/whatsapp', {
       method: 'POST',
       headers: { 'x-webhook-signature': 'deadbeef', 'x-webhook-event': 'whatsapp.message.received' },
@@ -289,6 +289,123 @@ describe('whatsapp auto-reply', () => {
     const json = (await res.json()) as { recorded: number }
     expect(json.recorded).toBe(1)
     expect(fetch).not.toHaveBeenCalled()
+  })
+
+  it('sends nothing when Joseph’s outbound echo arrives within the delay', async () => {
+    const sendWhatsapp = vi.fn(async () => ({ id: 'wamid.out' }))
+    const sendAlert = vi.fn(async () => ({ id: 'sms-1' }))
+    await inbound(started, 'wamid.kk')
+    const echo = await ingestKapsoWebhook({
+      event: 'smb_message_echoes',
+      now: new Date(started.getTime() + 30_000),
+      idempotencyKey: 'echo-delivery',
+      body: {
+        object: 'whatsapp_business_account',
+        entry: [{
+          changes: [{
+            field: 'smb_message_echoes',
+            value: {
+              messaging_product: 'whatsapp',
+              metadata: { display_phone_number: '15169969070', phone_number_id: '123' },
+              message_echoes: [{
+                from: '15169969070',
+                to: contact,
+                id: 'wamid.more-private',
+                timestamp: String(Math.floor((started.getTime() + 30_000) / 1000)),
+                type: 'text',
+                text: { body: 'More Private' },
+              }],
+            },
+          }],
+        }],
+      },
+    })
+    expect(echo.cancelled).toBe(1)
+    const due = await runWhatsappAutoreply({
+      now: new Date(started.getTime() + 6 * 60_000),
+      sendWhatsapp,
+      sendAlert,
+    })
+    expect(due.deliveries).toHaveLength(0)
+    expect(sendWhatsapp).not.toHaveBeenCalled()
+
+    await resetWhatsappStateForTests()
+    await inbound(started, 'wamid.missed-echo')
+    const missed = await runWhatsappAutoreply({
+      now: new Date(started.getTime() + 6 * 60_000),
+      sendWhatsapp,
+      sendAlert,
+      listMessages: async () => [{
+        id: 'wamid.more-private',
+        timestamp: String(Math.floor((started.getTime() + 30_000) / 1000)),
+        type: 'text',
+        from: '15169969070',
+        to: contact,
+        text: { body: 'More Private' },
+        kapso: { direction: 'outbound', origin: 'business_app', content: 'More Private' },
+      }],
+    })
+    expect(missed.deliveries).toHaveLength(0)
+    expect(sendWhatsapp).not.toHaveBeenCalled()
+  })
+
+  it('sends one auto-reply when delayed checks run together', async () => {
+    const sendWhatsapp = vi.fn(async () => {
+      await new Promise((resolve) => setTimeout(resolve, 15))
+      return { id: 'wamid.out' }
+    })
+    await inbound(started, 'wamid.once')
+    const due = new Date(started.getTime() + 6 * 60_000)
+    const runs = await Promise.all([
+      runWhatsappAutoreply({ now: due, trigger: 'schedule', sendWhatsapp, sendAlert: async () => ({ id: 'sms-1' }) }),
+      runWhatsappAutoreply({ now: due, trigger: 'webhook', sendWhatsapp, sendAlert: async () => ({ id: 'sms-2' }) }),
+    ])
+    expect(sendWhatsapp).toHaveBeenCalledOnce()
+    expect(runs.reduce((sum, run) => sum + run.deliveries.filter((item) => item.status === 'sent').length, 0)).toBe(1)
+  })
+
+  it('does not auto-reply a second time inside the cooldown', async () => {
+    const sendWhatsapp = vi.fn(async () => ({ id: 'wamid.out' }))
+    await inbound(started, 'wamid.cool-1')
+    await runWhatsappAutoreply({
+      now: new Date(started.getTime() + 5 * 60_000),
+      sendWhatsapp,
+      sendAlert: async () => ({ id: 'sms-1' }),
+    })
+    const again = await inbound(new Date(started.getTime() + 20 * 60_000), 'wamid.cool-2')
+    expect(again.recorded).toBe(0)
+    await runWhatsappAutoreply({
+      now: new Date(started.getTime() + 30 * 60_000),
+      sendWhatsapp,
+      sendAlert: async () => ({ id: 'sms-1' }),
+    })
+    expect(sendWhatsapp).toHaveBeenCalledOnce()
+  })
+
+  it('ignores a retried webhook with the same message id', async () => {
+    const body = message({ id: 'wamid.retry', at: started, direction: 'inbound', origin: 'cloud_api', body: 'Kk' })
+    const first = await ingestKapsoWebhook({
+      event: 'whatsapp.message.received',
+      now: started,
+      idempotencyKey: 'delivery-1',
+      body,
+    })
+    const retry = await ingestKapsoWebhook({
+      event: 'whatsapp.message.received',
+      now: new Date(started.getTime() + 1000),
+      idempotencyKey: 'delivery-2',
+      body,
+    })
+    expect(first.recorded).toBe(1)
+    expect(retry.recorded).toBe(0)
+    expect(retry.skipped).toBe('duplicate')
+    const sendWhatsapp = vi.fn(async () => ({ id: 'wamid.out' }))
+    await runWhatsappAutoreply({
+      now: new Date(started.getTime() + 6 * 60_000),
+      sendWhatsapp,
+      sendAlert: async () => ({ id: 'sms-1' }),
+    })
+    expect(sendWhatsapp).toHaveBeenCalledOnce()
   })
 
   it('builds the Quo alert with the wait and a snippet', () => {

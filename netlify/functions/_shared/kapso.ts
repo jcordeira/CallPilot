@@ -16,6 +16,49 @@ export function kapsoSignatureMatches(rawBody: string, signature: string | null,
   return timingSafeEqual(a, b)
 }
 
+export type KapsoListedMessage = {
+  id?: string
+  timestamp?: string | number
+  type?: string
+  from?: string
+  to?: string
+  text?: { body?: string }
+  direction?: string
+  kapso?: { direction?: string; origin?: string; content?: string; phone_number?: string }
+}
+
+/**
+ * Latest messages for one business number. `null` means Kapso is not configured,
+ * so the caller keeps the stored state. A failed request throws.
+ * `GET /{phone_number_id}/messages` on the Meta proxy.
+ */
+export async function listKapsoMessages(input: {
+  conversationId?: string
+  phone?: string
+  since?: string
+}): Promise<KapsoListedMessage[] | null> {
+  if (!kapsoConfigured()) return null
+  const apiKey = env('KAPSO_API_KEY').trim()
+  const phoneNumberId = env('KAPSO_PHONE_NUMBER_ID').trim()
+  const base = env('KAPSO_API_BASE', 'https://api.kapso.ai/meta/whatsapp/v24.0').replace(/\/$/, '')
+  const params = new URLSearchParams({ limit: '20', fields: 'kapso(direction,origin,content)' })
+  if (input.conversationId) params.set('conversation_id', input.conversationId)
+  if (input.since) params.set('since', input.since)
+  const res = await fetch(`${base}/${phoneNumberId}/messages?${params}`, {
+    headers: { 'X-API-Key': apiKey },
+  })
+  if (!res.ok) throw new Error(`Kapso history failed: ${res.status}`)
+  const data = (await res.json()) as { data?: KapsoListedMessage[]; messages?: KapsoListedMessage[] }
+  const rows = Array.isArray(data.data) ? data.data : Array.isArray(data.messages) ? data.messages : []
+  if (!input.phone) return rows
+  const digits = input.phone.replace(/\D/g, '')
+  return rows.filter((row) => {
+    const haystack = [row.from, row.to, row.kapso?.phone_number].filter((value): value is string => typeof value === 'string')
+    if (!haystack.length) return true
+    return haystack.some((value) => value.replace(/\D/g, '').endsWith(digits) || digits.endsWith(value.replace(/\D/g, '')))
+  })
+}
+
 export function kapsoConfigured(): boolean {
   return env('KAPSO_API_KEY').trim() !== '' && env('KAPSO_PHONE_NUMBER_ID').trim() !== ''
 }
