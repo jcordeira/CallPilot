@@ -39,11 +39,14 @@ export function zonedDateTimeToUtc(
   minute: number,
   timeZone = CALENDAR_TZ,
 ): Date {
-  let utc = Date.UTC(year, month - 1, day, hour, minute, 0)
+  const desired = Date.UTC(year, month - 1, day, hour, minute, 0)
+  let utc = desired
+  // Two passes settle the offset across a DST boundary. Each pass compares
+  // against the original wall time, so the second pass does not add the offset again.
   for (let i = 0; i < 2; i += 1) {
     const parts = zonedParts(new Date(utc), timeZone)
-    const asUtc = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0)
-    utc -= asUtc - utc
+    const got = Date.UTC(parts.year, parts.month - 1, parts.day, parts.hour, parts.minute, 0)
+    utc += desired - got
   }
   return new Date(utc)
 }
@@ -138,6 +141,13 @@ export function formatUntil(minutes: number): string {
   if (hours < 24) return rem ? `in ${hours} hr ${rem} min` : `in ${hours} hr`
   const days = Math.max(1, Math.round(mins / 1440))
   return `in ${days} day${days === 1 ? '' : 's'}`
+}
+
+/** Next civil date. `2026-10-03` → `2026-10-04`, including month and year boundaries. */
+export function nextDateKey(day: string): string {
+  const [year, month, date] = day.split('-').map(Number)
+  if (!year || !month || !date) return day
+  return new Date(Date.UTC(year, month - 1, date + 1)).toISOString().slice(0, 10)
 }
 
 export function dateKey(date: Date, timeZone = CALENDAR_TZ): string {

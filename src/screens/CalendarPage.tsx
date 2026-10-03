@@ -12,6 +12,7 @@ import {
   formatNowClock,
   formatTimeLabel,
   formatUntil,
+  nextDateKey,
   parseWallTime,
   startOfZonedDay,
   startOfZonedWeek,
@@ -46,6 +47,9 @@ type Draft = {
   attendees: string[]
   topic: string
   autoTitle: boolean
+  allDay: boolean
+  /** Exclusive end date for a multi-day all-day event. Cleared when the start day changes. */
+  endDay?: string
 }
 type Pending = { write: CalendarWrite; label: string }
 
@@ -77,26 +81,56 @@ function blankDraft(anchor: Date): Draft {
     attendees: [],
     topic: '',
     autoTitle: true,
+    allDay: false,
   }
 }
 
 function draftFromEvent(event: HubCalendarEvent): Draft {
   const start = new Date(event.startIso)
+  const day = dateKey(start)
+  const endDay = event.allDay ? dateKey(new Date(event.endIso)) : undefined
   return {
     id: event.id,
     summary: event.summary,
     description: event.description ?? '',
     location: event.location ?? '',
-    day: dateKey(start),
-    start: timeValue(start),
-    end: timeValue(new Date(event.endIso)),
+    day,
+    start: event.allDay ? '09:00' : timeValue(start),
+    end: event.allDay ? '09:30' : timeValue(new Date(event.endIso)),
     attendees: (event.attendees ?? []).map((attendee) => attendee.email),
     topic: '',
     autoTitle: false,
+    allDay: event.allDay,
+    endDay: endDay && endDay > day ? endDay : undefined,
   }
 }
 
+function allDayOn(event: HubCalendarEvent, day: string): boolean {
+  if (!event.allDay) return false
+  const start = dateKey(new Date(event.startIso))
+  const end = dateKey(new Date(event.endIso))
+  if (end <= start) return day === start
+  return day >= start && day < end
+}
+
 function toWrite(draft: Draft, sendUpdates: 'all' | 'none'): CalendarWrite {
+  const summary = draft.summary.trim()
+  const description = draft.description.trim() || undefined
+  const location = draft.location.trim() || undefined
+  if (draft.allDay) {
+    const endDay = draft.endDay && draft.endDay > draft.day ? draft.endDay : nextDateKey(draft.day)
+    return {
+      id: draft.id,
+      summary,
+      description,
+      location,
+      startIso: `${draft.day}T12:00:00.000Z`,
+      endIso: `${endDay}T12:00:00.000Z`,
+      allDay: true,
+      attendees: draft.attendees,
+      sendUpdates,
+    }
+  }
   const [sh, sm] = draft.start.split(':').map(Number)
   const [eh, em] = draft.end.split(':').map(Number)
   const [year, month, day] = draft.day.split('-').map(Number)
@@ -105,11 +139,12 @@ function toWrite(draft: Draft, sendUpdates: 'all' | 'none'): CalendarWrite {
   if (end <= start) end = new Date(start.getTime() + 30 * 60_000)
   return {
     id: draft.id,
-    summary: draft.summary.trim(),
-    description: draft.description.trim() || undefined,
-    location: draft.location.trim() || undefined,
+    summary,
+    description,
+    location,
     startIso: start.toISOString(),
     endIso: end.toISOString(),
+    allDay: false,
     attendees: draft.attendees,
     sendUpdates,
   }
@@ -125,20 +160,29 @@ function TimeField({ label, value, onChange }: { label: string; value: string; o
     <div className="cal__field">
       <span id={`${label}-time`}>{label}</span>
       <div className="cal__clockpick" role="group" aria-labelledby={`${label}-time`}>
-        <select className="select" aria-label={`${label} hour`} value={wall.hour12} onChange={(e) => commit(Number(e.target.value), wall.minute, wall.period)}>
-          {Array.from({ length: 12 }, (_, index) => index + 1).map((hour) => (
-            <option key={hour} value={hour}>{hour}</option>
-          ))}
-        </select>
-        <select className="select" aria-label={`${label} minute`} value={wall.minute} onChange={(e) => commit(wall.hour12, Number(e.target.value), wall.period)}>
-          {minutes.map((minute) => (
-            <option key={minute} value={minute}>{String(minute).padStart(2, '0')}</option>
-          ))}
-        </select>
-        <select className="select" aria-label={`${label} AM or PM`} value={wall.period} onChange={(e) => commit(wall.hour12, wall.minute, e.target.value === 'PM' ? 'PM' : 'AM')}>
-          <option value="AM">AM</option>
-          <option value="PM">PM</option>
-        </select>
+        <label className="cal__clock-col">
+          <span className="cal__clock-caption">Hour</span>
+          <select className="select" aria-label={`${label} hour`} value={wall.hour12} onChange={(e) => commit(Number(e.target.value), wall.minute, wall.period)}>
+            {Array.from({ length: 12 }, (_, index) => index + 1).map((hour) => (
+              <option key={hour} value={hour}>{hour}</option>
+            ))}
+          </select>
+        </label>
+        <label className="cal__clock-col">
+          <span className="cal__clock-caption">Min</span>
+          <select className="select" aria-label={`${label} minute`} value={wall.minute} onChange={(e) => commit(wall.hour12, Number(e.target.value), wall.period)}>
+            {minutes.map((minute) => (
+              <option key={minute} value={minute}>{String(minute).padStart(2, '0')}</option>
+            ))}
+          </select>
+        </label>
+        <label className="cal__clock-col">
+          <span className="cal__clock-caption">AM/PM</span>
+          <select className="select" aria-label={`${label} AM or PM`} value={wall.period} onChange={(e) => commit(wall.hour12, wall.minute, e.target.value === 'PM' ? 'PM' : 'AM')}>
+            <option value="AM">AM</option>
+            <option value="PM">PM</option>
+          </select>
+        </label>
       </div>
     </div>
   )
@@ -304,6 +348,7 @@ export function CalendarPage() {
         startIso: nextStart.toISOString(),
         endIso: nextEnd.toISOString(),
         attendees,
+        allDay: false,
         sendUpdates: 'none',
       }
       if (externalGuestEmails(attendees).length) setPending({ write, label: 'Move event' })
@@ -394,6 +439,24 @@ export function CalendarPage() {
                 </h2>
               )
             })}
+            {days.some((day) => events.some((event) => allDayOn(event, dateKey(day)))) && (
+              <>
+                <div className="cal__allday-gutter">All day</div>
+                {days.map((day) => {
+                  const key = dateKey(day)
+                  const items = events.filter((event) => allDayOn(event, key))
+                  return (
+                    <div key={`allday-${key}`} className="cal__allday" data-testid="all-day-row">
+                      {items.map((event) => (
+                        <button key={event.id} type="button" className="cal__allday-event" onClick={() => setDraft(draftFromEvent(event))}>
+                          <EventTitle event={event} leads={leads} />
+                        </button>
+                      ))}
+                    </div>
+                  )
+                })}
+              </>
+            )}
             <div className="cal__hours" aria-hidden="true">
               {HOURS.map((hour) => (
                 <div key={hour} className="cal__hour" style={{ height: HOUR_PX }}>{formatHourLabel(hour)}</div>
@@ -461,20 +524,43 @@ export function CalendarPage() {
           </>
         }>
           <label className="cal__field">Title
-            <input className="input" value={draft.summary} onChange={(e) => setDraft({ ...draft, summary: e.target.value, autoTitle: false })} />
+            <input className="input" value={draft.summary} onChange={(e) => {
+              const summary = e.target.value
+              setDraft((current) => current ? { ...current, summary, autoTitle: false } : current)
+            }} />
           </label>
           <div className="cal__times">
             <label className="cal__field">Date
-              <input className="input" type="date" value={draft.day} onChange={(e) => setDraft({ ...draft, day: e.target.value })} />
+              <input className="input" type="date" value={draft.day} onChange={(e) => {
+                const day = e.target.value
+                setDraft((current) => current ? { ...current, day, endDay: undefined } : current)
+              }} />
             </label>
-            <TimeField label="Start" value={draft.start} onChange={(start) => setDraft({ ...draft, start })} />
-            <TimeField label="End" value={draft.end} onChange={(end) => setDraft({ ...draft, end })} />
+            <label className="cal__check">
+              <input type="checkbox" checked={draft.allDay} onChange={(e) => {
+                const allDay = e.target.checked
+                setDraft((current) => current ? { ...current, allDay } : current)
+              }} />
+              All day
+            </label>
+            {!draft.allDay && (
+              <>
+                <TimeField label="Start" value={draft.start} onChange={(start) => setDraft((current) => current ? { ...current, start } : current)} />
+                <TimeField label="End" value={draft.end} onChange={(end) => setDraft((current) => current ? { ...current, end } : current)} />
+              </>
+            )}
           </div>
           <label className="cal__field">Location
-            <input className="input" value={draft.location} onChange={(e) => setDraft({ ...draft, location: e.target.value })} />
+            <input className="input" value={draft.location} onChange={(e) => {
+              const location = e.target.value
+              setDraft((current) => current ? { ...current, location } : current)
+            }} />
           </label>
           <label className="cal__field">Description
-            <textarea className="input" rows={3} value={draft.description} onChange={(e) => setDraft({ ...draft, description: e.target.value })} />
+            <textarea className="input" rows={3} value={draft.description} onChange={(e) => {
+              const description = e.target.value
+              setDraft((current) => current ? { ...current, description } : current)
+            }} />
           </label>
           <p className="cal__label">Guests</p>
           <div className="cal__chips">
@@ -485,9 +571,13 @@ export function CalendarPage() {
                   key={guest.email}
                   type="button"
                   className={on ? 'cal__chip cal__chip--on' : 'cal__chip'}
-                  onClick={() => setDraft({
-                    ...draft,
-                    attendees: on ? draft.attendees.filter((email) => email.toLowerCase() !== guest.email) : [...draft.attendees, guest.email],
+                  onClick={() => setDraft((current) => {
+                    if (!current) return current
+                    const onGuest = current.attendees.some((email) => email.toLowerCase() === guest.email)
+                    return {
+                      ...current,
+                      attendees: onGuest ? current.attendees.filter((email) => email.toLowerCase() !== guest.email) : [...current.attendees, guest.email],
+                    }
                   })}
                 >
                   {guest.name}
@@ -499,7 +589,7 @@ export function CalendarPage() {
             {draft.attendees.map((email) => (
               <li key={email}>
                 <span>{email}</span>
-                <button type="button" className="btn" onClick={() => setDraft({ ...draft, attendees: draft.attendees.filter((item) => item !== email) })}>
+                <button type="button" className="btn" onClick={() => setDraft((current) => current ? { ...current, attendees: current.attendees.filter((item) => item !== email) } : current)}>
                   Remove
                 </button>
               </li>

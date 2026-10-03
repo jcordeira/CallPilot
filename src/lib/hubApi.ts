@@ -353,6 +353,7 @@ export type CalendarWrite = {
   location?: string
   startIso: string
   endIso: string
+  allDay?: boolean
   attendees?: string[]
   sendUpdates?: 'all' | 'none'
 }

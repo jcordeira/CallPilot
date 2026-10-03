@@ -24,6 +24,32 @@ function sendUpdates(body: Record<string, unknown>): 'all' | 'none' {
   return body.sendUpdates === 'all' ? 'all' : 'none'
 }
 
+function isDay(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value)
+}
+
+function nextDay(day: string): string {
+  const [year, month, date] = day.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, date + 1)).toISOString().slice(0, 10)
+}
+
+function eventRange(body: Record<string, unknown>): { startIso: string; endIso: string; allDay: boolean } {
+  const allDay = body.allDay === true
+  const startRaw = requireString(body, 'startIso')
+  const endRaw = requireString(body, 'endIso')
+  if (allDay) {
+    const startDate = startRaw.slice(0, 10)
+    if (!isDay(startDate)) throw new ApiError(400, 'startIso must be a date')
+    let endDate = endRaw.slice(0, 10)
+    if (!isDay(endDate) || endDate <= startDate) endDate = nextDay(startDate)
+    return { allDay: true, startIso: `${startDate}T12:00:00.000Z`, endIso: `${endDate}T12:00:00.000Z` }
+  }
+  const startIso = iso(startRaw, 'startIso')
+  const endIso = iso(endRaw, 'endIso')
+  if (new Date(endIso) <= new Date(startIso)) throw new ApiError(400, 'end must be after start')
+  return { allDay: false, startIso, endIso }
+}
+
 export async function readCalendar(url: URL) {
   const start = new Date(url.searchParams.get('start') ?? '')
   const end = new Date(url.searchParams.get('end') ?? '')
@@ -46,15 +72,14 @@ export async function readCalendar(url: URL) {
 
 export async function createCalendar(body: Record<string, unknown>) {
   const summary = requireString(body, 'summary')
-  const startIso = iso(requireString(body, 'startIso'), 'startIso')
-  const endIso = iso(requireString(body, 'endIso'), 'endIso')
-  if (new Date(endIso) <= new Date(startIso)) throw new ApiError(400, 'end must be after start')
+  const range = eventRange(body)
   const created = await createCalendarEvent({
     summary,
     description: optionalString(body, 'description'),
     location: optionalString(body, 'location'),
-    startIso,
-    endIso,
+    startIso: range.startIso,
+    endIso: range.endIso,
+    allDay: range.allDay,
     attendees: emails(body),
     sendUpdates: sendUpdates(body),
     timeZone: CALENDAR_TIME_ZONE,
@@ -65,16 +90,15 @@ export async function createCalendar(body: Record<string, unknown>) {
 export async function patchCalendar(body: Record<string, unknown>) {
   const id = requireString(body, 'id')
   const summary = requireString(body, 'summary')
-  const startIso = iso(requireString(body, 'startIso'), 'startIso')
-  const endIso = iso(requireString(body, 'endIso'), 'endIso')
-  if (new Date(endIso) <= new Date(startIso)) throw new ApiError(400, 'end must be after start')
+  const range = eventRange(body)
   const event = await updateCalendarEvent({
     id,
     summary,
     description: optionalString(body, 'description'),
     location: optionalString(body, 'location'),
-    startIso,
-    endIso,
+    startIso: range.startIso,
+    endIso: range.endIso,
+    allDay: range.allDay,
     attendees: emails(body) ?? [],
     sendUpdates: sendUpdates(body),
     timeZone: CALENDAR_TIME_ZONE,

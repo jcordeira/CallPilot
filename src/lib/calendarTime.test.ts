@@ -5,8 +5,10 @@ import {
   formatNowClock,
   formatTimeLabel,
   formatUntil,
+  nextDateKey,
   parseWallTime,
   wallTimeValue,
+  zonedDateTimeToUtc,
 } from './calendarTime'
 
 describe('calendar time labels', () => {
@@ -29,5 +31,9 @@ describe('calendar time labels', () => {
     expect(parseWallTime('00:05')).toEqual({ hour12: 12, minute: 5, period: 'AM' })
     expect(focusHour(new Date('2026-10-02T16:16:00.000Z'), false)).toBe(8)
     expect(focusHour(new Date('2026-10-02T16:16:00.000Z'), true)).toBeCloseTo(12 + 16 / 60)
+    expect(zonedDateTimeToUtc(2026, 10, 2, 14, 0).toISOString()).toBe('2026-10-02T18:00:00.000Z')
+    expect(zonedDateTimeToUtc(2026, 10, 2, 0, 0).toISOString()).toBe('2026-10-02T04:00:00.000Z')
+    expect(nextDateKey('2026-10-03')).toBe('2026-10-04')
+    expect(nextDateKey('2026-12-31')).toBe('2027-01-01')
   })
 })

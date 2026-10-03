@@ -133,6 +133,43 @@ export function mergeAttendees(existing: CalendarAttendee[] | undefined, emails:
   })
 }
 
+function dateOnly(value: string): string {
+  const match = /^(\d{4}-\d{2}-\d{2})/.exec(value)
+  return match?.[1] ?? value.slice(0, 10)
+}
+
+function addUtcDays(day: string, days: number): string {
+  const [year, month, date] = day.split('-').map(Number)
+  return new Date(Date.UTC(year, month - 1, date + days)).toISOString().slice(0, 10)
+}
+
+/** Google all-day `end.date` is exclusive. A same-day end becomes the next date. */
+export function exclusiveEndDate(startIso: string, endIso: string): string {
+  const startDate = dateOnly(startIso)
+  const endDate = dateOnly(endIso)
+  if (/^\d{4}-\d{2}-\d{2}$/.test(endDate) && endDate > startDate) return endDate
+  return addUtcDays(startDate, 1)
+}
+
+/** Local wall clock without a Z suffix. Google rejects a UTC dateTime paired with timeZone. */
+export function googleWallDateTime(iso: string, timeZone: string): string {
+  const date = new Date(iso)
+  if (Number.isNaN(date.getTime())) return iso.replace(/\.\d{3}Z$/, '').replace(/Z$/, '')
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone,
+    hourCycle: 'h23',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+  }).formatToParts(date)
+  const get = (type: Intl.DateTimeFormatPartTypes) => parts.find((part) => part.type === type)?.value ?? '00'
+  const hour = get('hour') === '24' ? '00' : get('hour')
+  return `${get('year')}-${get('month')}-${get('day')}T${hour}:${get('minute')}:${get('second')}`
+}
+
 export function calendarWriteBody(input: {
   summary: string
   description?: string
@@ -142,10 +179,16 @@ export function calendarWriteBody(input: {
   allDay?: boolean
   attendees?: CalendarAttendee[]
   timeZone?: string
+  /** PATCH should clear the other Google start/end field when switching timed ↔ all-day. */
+  patch?: boolean
 }): Record<string, unknown> {
-  const timeZone = input.timeZone
-  const start = input.allDay ? { date: input.startIso.slice(0, 10) } : { dateTime: input.startIso, ...(timeZone ? { timeZone } : {}) }
-  const end = input.allDay ? { date: input.endIso.slice(0, 10) } : { dateTime: input.endIso, ...(timeZone ? { timeZone } : {}) }
+  const timeZone = input.timeZone || CALENDAR_TIME_ZONE
+  const start = input.allDay
+    ? { date: dateOnly(input.startIso), ...(input.patch ? { dateTime: null } : {}) }
+    : { dateTime: googleWallDateTime(input.startIso, timeZone), timeZone, ...(input.patch ? { date: null } : {}) }
+  const end = input.allDay
+    ? { date: exclusiveEndDate(input.startIso, input.endIso), ...(input.patch ? { dateTime: null } : {}) }
+    : { dateTime: googleWallDateTime(input.endIso, timeZone), timeZone, ...(input.patch ? { date: null } : {}) }
   const body: Record<string, unknown> = {
     summary: input.summary,
     description: input.description,
@@ -170,8 +213,9 @@ function mapGCal(item: GCalEvent): HubCalendarEvent | null {
   const endRaw = item.end?.dateTime ?? item.end?.date
   if (!startRaw || !endRaw) return null
   const allDay = Boolean(item.start?.date && !item.start.dateTime)
-  const startIso = allDay ? new Date(`${startRaw}T00:00:00`).toISOString() : new Date(startRaw).toISOString()
-  const endIso = allDay ? new Date(`${endRaw}T00:00:00`).toISOString() : new Date(endRaw).toISOString()
+  // Noon UTC keeps the Google civil date on the Eastern calendar day.
+  const startIso = allDay ? `${dateOnly(startRaw)}T12:00:00.000Z` : new Date(startRaw).toISOString()
+  const endIso = allDay ? `${dateOnly(endRaw)}T12:00:00.000Z` : new Date(endRaw).toISOString()
   if (Number.isNaN(new Date(startIso).getTime())) return null
   return {
     id: item.id,
@@ -353,6 +397,7 @@ export async function createCalendarEvent(input: {
   location?: string
   startIso: string
   endIso: string
+  allDay?: boolean
   attendeeEmail?: string
   attendees?: string[]
   sendUpdates?: 'all' | 'externalOnly' | 'none'
@@ -371,7 +416,7 @@ export async function createCalendarEvent(input: {
       startIso: input.startIso,
       endIso: input.endIso,
       htmlLink: 'https://calendar.google.com/',
-      allDay: false,
+      allDay: input.allDay === true,
       source: 'demo',
       attendees: emails.map((email) => ({ email })),
     })
@@ -389,6 +434,7 @@ export async function createCalendarEvent(input: {
         location: input.location,
         startIso: input.startIso,
         endIso: input.endIso,
+        allDay: input.allDay === true,
         timeZone: input.timeZone ?? env('COMMAND_TIMEZONE', CALENDAR_TIME_ZONE),
         attendees: emails.length ? emails.map((email) => ({ email })) : undefined,
       }),
@@ -483,6 +529,7 @@ export async function updateCalendarEvent(input: {
   location?: string
   startIso: string
   endIso: string
+  allDay?: boolean
   attendees?: string[]
   existingAttendees?: CalendarAttendee[]
   sendUpdates?: 'all' | 'none' | 'externalOnly'
@@ -499,7 +546,7 @@ export async function updateCalendarEvent(input: {
       location: input.location,
       startIso: input.startIso,
       endIso: input.endIso,
-      allDay: false,
+      allDay: input.allDay === true,
       source: 'demo',
       attendees,
     }
@@ -516,6 +563,8 @@ export async function updateCalendarEvent(input: {
         location: input.location ?? '',
         startIso: input.startIso,
         endIso: input.endIso,
+        allDay: input.allDay === true,
+        patch: true,
         timeZone: input.timeZone ?? CALENDAR_TIME_ZONE,
         attendees,
       }),
