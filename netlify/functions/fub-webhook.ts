@@ -59,7 +59,7 @@ export default async (req: Request, context?: Context) => {
   }
 
   // Call events are not scored (that would change lead routing). They feed miss reminders.
-  // callsUpdated claims the same reminder key as callsCreated, so a pair does not post twice.
+  // callsUpdated shares each item claim and the 15-minute SMS digest claim with callsCreated.
   if (/^calls/i.test(event)) {
     const pending = settle(runLoaReminders({ trigger: event || 'calls', callIds: ids }))
     if (context?.waitUntil) {

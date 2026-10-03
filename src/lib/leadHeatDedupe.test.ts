@@ -186,29 +186,64 @@ describe('lead heat writes once', () => {
 })
 
 describe('reminder claims', () => {
-  it('posts one reminder note when the cron and a call webhook run together', async () => {
+  it('posts one note and one SMS per LOA when the cron and call webhooks run together', async () => {
     process.env.LOA_REMINDERS_ENABLED = 'true'
-    process.env.FUB_LOA_USER_IDS = '16'
+    process.env.FUB_LOA_USER_IDS = '16,27,32'
     process.env.FUB_LOA_NAME_16 = 'Frankie Cordeira'
     process.env.FUB_LOA_PHONE_16 = '+15555550116'
+    process.env.FUB_LOA_NAME_27 = 'Daniel Ebbecke'
+    process.env.FUB_LOA_PHONE_27 = '+15555550127'
+    process.env.FUB_LOA_NAME_32 = 'Debra Rose'
+    process.env.FUB_LOA_PHONE_32 = '+12013946798'
     delete process.env.LOA_REMINDERS_DRY_RUN
     delete process.env.QUO_API_KEY
     const notes: NotePayload[] = []
+    const texts: { to: string; content: string }[] = []
     const source = {
-      people: [{ id: 100, name: 'Alex Buyer', assignedUserId: 16 }],
-      tasks: [{ id: 1, name: 'Follow up', isCompleted: 0, dueDate: '2026-10-01', personId: 100, assignedUserId: 16 }],
-      texts: [],
-      calls: [],
+      people: [
+        { id: 100, name: 'Alex Buyer', assignedUserId: 16 },
+        { id: 200, name: 'Sam Rivera', assignedUserId: 27 },
+        { id: 300, name: 'Pat Buyer', assignedUserId: 32 },
+      ],
+      tasks: [
+        { id: 1, name: 'Follow up', isCompleted: 0, dueDate: '2026-10-01', personId: 100, assignedUserId: 16 },
+        { id: 2, name: 'Check rates', isCompleted: 0, dueDate: '2026-10-01', personId: 200, assignedUserId: 27 },
+        { id: 3, name: 'Order appraisal', isCompleted: 0, dueDate: '2026-10-01', personId: 300, assignedUserId: 32 },
+      ],
+      texts: [
+        { id: 50, personId: 100, isIncoming: true, created: '2026-10-02T12:00:00.000Z', message: 'Are you there?' },
+      ],
+      calls: [
+        { id: 70, personId: 100, isIncoming: true, outcome: 'No Answer', created: '2026-10-02T13:00:00.000Z', duration: 0 },
+      ],
       googleTasks: [],
     }
     const postNote = async (input: NotePayload) => {
+      await new Promise((resolve) => setTimeout(resolve, 10))
       notes.push(input)
     }
+    const sendText = async (input: { to: string; content: string }) => {
+      await new Promise((resolve) => setTimeout(resolve, 10))
+      texts.push(input)
+      return { id: 'sms-test' }
+    }
     await Promise.all([
-      runLoaReminders({ now, trigger: 'schedule', source, postNote }),
-      runLoaReminders({ now, trigger: 'callsCreated', source, postNote }),
-      runLoaReminders({ now, trigger: 'callsUpdated', source, postNote }),
+      runLoaReminders({ now, trigger: 'schedule', source, postNote, sendText }),
+      runLoaReminders({ now, trigger: 'callsCreated', source, postNote, sendText }),
+      runLoaReminders({ now, trigger: 'callsUpdated', source, postNote, sendText }),
     ])
-    expect(notes).toHaveLength(1)
+    const frankie = notes.filter((note) => note.mentionUserIds[0] === 16)
+    expect(frankie).toHaveLength(1)
+    expect(frankie[0]?.body).toContain('Overdue task: Follow up')
+    expect(frankie[0]?.body).toContain('Unanswered inbound text')
+    expect(frankie[0]?.body).toContain('Missed inbound call')
+    expect(notes.filter((note) => note.mentionUserIds[0] === 27)).toHaveLength(1)
+    expect(notes.filter((note) => note.mentionUserIds[0] === 32)).toHaveLength(1)
+    expect(texts.filter((text) => text.to === '+15555550116')).toHaveLength(1)
+    expect(texts.filter((text) => text.to === '+15555550127')).toHaveLength(1)
+    expect(texts.filter((text) => text.to === '+12013946798')).toHaveLength(1)
+    expect(texts.find((text) => text.to === '+15555550116')?.content).toContain('Alex Buyer')
+    expect(texts.find((text) => text.to === '+15555550116')?.content).toContain('Unanswered inbound text')
+    expect(texts.find((text) => text.to === '+15555550116')?.content).toContain('Missed inbound call')
   })
 })

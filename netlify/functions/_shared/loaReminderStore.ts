@@ -46,23 +46,41 @@ export async function resetReminderStateForTests() {
   }
 }
 
-/** Claim one missed item before posting. A second caller in the same moment gets false. */
+/** Claim one missed item, seat, or SMS digest. A second caller in the same moment gets false. */
 export async function claimReminderItem(key: string, at: string): Promise<boolean> {
-  const blobKey = claimKey(key)
-  if (claims.has(blobKey)) return false
-  claims.set(blobKey, at)
-  const blob = store()
-  if (!blob) return true
-  try {
-    const written = await blob.setJSON(blobKey, { at }, { onlyIfNew: true })
-    if (!written.modified) {
-      claims.delete(blobKey)
-      return false
-    }
-    return true
-  } catch {
-    return true
+  const won = await claimReminderItems([key], at)
+  return won.length === 1
+}
+
+/**
+ * Claim every key before the first await so concurrent runs in this process
+ * cannot split one person's task, text, and call across two notes.
+ */
+export async function claimReminderItems(keys: string[], at: string): Promise<string[]> {
+  const won: string[] = []
+  for (const key of keys) {
+    const blobKey = claimKey(key)
+    if (claims.has(blobKey)) continue
+    claims.set(blobKey, at)
+    won.push(key)
   }
+  const blob = store()
+  if (!blob) return won
+  const kept: string[] = []
+  for (const key of won) {
+    const blobKey = claimKey(key)
+    try {
+      const written = await blob.setJSON(blobKey, { at }, { onlyIfNew: true })
+      if (!written.modified) {
+        claims.delete(blobKey)
+        continue
+      }
+      kept.push(key)
+    } catch {
+      claims.delete(blobKey)
+    }
+  }
+  return kept
 }
 
 export async function releaseReminderItem(key: string): Promise<void> {
@@ -100,7 +118,7 @@ function mergeStates(base: ReminderState, incoming: ReminderState): ReminderStat
 
 function store() {
   try {
-    return getStore('loanpilot-reminders')
+    return getStore('loanpilot-reminders', { consistency: 'strong' })
   } catch {
     return null
   }
