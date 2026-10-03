@@ -278,6 +278,9 @@ export async function createTask(input: {
   personName?: string
 }): Promise<{ id: number }> {
   const assignee = resolveAssignee(input)
+  const open = await listOpenTasksForPerson(input.personId)
+  const existing = open.find((task) => task.name.trim() === input.name.trim())
+  if (existing) return { id: existing.id }
   if (isDemoMode()) {
     const id = Math.floor(Math.random() * 10_000) + 5000
     await rememberFubTask({
@@ -400,7 +403,23 @@ export async function getNote(id: number): Promise<FubNote | null> {
   }
 }
 
-/** Best-effort custom field. Missing fields are ignored so scoring still notes and tasks. */
+export async function listOpenTasksForPerson(personId: number): Promise<{ id: number; name: string }[]> {
+  if (!personId) return []
+  if (isDemoMode()) {
+    const extras = await loadHubExtras()
+    return extras.fubTasks
+      .filter((task) => task.personId === personId && task.status !== 'completed')
+      .map((task) => ({ id: Number(task.id), name: task.title }))
+      .filter((task) => Number.isInteger(task.id) && task.name)
+  }
+  const data = (await fubFetch(`/tasks?personId=${personId}&isCompleted=0&limit=100`)) as { tasks?: FubTaskRaw[] }
+  return (data?.tasks ?? [])
+    .filter((task) => task?.id != null && !fubTaskIsDone(task.isCompleted) && task.name?.trim())
+    .map((task) => ({ id: task.id, name: task.name?.trim() ?? '' }))
+}
+
+/** Best-effort custom field. Missing fields are ignored so scoring still notes and tasks.
+ * Follow Up Boss emits peopleUpdated for this PUT. The webhook ignores that event so the write does not rescore. */
 export async function setLoanPilotScore(personId: number, score: number): Promise<boolean> {
   if (isDemoMode() || !personId) return false
   try {

@@ -178,7 +178,16 @@ describe('Follow Up Boss open tasks', () => {
         const url = String(input)
         urls.push(url)
         if (url.includes('/tasks?')) {
-          const assigned = new URL(url).searchParams.get('assignedUserId')
+          const params = new URL(url).searchParams
+          const personId = params.get('personId')
+          if (personId) {
+            const open = [
+              { id: 10, name: 'Call Casey', isCompleted: 0, personId: 55 },
+              { id: 11, name: 'Text Riley', isCompleted: 0, personId: 56 },
+            ]
+            return new Response(JSON.stringify({ tasks: open.filter((task) => String(task.personId) === personId) }), { status: 200 })
+          }
+          const assigned = params.get('assignedUserId')
           return new Response(
             JSON.stringify({
               tasks: [

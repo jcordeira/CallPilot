@@ -1,10 +1,11 @@
-import { isDemoMode } from './env'
+import { env, isDemoMode } from './env'
 import {
   addNote,
   createTask,
   fubGet,
   getNote,
   getPerson,
+  listOpenTasksForPerson,
   listPeople,
   listRecentEvents,
   personLooksLikeLead,
@@ -14,11 +15,22 @@ import {
 } from './followupboss'
 import { loadScoredLeads, rememberScoredLead } from './hubExtras'
 import { purgeStoredDemoData } from './purgeDemo'
+import { acquirePersonLock, loadPersonScore, releasePersonLock, savePersonScore } from './scoreStore'
 import type { ScoredLead } from './hubTypes'
 import { bandLabel, scoreLead, type LeadScoreResult, type LeadSignals } from './leadScore'
 import { escalationPlan, followUpPlan, type FollowUpPlan } from './team'
 
-const QUIET_MS = 20 * 60 * 60 * 1000
+const NOTE_REFRESH_MS = 7 * 24 * 60 * 60 * 1000
+const BAND_RANK: Record<string, number> = { cold: 0, cool: 1, warm: 2, hot: 3 }
+
+export function heatWritesEnabled(): boolean {
+  return env('LEAD_HEAT_WRITES_ENABLED', 'true').trim().toLowerCase() !== 'false'
+}
+
+export function sameLoanPilotTask(wanted: string, existing: string): boolean {
+  const fold = (value: string) => value.trim().replace(/\(\d+\)/g, '(#)')
+  return fold(wanted) === fold(existing)
+}
 
 type Fixture = {
   personId: number
@@ -122,9 +134,15 @@ export function shouldRewriteScore(
   escalate = false,
 ): boolean {
   if (escalate || !previous) return true
-  if (previous.score !== next.score || previous.band !== next.band) return true
+  if (previous.band !== next.band) return true
   const age = now.getTime() - new Date(previous.scoredAt).getTime()
-  return !(age >= 0 && age < QUIET_MS)
+  return age >= NOTE_REFRESH_MS
+}
+
+function bandMovedUp(previous: string | undefined, next: string): boolean {
+  if (next === 'cold' || next === 'excluded') return false
+  if (!previous) return true
+  return (BAND_RANK[next] ?? -1) > (BAND_RANK[previous] ?? -1)
 }
 
 export function scoreNote(personName: string, result: LeadScoreResult, plan: FollowUpPlan | null): { subject: string; body: string } {
@@ -163,9 +181,11 @@ export function signalsFromFub(person: FubPerson, events: FubEvent[], now = new 
   }
 }
 
-function isOpenLead(person: FubPerson): boolean {
+export function isOpenLead(person: FubPerson): boolean {
+  if (person.id === 11615) return false
+  if ((person.name ?? '').trim().toLowerCase() === 'loanpilot') return false
   if (personLooksLikeLead(person) === false) return false
-  return !/trash|archived/.test((person.stage ?? '').toLowerCase())
+  return !/closed|past client|outside partner|trash|archived/.test((person.stage ?? '').toLowerCase())
 }
 
 export async function publishLeadScore(input: {
@@ -181,65 +201,66 @@ export async function publishLeadScore(input: {
 }): Promise<ScoredLead | null> {
   if (!input.personId || input.result.excluded) return null
   if (!isDemoMode()) await purgeStoredDemoData()
-  const now = input.now ?? new Date()
-  const personName = input.personName.trim() || 'Lead'
-  const plan = input.escalate ? escalationPlan(personName, now) : followUpPlan(input.result, personName, now)
-  const previous = (await loadScoredLeads()).find((lead) => lead.personId === input.personId)
+  const held = await acquirePersonLock(input.personId)
+  if (!held) return (await loadPersonScore(input.personId)) ?? null
+  try {
+    const now = input.now ?? new Date()
+    const personName = input.personName.trim() || 'Lead'
+    const plan = input.escalate ? escalationPlan(personName, now) : followUpPlan(input.result, personName, now)
+    const previous = await loadPersonScore(input.personId)
+    const noteDue = shouldRewriteScore(previous ?? undefined, input.result, now, input.escalate)
+    const scoreChanged = previous?.score !== input.result.score
+    const movedUp = bandMovedUp(previous?.band, input.result.band)
+    if (!noteDue && !scoreChanged) return previous ?? null
 
-  if (!shouldRewriteScore(previous, input.result, now, input.escalate)) {
-    return previous ?? null
-  }
+    let taskId = previous?.taskId
+    let due = plan?.dueDate ?? previous?.due
+    let assignee = plan?.assigneeName ?? previous?.assignee
+    let assigneeRole = plan?.assigneeRole ?? previous?.assigneeRole
+    let taskType = input.taskType ?? plan?.taskType ?? previous?.taskType
+    const writes = heatWritesEnabled()
+    const wantsTask = writes && (input.createTask ?? true) && Boolean(plan) && (movedUp || Boolean(input.escalate))
+    if (wantsTask && plan) {
+      const taskName = input.taskName ?? plan.taskName
+      const open = await listOpenTasksForPerson(input.personId)
+      const duplicate = open.some((task) => sameLoanPilotTask(taskName, task.name))
+      if (!duplicate) {
+        const created = await createTask({
+          personId: input.personId,
+          personName,
+          name: taskName,
+          type: input.taskType ?? plan.taskType,
+          dueDate: plan.dueDate,
+          assignedTo: plan.assigneeName,
+          assignedUserId: plan.assignedUserId,
+        })
+        taskId = created.id
+        due = plan.dueDate
+        assignee = plan.assigneeName
+        assigneeRole = plan.assigneeRole
+        taskType = input.taskType ?? plan.taskType
+      }
+    }
 
-  let taskId = previous?.taskId
-  let due = plan?.dueDate
-  let assignee = plan?.assigneeName
-  let assigneeRole = plan?.assigneeRole
-  let taskType = input.taskType ?? plan?.taskType
-  const bandChanged = !previous || previous.band !== input.result.band
-  const taskStale =
-    !previous?.scoredAt || now.getTime() - new Date(previous.scoredAt).getTime() >= QUIET_MS || !previous.taskId
-  const wantsTask = (input.createTask ?? true) && plan
-  if (wantsTask && plan && (bandChanged || taskStale || input.escalate)) {
-    const created = await createTask({
-      personId: input.personId,
-      personName,
-      name: input.taskName ?? plan.taskName,
-      type: input.taskType ?? plan.taskType,
-      dueDate: plan.dueDate,
-      assignedTo: plan.assigneeName,
-      assignedUserId: plan.assignedUserId,
-    })
-    taskId = created.id
-    due = plan.dueDate
-    assignee = plan.assigneeName
-    assigneeRole = plan.assigneeRole
-    taskType = input.taskType ?? plan.taskType
-  } else if (previous && !bandChanged) {
-    due = previous.due ?? due
-    assignee = previous.assignee ?? assignee
-    assigneeRole = previous.assigneeRole ?? assigneeRole
-    taskType = previous.taskType ?? taskType
-  }
+    if (writes && noteDue) {
+      const note = scoreNote(personName, input.result, plan)
+      await addNote({ personId: input.personId, subject: note.subject, body: note.body })
+    }
+    if (writes && scoreChanged) await setLoanPilotScore(input.personId, input.result.score)
 
-  const note = scoreNote(personName, input.result, plan)
-  await addNote({ personId: input.personId, subject: note.subject, body: note.body })
-  await setLoanPilotScore(input.personId, input.result.score)
-
-  const lead = toScoredLead(input.personId, personName, input.result, plan, now, input.stage, taskId)
-  if (!plan && previous && !bandChanged) {
+    const lead = toScoredLead(input.personId, personName, input.result, plan, now, input.stage ?? previous?.stage, taskId)
+    if (!noteDue && previous) lead.scoredAt = previous.scoredAt
     lead.due = due
     lead.assignee = assignee
     lead.assigneeRole = assigneeRole
     lead.taskType = taskType
-  } else if (input.taskType && plan) {
-    lead.taskType = taskType
+    lead.taskId = taskId
+    await savePersonScore(lead)
+    await rememberScoredLead(lead)
+    return lead
+  } finally {
+    await releasePersonLock(input.personId)
   }
-  lead.due = due
-  lead.assignee = assignee
-  lead.assigneeRole = assigneeRole
-  lead.taskId = taskId
-  await rememberScoredLead(lead)
-  return lead
 }
 
 async function scoreFixture(fixture: Fixture, now: Date, createTask: boolean): Promise<ScoredLead | null> {
@@ -341,6 +362,9 @@ export async function handleFubWebhook(payload: Record<string, unknown>, now = n
       now,
     })
     if (!personId || result.excluded) return { leads: [] }
+    if (!isOpenLead({ id: personId, name, stage: typeof person.stage === 'string' ? person.stage : undefined, tags: Array.isArray(person.tags) ? person.tags.map(String) : undefined })) {
+      return { leads: [] }
+    }
     const saved = await publishLeadScore({
       personId,
       personName: name,
@@ -364,7 +388,7 @@ export async function handleFubWebhook(payload: Record<string, unknown>, now = n
       const note = await getNote(id)
       if (!note?.personId || /^LoanPilot/i.test(note.subject ?? '')) continue
       const person = await getPerson(note.personId)
-      if (!person) continue
+      if (!person || !isOpenLead(person)) continue
       const result = scoreLead({
         ...signalsFromFub(person, await listRecentEvents(person.id), now),
         recentText: `${note.subject ?? ''}\n${note.body ?? ''}`,
