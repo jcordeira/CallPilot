@@ -28,15 +28,73 @@ export type ReminderState = {
 const empty = (): ReminderState => ({ reminded: {}, recent: [] })
 
 let memory: ReminderState = empty()
+const claims = new Map<string, string>()
+
+function claimKey(key: string): string {
+  return `reminded/${key}`
+}
 
 export async function resetReminderStateForTests() {
   memory = empty()
+  claims.clear()
   const blob = store()
   if (!blob) return
   try {
     await blob.delete('state')
   } catch {
     /* memory is already clear */
+  }
+}
+
+/** Claim one missed item before posting. A second caller in the same moment gets false. */
+export async function claimReminderItem(key: string, at: string): Promise<boolean> {
+  const blobKey = claimKey(key)
+  if (claims.has(blobKey)) return false
+  claims.set(blobKey, at)
+  const blob = store()
+  if (!blob) return true
+  try {
+    const written = await blob.setJSON(blobKey, { at }, { onlyIfNew: true })
+    if (!written.modified) {
+      claims.delete(blobKey)
+      return false
+    }
+    return true
+  } catch {
+    return true
+  }
+}
+
+export async function releaseReminderItem(key: string): Promise<void> {
+  const blobKey = claimKey(key)
+  claims.delete(blobKey)
+  const blob = store()
+  if (!blob) return
+  try {
+    await blob.delete(blobKey)
+  } catch {
+    /* a released claim can be retried from memory */
+  }
+}
+
+function mergeStates(base: ReminderState, incoming: ReminderState): ReminderState {
+  const reminded = { ...base.reminded }
+  for (const [key, at] of Object.entries(incoming.reminded)) {
+    if (!reminded[key] || at < reminded[key]) reminded[key] = at
+  }
+  const marks = [base.watermark, incoming.watermark].filter((value): value is string => Boolean(value))
+  const recent: ReminderLog[] = []
+  const seen = new Set<string>()
+  for (const log of [...incoming.recent, ...base.recent]) {
+    if (seen.has(log.id)) continue
+    seen.add(log.id)
+    recent.push(log)
+    if (recent.length >= 40) break
+  }
+  return {
+    watermark: marks.sort()[0],
+    reminded,
+    recent,
   }
 }
 
@@ -85,16 +143,14 @@ export async function loadReminderState(): Promise<ReminderState> {
 }
 
 export async function saveReminderState(state: ReminderState): Promise<void> {
-  memory = {
-    watermark: state.watermark,
-    reminded: { ...state.reminded },
-    recent: [...state.recent],
-  }
+  memory = mergeStates(memory, state)
   const blob = store()
   if (!blob) return
   try {
+    const current = normalize(await blob.get('state', { type: 'json' })) ?? empty()
+    memory = mergeStates(current, memory)
     await blob.setJSON('state', memory)
   } catch {
-    /* memory still holds the latest */
+    /* memory still holds the merge */
   }
 }

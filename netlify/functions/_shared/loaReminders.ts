@@ -1,7 +1,7 @@
 import { listGoogleTasks } from './calendar'
 import { env, isDemoMode } from './env'
 import { addNote, fubGet } from './followupboss'
-import { loadReminderState, saveReminderState, type ReminderLog, type ReminderState } from './loaReminderStore'
+import { claimReminderItem, loadReminderState, releaseReminderItem, saveReminderState, type ReminderLog, type ReminderState } from './loaReminderStore'
 import { sendSmsIfConfigured } from './quo'
 import { loanOfficer, loanOfficerAssistant } from './team'
 
@@ -939,9 +939,19 @@ export async function runLoaReminders(options?: {
         })
         continue
       }
+      const claimed: MissedItem[] = []
+      for (const item of group.items) {
+        if (await claimReminderItem(item.key, now.toISOString())) claimed.push(item)
+      }
+      if (!claimed.length) continue
+      const claimedPayload: NotePayload = {
+        ...payload,
+        body: mentionNoteHtml(seat.userId, seat.name, claimed.map((item) => item.line)),
+      }
+      const claimedSummary = `${claimed.length} item${claimed.length === 1 ? '' : 's'} on ${claimed[0]?.personName ?? 'lead'}`
       try {
-        await postNote(payload)
-        for (const item of group.items) {
+        await postNote(claimedPayload)
+        for (const item of claimed) {
           reminded[item.key] = now.toISOString()
           notedKeys.add(item.key)
         }
@@ -951,12 +961,13 @@ export async function runLoaReminders(options?: {
           seatRole: seat.role,
           channel: 'note',
           personId: group.personId,
-          personName: group.items[0]?.personName,
-          summary,
-          itemKeys: group.items.map((item) => item.key),
+          personName: claimed[0]?.personName,
+          summary: claimedSummary,
+          itemKeys: claimed.map((item) => item.key),
           status: 'sent',
         })
       } catch (err) {
+        for (const item of claimed) await releaseReminderItem(item.key)
         const error = err instanceof Error && err.message ? err.message : 'Note failed'
         deliveries.push({
           seatUserId: seat.userId,
@@ -964,19 +975,35 @@ export async function runLoaReminders(options?: {
           seatRole: seat.role,
           channel: 'note',
           personId: group.personId,
-          summary,
-          itemKeys: group.items.map((item) => item.key),
+          summary: claimedSummary,
+          itemKeys: claimed.map((item) => item.key),
           status: 'error',
           error,
         })
       }
     }
 
-    if (!grouped.smsItems.length) continue
-    const smsBody = digestSms(seat.name, grouped.smsItems)
+    const smsFresh: MissedItem[] = []
+    const smsClaimed: MissedItem[] = []
+    for (const item of grouped.smsItems) {
+      if (notedKeys.has(item.key) || dryRun) {
+        smsFresh.push(item)
+        continue
+      }
+      if (await claimReminderItem(item.key, now.toISOString())) {
+        smsFresh.push(item)
+        smsClaimed.push(item)
+      }
+    }
+    if (!smsFresh.length) continue
+    const smsBody = digestSms(seat.name, smsFresh)
     const summary = smsBody.split('\n')[0] ?? 'Reminder'
-    const keys = grouped.smsItems.map((item) => item.key)
+    const keys = smsFresh.map((item) => item.key)
+    const releaseSms = async () => {
+      for (const item of smsClaimed) await releaseReminderItem(item.key)
+    }
     if (!seat.phone) {
+      await releaseSms()
       deliveries.push({
         seatUserId: seat.userId,
         seatName: seat.name,
@@ -1006,6 +1033,7 @@ export async function runLoaReminders(options?: {
     try {
       const sent = await sendText({ to: seat.phone, content: smsBody })
       if ('skipped' in sent) {
+        await releaseSms()
         deliveries.push({
           seatUserId: seat.userId,
           seatName: seat.name,
@@ -1019,7 +1047,7 @@ export async function runLoaReminders(options?: {
         })
         continue
       }
-      for (const item of grouped.smsItems) {
+      for (const item of smsFresh) {
         if (!seat.fubNote || notedKeys.has(item.key) || !item.personId) reminded[item.key] = now.toISOString()
       }
       deliveries.push({
@@ -1034,6 +1062,7 @@ export async function runLoaReminders(options?: {
         status: 'sent',
       })
     } catch (err) {
+      await releaseSms()
       const error = err instanceof Error && err.message ? err.message : 'SMS failed'
       deliveries.push({
         seatUserId: seat.userId,

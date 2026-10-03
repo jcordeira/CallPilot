@@ -300,7 +300,7 @@ The Hub Command mode card lists recent commands. It does not send anything.
 
 ## Lead heat (Joseph and Frank)
 
-Scores run in demo mode with no Follow Up Boss key (sample leads on the Hub). With a key, the hourly `score-leads` function and the FUB webhook rescore open people.
+Scores run in demo mode with no Follow Up Boss key (sample leads on the Hub). With a key, the hourly `score-leads` function and the FUB webhook rescore open people. A heat note is written when the band changes, or at most every 7 days. A task is created only when the band moves up and that person does not already have an open LoanPilot task of the same kind. `peopleUpdated` is ignored so writing the score does not rescore. Set `LEAD_HEAT_WRITES_ENABLED=false` to keep Hub scores and stop Follow Up Boss notes and tasks. Closed, Past Client, and Outside Partner stages are skipped, as is the person named LoanPilot.
 
 | Score | Band | Task |
 |---|---|---|

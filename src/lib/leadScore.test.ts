@@ -235,10 +235,15 @@ describe('demo lead board', () => {
     expect(result).toEqual({ skipped: 'tasksCreated', leads: [] })
   })
 
-  it('skips a rewrite when the score has not changed', () => {
+  it('writes a heat note on a band change or after 7 days, not on a quiet score', () => {
     const previous = { score: 92, band: 'hot', scoredAt: new Date(now.getTime() - 60 * 60_000).toISOString() }
     expect(shouldRewriteScore(previous, { score: 92, band: 'hot' }, now)).toBe(false)
+    expect(shouldRewriteScore(previous, { score: 95, band: 'hot' }, now)).toBe(false)
     expect(shouldRewriteScore(previous, { score: 70, band: 'warm' }, now)).toBe(true)
     expect(shouldRewriteScore(previous, { score: 92, band: 'hot' }, now, true)).toBe(true)
+    const sixDays = { ...previous, scoredAt: new Date(now.getTime() - 6 * 86_400_000).toISOString() }
+    expect(shouldRewriteScore(sixDays, { score: 92, band: 'hot' }, now)).toBe(false)
+    const eightDays = { ...previous, scoredAt: new Date(now.getTime() - 8 * 86_400_000).toISOString() }
+    expect(shouldRewriteScore(eightDays, { score: 92, band: 'hot' }, now)).toBe(true)
   })
 })

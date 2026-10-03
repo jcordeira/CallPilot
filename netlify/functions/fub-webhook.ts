@@ -53,7 +53,13 @@ export default async (req: Request, context?: Context) => {
   const event = typeof body.event === 'string' ? body.event : ''
   const ids = resourceIds(body)
 
+  // peopleUpdated also fires when LoanPilot writes customLoanPilotScore. Rescoring it loops notes.
+  if (/^peopleUpdated$/i.test(event)) {
+    return Response.json({ ok: true, event, skipped: 'people-updated' })
+  }
+
   // Call events are not scored (that would change lead routing). They feed miss reminders.
+  // callsUpdated claims the same reminder key as callsCreated, so a pair does not post twice.
   if (/^calls/i.test(event)) {
     const pending = settle(runLoaReminders({ trigger: event || 'calls', callIds: ids }))
     if (context?.waitUntil) {
