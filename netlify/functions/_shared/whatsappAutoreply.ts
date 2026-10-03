@@ -1,10 +1,12 @@
 import { env, isDemoMode } from './env'
-import { kapsoConfigured, sendKapsoText } from './kapso'
+import { kapsoConfigured, listKapsoMessages, sendKapsoText, type KapsoListedMessage } from './kapso'
 import { normalizePhone } from './loaReminders'
 import { sendSmsIfConfigured } from './quo'
 import { commandBusyUntil } from './commandStore'
 import {
+  claimAutoreplySend,
   loadWhatsappState,
+  releaseAutoreplyClaim,
   saveWhatsappState,
   type WhatsappLog,
   type WhatsappPending,
@@ -108,10 +110,16 @@ function originOf(message: Rec): string {
   return typeof kapso?.origin === 'string' ? kapso.origin.toLowerCase() : ''
 }
 
-function directionOf(message: Rec): 'inbound' | 'outbound' | null {
+function directionOf(message: Rec, event = ''): 'inbound' | 'outbound' | null {
   const kapso = asRec(message.kapso)
-  const direction = typeof kapso?.direction === 'string' ? kapso.direction.toLowerCase() : ''
-  if (direction === 'inbound' || direction === 'outbound') return direction
+  const fromKapso = typeof kapso?.direction === 'string' ? kapso.direction.toLowerCase() : ''
+  if (fromKapso === 'inbound' || fromKapso === 'outbound') return fromKapso
+  const direct = typeof message.direction === 'string' ? message.direction.toLowerCase() : ''
+  if (direct === 'inbound' || direct === 'outbound') return direct
+  const source = typeof kapso?.source === 'string' ? kapso.source.toLowerCase() : ''
+  if (event === 'smb_message_echoes' || event.includes('echo') || source.includes('echo')) return 'outbound'
+  if (event === 'whatsapp.message.sent') return 'outbound'
+  if (event === 'whatsapp.message.received') return 'inbound'
   if (originOf(message) === 'business_app') return 'outbound'
   if (message.from && !message.to) return 'inbound'
   if (message.to && !message.from) return 'outbound'
@@ -141,7 +149,7 @@ function passive(message: Rec): boolean {
   return kapso?.passive === true
 }
 
-type Contact = { key: string; phone?: string; recipient?: string; label: string; alertLabel: string }
+type Contact = { key: string; phone?: string; recipient?: string; label: string; alertLabel: string; conversationId?: string }
 
 function contactOf(message: Rec, conversation: Rec | null, direction: 'inbound' | 'outbound'): Contact | null {
   const phoneRaw =
@@ -159,7 +167,15 @@ function contactOf(message: Rec, conversation: Rec | null, direction: 'inbound' 
   if (!key) return null
   const digits = (phone ?? '').replace(/\D/g, '')
   const privateLabel = name || (digits ? `···${digits.slice(-4)}` : 'a contact')
-  return { key, phone, recipient: phone ? undefined : bsuid || undefined, label: privateLabel, alertLabel: name || phone || 'a contact' }
+  const conversationId = typeof conversation?.id === 'string' ? conversation.id : undefined
+  return {
+    key,
+    phone,
+    recipient: phone ? undefined : bsuid || undefined,
+    label: privateLabel,
+    alertLabel: name || phone || 'a contact',
+    conversationId,
+  }
 }
 
 function phoneMatchesConfigured(payload: Rec): boolean {
@@ -187,13 +203,49 @@ function isOwnApiMessage(message: Rec, state: WhatsappState, replyText: string):
   return originOf(message) === 'cloud_api' && messageText(message) === replyText
 }
 
-function payloadsOf(body: unknown): Rec[] {
+function metaEchoes(record: Rec): { event: string; payload: Rec }[] {
+  const entries = Array.isArray(record.entry) ? record.entry : []
+  const out: { event: string; payload: Rec }[] = []
+  for (const entry of entries) {
+    const changes = asRec(entry)?.changes
+    if (!Array.isArray(changes)) continue
+    for (const change of changes) {
+      const item = asRec(change)
+      const value = asRec(item?.value)
+      if (!item || !value) continue
+      const field = typeof item.field === 'string' ? item.field : ''
+      if (field !== 'smb_message_echoes' || !Array.isArray(value.message_echoes)) continue
+      const phoneNumberId = asRec(value.metadata)?.phone_number_id
+      for (const echo of value.message_echoes) {
+        const message = asRec(echo)
+        if (!message) continue
+        const to = typeof message.to === 'string' ? message.to : ''
+        out.push({
+          event: 'smb_message_echoes',
+          payload: {
+            message,
+            phone_number_id: typeof phoneNumberId === 'string' ? phoneNumberId : undefined,
+            conversation: to ? { phone_number: to } : undefined,
+          },
+        })
+      }
+    }
+  }
+  return out
+}
+
+function collectEvents(body: unknown, event: string): { event: string; payload: Rec }[] {
   const record = asRec(body)
   if (!record) return []
   if (record.batch === true && Array.isArray(record.data)) {
-    return record.data.map(asRec).filter((item): item is Rec => item != null)
+    return record.data.flatMap((item) => collectEvents(item, event))
   }
-  return [record]
+  const echoes = metaEchoes(record)
+  if (echoes.length) return echoes
+  if (Array.isArray(record.message_echoes)) {
+    return collectEvents({ object: 'whatsapp_business_account', entry: [{ changes: [{ field: 'smb_message_echoes', value: record }] }] }, event)
+  }
+  return [{ event, payload: record }]
 }
 
 function clip(text: string): string {
@@ -226,10 +278,13 @@ export async function ingestKapsoWebhook(input: {
   if (key) state.idempotencyKeys.push(key)
 
   const settings = whatsappSettings()
-  const event = input.event.trim()
+  const eventName = input.event.trim()
   let changed = Boolean(key)
+  let duplicates = 0
 
-  for (const payload of payloadsOf(input.body)) {
+  for (const item of collectEvents(input.body, eventName)) {
+    const event = item.event
+    const payload = item.payload
     if (!phoneMatchesConfigured(payload)) {
       continue
     }
@@ -250,10 +305,8 @@ export async function ingestKapsoWebhook(input: {
       const at = typeof since?.created_at === 'string' ? new Date(since.created_at) : now
       const when = Number.isNaN(at.getTime()) ? now : at
       if (direction === 'outbound') {
-        if (cancelPending(state, stub, conversation, when)) {
-          base.cancelled += 1
-          changed = true
-        }
+        if (cancelPending(state, stub, conversation, when)) base.cancelled += 1
+        changed = true
       } else if (recordInbound(state, stub, conversation, when, settings.maxAgeHours, now)) {
         base.recorded += 1
         changed = true
@@ -267,16 +320,23 @@ export async function ingestKapsoWebhook(input: {
     if (originOf(message) === 'history_sync' || passive(message) || ignoredType(message) || isGroup(message, conversation)) {
       continue
     }
-    const direction = directionOf(message)
-    if (direction === 'outbound') {
-      if (isOwnApiMessage(message, state, settings.replyText)) continue
-      if (cancelPending(state, message, conversation, messageTime(message, now))) {
-        base.cancelled += 1
-        changed = true
-      }
+    const direction = directionOf(message, event)
+    if (!direction) continue
+    const messageId = typeof message.id === 'string' ? message.id : ''
+    if (messageId && state.seenMessageIds.includes(messageId)) {
+      duplicates += 1
       continue
     }
-    if (direction !== 'inbound') continue
+    if (messageId) {
+      state.seenMessageIds.push(messageId)
+      changed = true
+    }
+    if (direction === 'outbound') {
+      if (isOwnApiMessage(message, state, settings.replyText)) continue
+      if (cancelPending(state, message, conversation, messageTime(message, now))) base.cancelled += 1
+      changed = true
+      continue
+    }
     if (recordInbound(state, message, conversation, messageTime(message, now), settings.maxAgeHours, now)) {
       base.recorded += 1
       changed = true
@@ -284,8 +344,22 @@ export async function ingestKapsoWebhook(input: {
   }
 
   if (changed) await saveWhatsappState(state)
-  if (!base.recorded && !base.cancelled) return { ...base, ignored: 'no actionable message' }
+  if (!base.recorded && !base.cancelled) {
+    if (duplicates) return { ...base, skipped: 'duplicate' }
+    return { ...base, ignored: 'no actionable message' }
+  }
   return base
+}
+
+function answeredAfter(state: WhatsappState, key: string, inboundAt: string): boolean {
+  const at = state.answeredAt[key]
+  if (!at) return false
+  return new Date(at).getTime() + 1000 >= new Date(inboundAt).getTime()
+}
+
+function noteAnswered(state: WhatsappState, key: string, at: Date) {
+  const prev = state.answeredAt[key]
+  if (!prev || new Date(prev).getTime() < at.getTime()) state.answeredAt[key] = at.toISOString()
 }
 
 function recordInbound(state: WhatsappState, message: Rec, conversation: Rec | null, at: Date, maxAgeHours: number, now: Date): boolean {
@@ -293,6 +367,7 @@ function recordInbound(state: WhatsappState, message: Rec, conversation: Rec | n
   if (now.getTime() - at.getTime() > maxAgeHours * 3_600_000) return false
   const contact = contactOf(message, conversation, 'inbound')
   if (!contact) return false
+  if (answeredAfter(state, contact.key, at.toISOString())) return false
   if (inCooldown(state, contact.key, now)) return false
   const existing = state.pending[contact.key]
   if (existing && new Date(existing.inboundAt).getTime() > at.getTime()) return false
@@ -305,6 +380,7 @@ function recordInbound(state: WhatsappState, message: Rec, conversation: Rec | n
     alertLabel: contact.alertLabel,
     snippet: snippet || '[message]',
     messageId: typeof message.id === 'string' ? message.id : contact.key,
+    conversationId: contact.conversationId,
     inboundAt: at.toISOString(),
     attempts: existing && existing.messageId === message.id ? existing.attempts : 0,
   }
@@ -314,6 +390,7 @@ function recordInbound(state: WhatsappState, message: Rec, conversation: Rec | n
 function cancelPending(state: WhatsappState, message: Rec, conversation: Rec | null, at: Date): boolean {
   const contact = contactOf(message, conversation, 'outbound')
   if (!contact) return false
+  noteAnswered(state, contact.key, at)
   const pending = state.pending[contact.key]
   if (!pending) return false
   if (at.getTime() + 1000 < new Date(pending.inboundAt).getTime()) return false
@@ -346,12 +423,36 @@ export async function getWhatsappPanel(): Promise<WhatsappPanel> {
   }
 }
 
+function sameParty(message: Rec, pending: WhatsappPending): boolean {
+  if (!pending.phone) return true
+  const kapso = asRec(message.kapso)
+  const raw = [message.from, message.to, kapso?.phone_number].filter((value): value is string => typeof value === 'string')
+  if (!raw.length) return true
+  return raw.some((value) => normalizePhone(value) === pending.phone)
+}
+
+function historyBlocks(messages: Rec[], state: WhatsappState, pending: WhatsappPending, replyText: string): boolean {
+  const inboundAt = new Date(pending.inboundAt).getTime()
+  return messages.some((message) => {
+    if (directionOf(message) !== 'outbound') return false
+    if (!sameParty(message, pending)) return false
+    if (messageTime(message, new Date(0)).getTime() + 1000 < inboundAt) return false
+    if (isOwnApiMessage(message, state, replyText)) return false
+    return true
+  })
+}
+
+function asHistory(row: KapsoListedMessage): Rec {
+  return row as Rec
+}
+
 export async function runWhatsappAutoreply(options?: {
   now?: Date
   trigger?: string
   dryRun?: boolean
   sendWhatsapp?: SendWhatsapp
   sendAlert?: SendAlert
+  listMessages?: (input: { phone?: string; conversationId?: string; since: string }) => Promise<KapsoListedMessage[]>
 }): Promise<WhatsappRun> {
   const now = options?.now ?? new Date()
   const trigger = options?.trigger ?? 'schedule'
@@ -367,6 +468,10 @@ export async function runWhatsappAutoreply(options?: {
   const state = await loadWhatsappState()
   const sendWhatsapp = options?.sendWhatsapp ?? sendKapsoText
   const sendAlert = options?.sendAlert ?? sendSmsIfConfigured
+  const listMessages = options?.listMessages ?? (async (input: { phone?: string; conversationId?: string; since: string }) => {
+    const rows = await listKapsoMessages(input)
+    return rows ?? []
+  })
   const loPhone = normalizePhone(env('FUB_LO_PHONE'))
   const waitMs = settings.waitMinutes * 60_000
   const busyUntil = await commandBusyUntil(now)
@@ -379,7 +484,7 @@ export async function runWhatsappAutoreply(options?: {
   for (const [key, pending] of Object.entries(state.pending)) {
     const waited = new Date(pending.inboundAt).getTime() + waitMs <= now.getTime()
     if (!busyUntil && !waited) continue
-    if (inCooldown(state, key, now)) {
+    if (inCooldown(state, key, now) || answeredAfter(state, key, pending.inboundAt)) {
       delete state.pending[key]
       continue
     }
@@ -409,7 +514,37 @@ export async function runWhatsappAutoreply(options?: {
       deliveries.push(finishSkip(state, now, trigger, pending, 'Kapso is not configured'))
       continue
     }
+    const claimed = await claimAutoreplySend(key, pending.messageId, now.toISOString())
+    if (!claimed) {
+      delete state.pending[key]
+      continue
+    }
     try {
+      let history: Rec[] = []
+      try {
+        history = (await listMessages({
+          phone: pending.phone,
+          conversationId: pending.conversationId,
+          since: pending.inboundAt,
+        })).map(asHistory)
+      } catch {
+        await releaseAutoreplyClaim(key, pending.messageId)
+        continue
+      }
+      if (historyBlocks(history, state, pending, settings.replyText)) {
+        noteAnswered(state, key, now)
+        delete state.pending[key]
+        pushLog(state, {
+          id: `${now.getTime()}-cancel-${pending.messageId}`,
+          at: now.toISOString(),
+          trigger,
+          dryRun: false,
+          contactLabel: pending.label,
+          summary: `Joseph replied. Auto-reply cancelled for ${pending.label}.`,
+          status: 'cancelled',
+        })
+        continue
+      }
       const sent = await sendWhatsapp({ to: pending.phone, recipient: pending.recipient, body: replyBody })
       rememberId(state, sent.id)
       state.cooldownUntil[key] = new Date(now.getTime() + settings.cooldownHours * 3_600_000).toISOString()
@@ -438,6 +573,7 @@ export async function runWhatsappAutoreply(options?: {
       deliveries.push(delivery)
       pushLog(state, logFrom(now, trigger, false, pending, delivery))
     } catch (err) {
+      await releaseAutoreplyClaim(key, pending.messageId)
       pending.attempts += 1
       const error = err instanceof Error && err.message ? err.message : 'WhatsApp send failed'
       if (pending.attempts >= MAX_ATTEMPTS) {
