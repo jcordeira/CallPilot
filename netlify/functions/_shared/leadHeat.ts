@@ -8,6 +8,7 @@ import {
   listOpenTasksForPerson,
   listPeople,
   listRecentEvents,
+  listRecentNotes,
   personLooksLikeLead,
   setLoanPilotScore,
   type FubEvent,
@@ -15,7 +16,7 @@ import {
 } from './followupboss'
 import { loadScoredLeads, rememberScoredLead } from './hubExtras'
 import { purgeStoredDemoData } from './purgeDemo'
-import { acquirePersonLock, loadPersonScore, releasePersonLock, savePersonScore } from './scoreStore'
+import { acquirePersonLock, claimLeadHeatNote, loadPersonScore, releasePersonLock, savePersonScore } from './scoreStore'
 import type { ScoredLead } from './hubTypes'
 import { bandLabel, scoreLead, type LeadScoreResult, type LeadSignals } from './leadScore'
 import { escalationPlan, followUpPlan, type FollowUpPlan } from './team'
@@ -181,6 +182,19 @@ export function signalsFromFub(person: FubPerson, events: FubEvent[], now = new 
   }
 }
 
+function noteWithinRefresh(created: string | undefined, now: Date): boolean {
+  if (!created) return true
+  const at = new Date(created).getTime()
+  if (Number.isNaN(at)) return true
+  return now.getTime() - at < NOTE_REFRESH_MS
+}
+
+/** Same LoanPilot subject and body already posted inside the refresh window. */
+async function identicalRecentHeatNote(personId: number, subject: string, body: string, now: Date): Promise<boolean> {
+  const notes = await listRecentNotes(personId)
+  return notes.some((note) => note.subject === subject && note.body === body && noteWithinRefresh(note.created, now))
+}
+
 export function isOpenLead(person: FubPerson): boolean {
   if (person.id === 11615) return false
   if ((person.name ?? '').trim().toLowerCase() === 'loanpilot') return false
@@ -244,7 +258,16 @@ export async function publishLeadScore(input: {
 
     if (writes && noteDue) {
       const note = scoreNote(personName, input.result, plan)
-      await addNote({ personId: input.personId, subject: note.subject, body: note.body })
+      const claimed = await claimLeadHeatNote(input.personId, note.subject, note.body, now.toISOString())
+      if (claimed) {
+        let duplicate = true
+        try {
+          duplicate = await identicalRecentHeatNote(input.personId, note.subject, note.body, now)
+        } catch {
+          duplicate = true
+        }
+        if (!duplicate) await addNote({ personId: input.personId, subject: note.subject, body: note.body })
+      }
     }
     if (writes && scoreChanged) await setLoanPilotScore(input.personId, input.result.score)
 

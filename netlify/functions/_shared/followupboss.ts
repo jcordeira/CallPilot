@@ -34,6 +34,7 @@ export type FubNote = {
   personId?: number
   subject?: string
   body?: string
+  created?: string
 }
 
 function authHeader(): string {
@@ -389,6 +390,18 @@ export async function listRecentEvents(personId: number): Promise<FubEvent[]> {
   } catch {
     return []
   }
+}
+
+export async function listRecentNotes(personId: number): Promise<FubNote[]> {
+  if (isDemoMode() || !personId) return []
+  const data = (await fubFetch(`/notes?personId=${personId}&sort=-created&limit=10`)) as { notes?: FubNote[] } | null
+  return (data?.notes ?? []).map((note) => ({
+    id: note.id,
+    personId: note.personId,
+    subject: note.subject,
+    body: note.body,
+    created: note.created,
+  }))
 }
 
 export async function getNote(id: number): Promise<FubNote | null> {

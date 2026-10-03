@@ -7,6 +7,16 @@ import { loadPersonScore, resetScoreStoreForTests } from '../../netlify/function
 import { runLoaReminders, type NotePayload } from '../../netlify/functions/_shared/loaReminders'
 import { resetReminderStateForTests } from '../../netlify/functions/_shared/loaReminderStore'
 
+const { getStoreMock } = vi.hoisted(() => ({
+  getStoreMock: vi.fn((_input?: unknown): unknown => {
+    throw new Error('The environment has not been configured to use Netlify Blobs')
+  }),
+}))
+
+vi.mock('@netlify/blobs', () => ({
+  getStore: (input: unknown) => getStoreMock(input),
+}))
+
 const now = new Date('2026-10-02T15:00:00.000Z')
 
 function liveEnv() {
@@ -34,6 +44,10 @@ function hotPerson(id = 4242) {
 
 beforeEach(async () => {
   liveEnv()
+  getStoreMock.mockReset()
+  getStoreMock.mockImplementation(() => {
+    throw new Error('The environment has not been configured to use Netlify Blobs')
+  })
   resetHubExtrasForTests()
   resetScoreStoreForTests()
   await resetReminderStateForTests()
@@ -182,6 +196,106 @@ describe('lead heat writes once', () => {
 
     const skipped = await handleFubWebhook({ event: 'peopleCreated', resourceIds: [11615, 50, 51] }, now)
     expect(skipped.leads).toEqual([])
+  })
+
+  it('posts one note and one task when created and stage webhooks race and the lock read is null', async () => {
+    const rows = new Map<string, { data: unknown; etag: string }>()
+    let etag = 0
+    getStoreMock.mockImplementation((input: unknown) => {
+      const name = typeof input === 'string' ? input : (input as { name?: string } | null)?.name
+      if (name !== 'loanpilot-scores') throw new Error('The environment has not been configured to use Netlify Blobs')
+      return {
+        async get(key: string, options?: { consistency?: string }) {
+          if (key.startsWith('lock/') && options?.consistency !== 'strong') return null
+          return rows.get(key)?.data ?? null
+        },
+        async getWithMetadata(key: string) {
+          if (key.startsWith('lock/')) return null
+          const row = rows.get(key)
+          if (!row) return null
+          return { data: row.data, etag: row.etag, metadata: {} }
+        },
+        async setJSON(key: string, data: unknown, options?: { onlyIfNew?: boolean; onlyIfMatch?: string }) {
+          const current = rows.get(key)
+          if (options?.onlyIfNew && current) return { modified: true, etag: current.etag }
+          if (options?.onlyIfMatch && (!current || current.etag !== options.onlyIfMatch)) {
+            return { modified: true, etag: current?.etag ?? '' }
+          }
+          const next = `etag-${++etag}`
+          rows.set(key, { data, etag: next })
+          return { modified: true, etag: next }
+        },
+        async delete(key: string) {
+          rows.delete(key)
+        },
+      }
+    })
+
+    const notes: { subject?: string; body?: string }[] = []
+    const tasks: { name?: string }[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const method = init?.method ?? 'GET'
+      if (method === 'GET' && url.includes('/notes?')) return new Response(JSON.stringify({ notes: [] }), { status: 200 })
+      if (method === 'POST' && url.includes('/notes')) {
+        notes.push(JSON.parse(String(init?.body ?? '{}')) as { subject?: string; body?: string })
+        return new Response(JSON.stringify({ id: notes.length }), { status: 200 })
+      }
+      if (method === 'POST' && url.includes('/tasks')) {
+        tasks.push(JSON.parse(String(init?.body ?? '{}')) as { name?: string })
+        return new Response(JSON.stringify({ id: 8100 + tasks.length }), { status: 200 })
+      }
+      if (method === 'GET' && url.includes('/tasks')) return new Response(JSON.stringify({ tasks: [] }), { status: 200 })
+      if (method === 'PUT') return new Response(JSON.stringify({}), { status: 200 })
+      return new Response(JSON.stringify({}), { status: 200 })
+    }))
+
+    const person = {
+      id: 8808,
+      name: 'Casey Hot',
+      stage: 'Lead',
+      text: 'Docs are ready and we are ready to buy. Pre-approval please.',
+      lastInboundAt: now.toISOString(),
+    }
+    await Promise.all([
+      handleFubWebhook({ event: 'peopleCreated', person }, now),
+      handleFubWebhook({ event: 'peopleStageUpdated', person }, now),
+    ])
+    expect(notes).toHaveLength(1)
+    expect(notes[0]?.subject).toMatch(/^LoanPilot — lead heat /)
+    expect(tasks).toHaveLength(1)
+    expect(getStoreMock).toHaveBeenCalledWith({ name: 'loanpilot-scores', consistency: 'strong' })
+  })
+
+  it('skips the note and the task when Blobs errors', async () => {
+    const fail = async () => {
+      throw new Error('blobs unavailable')
+    }
+    getStoreMock.mockImplementation((input: unknown) => {
+      const name = typeof input === 'string' ? input : (input as { name?: string } | null)?.name
+      if (name !== 'loanpilot-scores') throw new Error('The environment has not been configured to use Netlify Blobs')
+      return { get: fail, getWithMetadata: fail, setJSON: fail, delete: fail }
+    })
+    const notes: unknown[] = []
+    const tasks: unknown[] = []
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      const method = init?.method ?? 'GET'
+      if (method === 'POST' && url.includes('/notes')) {
+        notes.push(1)
+        return new Response(JSON.stringify({ id: 1 }), { status: 200 })
+      }
+      if (method === 'POST' && url.includes('/tasks')) {
+        tasks.push(1)
+        return new Response(JSON.stringify({ id: 1 }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ notes: [], tasks: [] }), { status: 200 })
+    }))
+    const saved = await handleFubWebhook(hotPerson(8809), now)
+    expect(saved.leads).toEqual([])
+    expect(notes).toHaveLength(0)
+    expect(tasks).toHaveLength(0)
+    expect(await loadPersonScore(8809)).toBeNull()
   })
 })
 
