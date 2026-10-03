@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 import { screen, within } from '@testing-library/react'
 import userEvent from '@testing-library/user-event'
 import { CalendarPage } from './CalendarPage'
+import { nextDateKey, zonedParts } from '../lib/calendarTime'
 import { renderApp } from '../test/render'
 
 const start = new Date('2026-10-02T18:00:00.000Z')
@@ -88,6 +89,102 @@ describe('Calendar page', () => {
     await user.click(screen.getByRole('button', { name: "Don't notify" }))
     expect(calls.some((call) => call.startsWith('POST') && call.includes('/api/hub/calendar'))).toBe(true)
     expect(screen.getByText(/cannot edit events/)).toBeInTheDocument()
+  })
+
+  it('creates a timed event from visible 12-hour pickers', async () => {
+    let posted = ''
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api/hub/calendar') && (init?.method ?? 'GET') === 'GET') {
+        return new Response(JSON.stringify(payload()), { status: 200 })
+      }
+      if (url.includes('/api/hub/calendar') && init?.method === 'POST') {
+        posted = String(init.body)
+        return new Response(JSON.stringify({ ok: true, data: { id: 'new-timed' } }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ ok: false, error: 'missing' }), { status: 404 })
+    }))
+    const user = userEvent.setup()
+    renderApp(<CalendarPage />, { route: '/calendar' })
+    await screen.findByRole('button', { name: 'New booking' })
+    await user.click(screen.getByRole('button', { name: 'New booking' }))
+    const dialog = screen.getByRole('dialog', { name: 'New booking' })
+    expect(within(dialog).getByRole('combobox', { name: 'Start hour' })).toBeVisible()
+    expect(within(dialog).getByRole('combobox', { name: 'End hour' })).toBeVisible()
+    expect(within(dialog).getAllByText('Hour').length).toBeGreaterThan(0)
+    expect(dialog.querySelector('input[type="time"]')).toBeNull()
+    const day = (within(dialog).getByLabelText('Date') as HTMLInputElement).value
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Start hour' }), '2')
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Start minute' }), '0')
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'Start AM or PM' }), 'PM')
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'End hour' }), '3')
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'End minute' }), '0')
+    await user.selectOptions(within(dialog).getByRole('combobox', { name: 'End AM or PM' }), 'PM')
+    await user.type(within(dialog).getByLabelText('Title'), 'Closing call')
+    await user.click(within(dialog).getByRole('button', { name: 'Create' }))
+    const body = JSON.parse(posted) as { summary: string; allDay: boolean; startIso: string; endIso: string }
+    expect(body.summary).toBe('Closing call')
+    expect(body.startIso).toContain('T')
+    expect(body.allDay).toBe(false)
+    const startParts = zonedParts(new Date(body.startIso))
+    const endParts = zonedParts(new Date(body.endIso))
+    expect(`${startParts.year}-${String(startParts.month).padStart(2, '0')}-${String(startParts.day).padStart(2, '0')}`).toBe(day)
+    expect(startParts.hour).toBe(14)
+    expect(startParts.minute).toBe(0)
+    expect(endParts.hour).toBe(15)
+    expect(endParts.minute).toBe(0)
+  })
+
+  it('creates an all-day event without time pickers and shows it in the all-day row', async () => {
+    const body = payload()
+    body.data.events.push({
+      id: 'all-1',
+      summary: 'Home inspection',
+      description: '',
+      location: '',
+      startIso: '2026-10-02T12:00:00.000Z',
+      endIso: '2026-10-04T12:00:00.000Z',
+      allDay: true,
+      source: 'demo',
+      attendees: [],
+    })
+    let posted = ''
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api/hub/calendar') && (init?.method ?? 'GET') === 'GET') {
+        return new Response(JSON.stringify(body), { status: 200 })
+      }
+      if (url.includes('/api/hub/calendar') && init?.method === 'POST') {
+        posted = String(init.body)
+        return new Response(JSON.stringify({ ok: true, data: { id: 'new-all' } }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ ok: false, error: 'missing' }), { status: 404 })
+    }))
+    const user = userEvent.setup()
+    renderApp(<CalendarPage />, { route: '/calendar' })
+    const row = (await screen.findAllByTestId('all-day-row')).find((cell) => cell.textContent?.includes('Home inspection'))
+    expect(row).toBeTruthy()
+    expect(document.querySelector('.cal__event')?.textContent).toContain('Alex Buyer')
+    expect(document.querySelector('.cal__event')?.textContent).not.toContain('Home inspection')
+    await user.click(within(row as HTMLElement).getByRole('button', { name: 'Home inspection' }))
+    const editor = screen.getByRole('dialog', { name: 'Edit event' })
+    expect(within(editor).getByRole('checkbox', { name: 'All day' })).toBeChecked()
+    expect(within(editor).queryByRole('combobox', { name: 'Start hour' })).not.toBeInTheDocument()
+    await user.click(within(editor).getByRole('button', { name: 'Cancel' }))
+
+    await user.click(screen.getByRole('button', { name: 'New booking' }))
+    const dialog = screen.getByRole('dialog', { name: 'New booking' })
+    const day = (within(dialog).getByLabelText('Date') as HTMLInputElement).value
+    await user.type(within(dialog).getByLabelText('Title'), 'Out of office')
+    await user.click(within(dialog).getByRole('checkbox', { name: 'All day' }))
+    expect(within(dialog).queryByRole('combobox', { name: 'Start hour' })).not.toBeInTheDocument()
+    expect(within(dialog).queryByRole('combobox', { name: 'End hour' })).not.toBeInTheDocument()
+    await user.click(within(dialog).getByRole('button', { name: 'Create' }))
+    const created = JSON.parse(posted) as { summary: string; allDay: boolean; startIso: string; endIso: string }
+    expect(created.summary).toBe('Out of office')
+    expect(created.allDay).toBe(true)
+    expect(created.startIso).toBe(`${day}T12:00:00.000Z`)
+    expect(created.endIso).toBe(`${nextDateKey(day)}T12:00:00.000Z`)
   })
 
   it('asks to reconnect for Frankie invites when calendar write is already granted', async () => {
