@@ -1,7 +1,7 @@
 import { listGoogleTasks } from './calendar'
 import { env, isDemoMode } from './env'
 import { addNote, fubGet } from './followupboss'
-import { claimReminderItem, loadReminderState, releaseReminderItem, saveReminderState, type ReminderLog, type ReminderState } from './loaReminderStore'
+import { claimReminderItem, claimReminderItems, loadReminderState, releaseReminderItem, saveReminderState, type ReminderLog, type ReminderState } from './loaReminderStore'
 import { sendSmsIfConfigured } from './quo'
 import { loanOfficer, loanOfficerAssistant } from './team'
 
@@ -38,6 +38,7 @@ const DEFAULT_TIMEZONE = 'America/New_York'
 const PERSON_URL_BASE = 'https://teamcordeira.followupboss.com/2/people/view'
 const MAX_REMINDED = 4000
 const MAX_RECENT = 40
+const REMINDER_WINDOW_MS = 15 * 60 * 1000
 const MISSED_CALL_OUTCOMES = new Set([
   'no answer',
   'left message',
@@ -838,6 +839,20 @@ function emptySource(): ReminderSource {
   return { tasks: [], people: [], texts: [], calls: [], googleTasks: [] }
 }
 
+function reminderWindowId(now: Date): string {
+  return String(Math.floor(now.getTime() / REMINDER_WINDOW_MS))
+}
+
+/** Held only while a run is building this teammate's note and text, then released. */
+function seatLockKey(userId: number, now: Date): string {
+  return `seat-lock:${userId}:${reminderWindowId(now)}`
+}
+
+/** Same teammate, same window, same items: one text. A later batch of different items can still send. */
+function smsDigestKey(userId: number, now: Date, itemKeys: string[]): string {
+  return `sms-digest:${userId}:${reminderWindowId(now)}:${[...itemKeys].sort().join('|')}`
+}
+
 export async function runLoaReminders(options?: {
   now?: Date
   trigger?: string
@@ -914,18 +929,12 @@ export async function runLoaReminders(options?: {
   for (const seat of seats) {
     const grouped = groupForSeat(items, seat, settingsNow.maxNotes)
     deferred += grouped.deferred
+    if (!grouped.notes.length && !grouped.smsItems.length) continue
     const notedKeys = new Set<string>()
+    const at = now.toISOString()
 
-    for (const group of grouped.notes) {
-      const payload: NotePayload = {
-        personId: group.personId,
-        subject: FUB_MENTION_NOTE_SUBJECT,
-        body: mentionNoteHtml(seat.userId, seat.name, group.items.map((item) => item.line)),
-        isHtml: true,
-        mentionUserIds: [seat.userId],
-      }
-      const summary = `${group.items.length} item${group.items.length === 1 ? '' : 's'} on ${group.items[0]?.personName ?? 'lead'}`
-      if (dryRun) {
+    if (dryRun) {
+      for (const group of grouped.notes) {
         deliveries.push({
           seatUserId: seat.userId,
           seatName: seat.name,
@@ -933,149 +942,164 @@ export async function runLoaReminders(options?: {
           channel: 'note',
           personId: group.personId,
           personName: group.items[0]?.personName,
-          summary,
+          summary: `${group.items.length} item${group.items.length === 1 ? '' : 's'} on ${group.items[0]?.personName ?? 'lead'}`,
           itemKeys: group.items.map((item) => item.key),
           status: 'preview',
         })
-        continue
       }
-      const claimed: MissedItem[] = []
-      for (const item of group.items) {
-        if (await claimReminderItem(item.key, now.toISOString())) claimed.push(item)
-      }
-      if (!claimed.length) continue
-      const claimedPayload: NotePayload = {
-        ...payload,
-        body: mentionNoteHtml(seat.userId, seat.name, claimed.map((item) => item.line)),
-      }
-      const claimedSummary = `${claimed.length} item${claimed.length === 1 ? '' : 's'} on ${claimed[0]?.personName ?? 'lead'}`
-      try {
-        await postNote(claimedPayload)
-        for (const item of claimed) {
-          reminded[item.key] = now.toISOString()
-          notedKeys.add(item.key)
-        }
-        deliveries.push({
-          seatUserId: seat.userId,
-          seatName: seat.name,
-          seatRole: seat.role,
-          channel: 'note',
-          personId: group.personId,
-          personName: claimed[0]?.personName,
-          summary: claimedSummary,
-          itemKeys: claimed.map((item) => item.key),
-          status: 'sent',
-        })
-      } catch (err) {
-        for (const item of claimed) await releaseReminderItem(item.key)
-        const error = err instanceof Error && err.message ? err.message : 'Note failed'
-        deliveries.push({
-          seatUserId: seat.userId,
-          seatName: seat.name,
-          seatRole: seat.role,
-          channel: 'note',
-          personId: group.personId,
-          summary: claimedSummary,
-          itemKeys: claimed.map((item) => item.key),
-          status: 'error',
-          error,
-        })
-      }
-    }
-
-    const smsFresh: MissedItem[] = []
-    const smsClaimed: MissedItem[] = []
-    for (const item of grouped.smsItems) {
-      if (notedKeys.has(item.key) || dryRun) {
-        smsFresh.push(item)
-        continue
-      }
-      if (await claimReminderItem(item.key, now.toISOString())) {
-        smsFresh.push(item)
-        smsClaimed.push(item)
-      }
-    }
-    if (!smsFresh.length) continue
-    const smsBody = digestSms(seat.name, smsFresh)
-    const summary = smsBody.split('\n')[0] ?? 'Reminder'
-    const keys = smsFresh.map((item) => item.key)
-    const releaseSms = async () => {
-      for (const item of smsClaimed) await releaseReminderItem(item.key)
-    }
-    if (!seat.phone) {
-      await releaseSms()
-      deliveries.push({
-        seatUserId: seat.userId,
-        seatName: seat.name,
-        seatRole: seat.role,
-        channel: 'sms',
-        summary: `${summary} (no mobile configured)`,
-        itemKeys: keys,
-        smsBody,
-        status: 'skipped',
-      })
-      continue
-    }
-    if (dryRun) {
-      deliveries.push({
-        seatUserId: seat.userId,
-        seatName: seat.name,
-        seatRole: seat.role,
-        channel: 'sms',
-        summary,
-        itemKeys: keys,
-        smsBody,
-        phoneLast4: phoneLast4(seat.phone),
-        status: 'preview',
-      })
-      continue
-    }
-    try {
-      const sent = await sendText({ to: seat.phone, content: smsBody })
-      if ('skipped' in sent) {
-        await releaseSms()
+      if (grouped.smsItems.length) {
+        const smsBody = digestSms(seat.name, grouped.smsItems)
+        const summary = smsBody.split('\n')[0] ?? 'Reminder'
         deliveries.push({
           seatUserId: seat.userId,
           seatName: seat.name,
           seatRole: seat.role,
           channel: 'sms',
-          summary: `${summary} (Quo is not configured)`,
-          itemKeys: keys,
+          summary: seat.phone ? summary : `${summary} (no mobile configured)`,
+          itemKeys: grouped.smsItems.map((item) => item.key),
           smsBody,
           phoneLast4: phoneLast4(seat.phone),
-          status: 'skipped',
+          status: seat.phone ? 'preview' : 'skipped',
         })
-        continue
       }
-      for (const item of smsFresh) {
-        if (!seat.fubNote || notedKeys.has(item.key) || !item.personId) reminded[item.key] = now.toISOString()
+      continue
+    }
+
+    // One in-flight run per teammate. Released after the note and text so a later batch can proceed.
+    const lockKey = seatLockKey(seat.userId, now)
+    if (!(await claimReminderItem(lockKey, at))) continue
+    try {
+      // One claim covers the mention note and the line in the SMS digest.
+      const won = new Set(await claimReminderItems(grouped.smsItems.map((item) => item.key), at))
+      const held = new Map(grouped.smsItems.filter((item) => won.has(item.key)).map((item) => [item.key, item]))
+
+      if (seat.fubNote) {
+        for (const group of grouped.notes) {
+          const claimed = group.items.filter((item) => held.has(item.key))
+          if (!claimed.length) continue
+          const claimedSummary = `${claimed.length} item${claimed.length === 1 ? '' : 's'} on ${claimed[0]?.personName ?? 'lead'}`
+          try {
+            await postNote({
+              personId: group.personId,
+              subject: FUB_MENTION_NOTE_SUBJECT,
+              body: mentionNoteHtml(seat.userId, seat.name, claimed.map((item) => item.line)),
+              isHtml: true,
+              mentionUserIds: [seat.userId],
+            })
+            for (const item of claimed) {
+              reminded[item.key] = at
+              notedKeys.add(item.key)
+            }
+            deliveries.push({
+              seatUserId: seat.userId,
+              seatName: seat.name,
+              seatRole: seat.role,
+              channel: 'note',
+              personId: group.personId,
+              personName: claimed[0]?.personName,
+              summary: claimedSummary,
+              itemKeys: claimed.map((item) => item.key),
+              status: 'sent',
+            })
+          } catch (err) {
+            for (const item of claimed) {
+              held.delete(item.key)
+              await releaseReminderItem(item.key)
+            }
+            const error = err instanceof Error && err.message ? err.message : 'Note failed'
+            deliveries.push({
+              seatUserId: seat.userId,
+              seatName: seat.name,
+              seatRole: seat.role,
+              channel: 'note',
+              personId: group.personId,
+              summary: claimedSummary,
+              itemKeys: claimed.map((item) => item.key),
+              status: 'error',
+              error,
+            })
+          }
+        }
       }
-      deliveries.push({
-        seatUserId: seat.userId,
-        seatName: seat.name,
-        seatRole: seat.role,
-        channel: 'sms',
-        summary,
-        itemKeys: keys,
-        smsBody,
-        phoneLast4: phoneLast4(seat.phone),
-        status: 'sent',
-      })
-    } catch (err) {
-      await releaseSms()
-      const error = err instanceof Error && err.message ? err.message : 'SMS failed'
-      deliveries.push({
-        seatUserId: seat.userId,
-        seatName: seat.name,
-        seatRole: seat.role,
-        channel: 'sms',
-        summary,
-        itemKeys: keys,
-        smsBody,
-        phoneLast4: phoneLast4(seat.phone),
-        status: 'error',
-        error,
-      })
+
+      const smsFresh = [...held.values()]
+      if (smsFresh.length) {
+        const digestKey = smsDigestKey(seat.userId, now, smsFresh.map((item) => item.key))
+        if (await claimReminderItem(digestKey, at)) {
+          const smsBody = digestSms(seat.name, smsFresh)
+          const summary = smsBody.split('\n')[0] ?? 'Reminder'
+          const keys = smsFresh.map((item) => item.key)
+          const releaseUnsent = async () => {
+            await releaseReminderItem(digestKey)
+            for (const item of smsFresh) {
+              if (!notedKeys.has(item.key)) await releaseReminderItem(item.key)
+            }
+          }
+          if (!seat.phone) {
+            await releaseUnsent()
+            deliveries.push({
+              seatUserId: seat.userId,
+              seatName: seat.name,
+              seatRole: seat.role,
+              channel: 'sms',
+              summary: `${summary} (no mobile configured)`,
+              itemKeys: keys,
+              smsBody,
+              status: 'skipped',
+            })
+          } else {
+            try {
+              const sent = await sendText({ to: seat.phone, content: smsBody })
+              if ('skipped' in sent) {
+                await releaseUnsent()
+                deliveries.push({
+                  seatUserId: seat.userId,
+                  seatName: seat.name,
+                  seatRole: seat.role,
+                  channel: 'sms',
+                  summary: `${summary} (Quo is not configured)`,
+                  itemKeys: keys,
+                  smsBody,
+                  phoneLast4: phoneLast4(seat.phone),
+                  status: 'skipped',
+                })
+              } else {
+                for (const item of smsFresh) {
+                  if (!seat.fubNote || notedKeys.has(item.key) || !item.personId) reminded[item.key] = at
+                }
+                deliveries.push({
+                  seatUserId: seat.userId,
+                  seatName: seat.name,
+                  seatRole: seat.role,
+                  channel: 'sms',
+                  summary,
+                  itemKeys: keys,
+                  smsBody,
+                  phoneLast4: phoneLast4(seat.phone),
+                  status: 'sent',
+                })
+              }
+            } catch (err) {
+              await releaseUnsent()
+              const error = err instanceof Error && err.message ? err.message : 'SMS failed'
+              deliveries.push({
+                seatUserId: seat.userId,
+                seatName: seat.name,
+                seatRole: seat.role,
+                channel: 'sms',
+                summary,
+                itemKeys: keys,
+                smsBody,
+                phoneLast4: phoneLast4(seat.phone),
+                status: 'error',
+                error,
+              })
+            }
+          }
+        }
+      }
+    } finally {
+      await releaseReminderItem(lockKey)
     }
   }
 
