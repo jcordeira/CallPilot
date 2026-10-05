@@ -255,7 +255,7 @@ Booked calls are titled `<Client Name> call <topic>` for 30 minutes in America/N
 
 **Quo webhook.** `POST /api/webhooks/quo`. A missing or bad signature returns 401. Set `QUO_WEBHOOK_SECRET` to the key Quo returns (`whsec_...`) or the base64 secret from the webhook details page. Current deliveries sign `{webhook-id}.{webhook-timestamp}.{raw body}` (HMAC-SHA256, base64, header `webhook-signature`). Older UI deliveries use `openphone-signature` (`hmac;1;timestamp;signature` over `timestamp.rawBody`). Both are accepted. Message id is the idempotency key.
 
-Register it on the Sales number only.
+Register command mode on the Sales number. The Cordeira team line uses the same URL with extra events; see Cordeira line alerts below. Client texts on that line are not commands.
 
 API (version `2026-03-30`):
 
@@ -297,6 +297,55 @@ The Hub Command mode card lists recent commands. It does not send anything.
 | `QUO_FROM_NUMBER` | | Sales line, +15163869773 |
 | `QUO_WEBHOOK_SECRET` | | Required. Unsigned posts are 401 |
 | `TEAM_MEMBERS` | FUB LOA phones | JSON roster: name, phone, optional altPhones, email, optional userId, title |
+
+## Cordeira line alerts
+
+Off until `CORDEIRA_LINE_ALERTS_ENABLED=true`. This watches only `CORDEIRA_LINE_NUMBER` (default `+15163094960`, the main client text and call line). It does not change LOA miss reminders, and it does not treat texts on this line as commands.
+
+| Event | What happens |
+|---|---|
+| Missed call (`call.missed`, or an incoming `call.completed` that was not answered) | Joseph and Frankie get one alert right away |
+| Inbound text with no outbound reply for 10 minutes | The same alert, after the timer. A reply on that contact or conversation cancels it |
+| Anything on the Sales line or any other number | Ignored |
+
+Several items that are due in the same check share one SMS per person (one digest per person for that 15-minute pile-up, not a separate text per item). A new miss after that digest has gone out still alerts. Each missed call and each unanswered text is claimed once in the `loanpilot-cordeira-line` Netlify Blobs store (strong consistency, fail closed), so a webhook retry or two minute-checks cannot send it twice.
+
+The text is short: `Missed call from {name or number} on Cordeira line` or `Unanswered text from {name or number} for 10 min on Cordeira line`. When Follow Up Boss has that phone, the SMS includes the person link and one HTML note @mentions both Joseph and Frankie.
+
+**Recipients** reuse the existing team env. Joseph is `FUB_LO_PHONE` / `FUB_LO_USER_ID` / `FUB_LO_NAME`. Frankie is the loan officer assistant: `FUB_LOA_USER_ID` (16), `FUB_LOA_PHONE_16`, and `FUB_LOA_NAME_16`. Daniel and Debra are not alerted. The SMS is sent from `QUO_FROM_NUMBER` (the Sales line), not from the Cordeira line.
+
+**Webhook.** Same endpoint, `POST /api/webhooks/quo`, same `QUO_WEBHOOK_SECRET`. The Sales-number command webhook does not receive this line until you add it. Add the Cordeira number's phone-number id (`PNxxxx`) to `resourceIds`, or create a second webhook to the same URL whose signing key is that same secret. Subscribe to `message.received`, `message.delivered`, `call.missed`, and `call.completed`. `message.delivered` is the outbound reply that cancels the 10-minute timer. Set `CORDEIRA_LINE_PHONE_NUMBER_ID` to that `PNxxxx` if you also want the minute checker to look up Quo history before it alerts.
+
+```bash
+curl -s "https://api.quo.com/phone-numbers?phoneNumber=%2B15163094960" \
+  -H "Authorization: $QUO_API_KEY" \
+  -H "Quo-Api-Version: 2026-03-30"
+
+curl -s "https://api.quo.com/webhooks" \
+  -X POST \
+  -H "Authorization: $QUO_API_KEY" \
+  -H "Content-Type: application/json" \
+  -H "Quo-Api-Version: 2026-03-30" \
+  -d '{
+    "url": "https://<your-site>/api/webhooks/quo",
+    "events": ["message.received", "message.delivered", "call.missed", "call.completed"],
+    "resourceIds": ["<PNxxxx for +15163094960>"],
+    "label": "LoanPilot Cordeira line"
+  }'
+```
+
+The minute function is `cordeira-line-alerts`. `CORDEIRA_LINE_ALERTS_DRY_RUN=true` records nothing and sends nothing.
+
+| Env | Default | Purpose |
+|---|---|---|
+| `CORDEIRA_LINE_ALERTS_ENABLED` | `false` | Master switch |
+| `CORDEIRA_LINE_NUMBER` | `+15163094960` | Only this inbox is watched |
+| `CORDEIRA_LINE_TEXT_WAIT_MINUTES` | `10` | How long an inbound text may sit unanswered |
+| `CORDEIRA_LINE_PHONE_NUMBER_ID` | | Optional `PNxxxx` for a history check before the text alert |
+| `CORDEIRA_LINE_ALERTS_DRY_RUN` | `false` | Leave the timer alone and send nothing |
+| `FUB_LO_PHONE` / `FUB_LO_USER_ID` | | Joseph's cell and mention id |
+| `FUB_LOA_PHONE_16` / `FUB_LOA_USER_ID` | | Frankie's cell and mention id when the assistant user is 16 |
+| `QUO_FROM_NUMBER` | | Sales line the alert SMS is sent from |
 
 ## Lead heat (Joseph and Frank)
 
@@ -383,6 +432,7 @@ curl -s -H "Authorization: Bearer demo-key" -H "Content-Type: application/json" 
 | `netlify/functions/loa-reminders.ts` | Cron every 15 minutes — LOA/LO miss reminders (off until enabled) |
 | `netlify/functions/calendar-guest.ts` | Cron every 15 minutes — add Frankie to client appointments (off until enabled) |
 | `netlify/functions/whatsapp-autoreply.ts` | Cron every minute — WhatsApp away reply (off until enabled) |
+| `netlify/functions/cordeira-line-alerts.ts` | Cron every minute — Cordeira line missed calls and unanswered texts (off until enabled) |
 | `netlify/functions/whatsapp-webhook.ts` | Kapso webhook `/api/webhooks/whatsapp` |
 | `netlify/functions/quo-webhook.ts` | Quo command mode `/api/webhooks/quo` |
 | `netlify/functions/sms-webhook.ts` | Quo inbound SMS |

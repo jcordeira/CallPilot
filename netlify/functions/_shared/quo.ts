@@ -59,11 +59,13 @@ async function quoInboxId(): Promise<string> {
   return match.id
 }
 
-/** Recent texts with one contact on the Sales line. Demo mode returns nothing from Quo. */
-export async function listQuoMessages(participant: string): Promise<QuoHistoryMessage[]> {
+/** Recent texts with one contact on a specific Quo number id. Demo mode returns nothing from Quo. */
+export async function listQuoMessagesOnNumber(phoneNumberId: string, participant: string): Promise<QuoHistoryMessage[]> {
   if (isDemoMode() || !quoSmsConfigured()) return []
+  const id = phoneNumberId.trim()
+  if (!id) return []
   const base = env('QUO_API_BASE', 'https://api.openphone.com/v1').replace(/\/$/, '')
-  const params = new URLSearchParams({ phoneNumberId: await quoInboxId(), maxResults: '30' })
+  const params = new URLSearchParams({ phoneNumberId: id, maxResults: '30' })
   params.append('participants', participant)
   const res = await fetch(`${base}/messages?${params}`, { headers: { Authorization: env('QUO_API_KEY') } })
   if (!res.ok) throw new Error(`Quo messages failed: ${res.status}`)
@@ -80,6 +82,12 @@ export async function listQuoMessages(participant: string): Promise<QuoHistoryMe
       text: item.text || item.body || item.content || '',
     }
   })
+}
+
+/** Recent texts with one contact on the Sales line. Demo mode returns nothing from Quo. */
+export async function listQuoMessages(participant: string): Promise<QuoHistoryMessage[]> {
+  if (isDemoMode() || !quoSmsConfigured()) return []
+  return listQuoMessagesOnNumber(await quoInboxId(), participant)
 }
 
 /** Reminders use this so a missing Quo key skips the text instead of throwing. Demo mode never calls Quo. */
