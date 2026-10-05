@@ -1,7 +1,7 @@
 import { env, isDemoMode } from './env'
-import { addNote, findPersonByPhone, type FubPerson } from './followupboss'
+import { addNote, findPersonByPhone, fubGetStrict, type FubPerson } from './followupboss'
 import { escapeHtml, normalizePhone, personLink } from './loaReminders'
-import { listQuoMessagesOnNumber, sendSmsIfConfigured } from './quo'
+import { sendSmsIfConfigured } from './quo'
 import { loanOfficer, loanOfficerAssistant } from './team'
 import {
   claimHeld,
@@ -20,28 +20,32 @@ const DEFAULT_WAIT_MINUTES = 10
 const MAX_AGE_MS = 24 * 60 * 60 * 1000
 const SMS_CAP = 700
 
-const MISSED_STATUSES = new Set([
-  'unanswered',
-  'abandoned',
-  'failed',
-  'missed',
+const MISSED_OUTCOMES = new Set([
+  'no answer',
   'no-answer',
   'no_answer',
+  'left message',
+  'left-message',
   'busy',
-  'canceled',
-  'cancelled',
+  'missed',
+  'voicemail',
+  'voice mail',
 ])
 
-const OUTBOUND_MESSAGE_TYPES = new Set(['message.delivered', 'message.sent', 'message.undelivered'])
+const ANSWERED_OUTCOMES = new Set(['interested', 'not interested', 'not-interested'])
 
-export type CordeiraEvent =
-  | { kind: 'text-in'; id: string; contact: string; at: string; conversationId?: string }
-  | { kind: 'text-out'; id: string; contact: string; at: string; conversationId?: string }
-  | { kind: 'missed-call'; id: string; contact: string; at: string; conversationId?: string }
+const LINE_ID_FIELDS = ['phoneId', 'phoneNumberId', 'fromPhoneId', 'lineId', 'sharedInboxId'] as const
+
+export type CordeiraEvent = {
+  kind: 'text-in' | 'text-out' | 'missed-call' | 'answered-call'
+  id: string
+  contact: string
+  at: string
+  personId?: number
+  personName?: string
+}
 
 export type CordeiraPerson = { id: number; name: string }
-
-export type CordeiraHistoryMessage = { id: string; at: string; direction: 'in' | 'out' }
 
 export type CordeiraDeps = {
   now?: Date
@@ -54,7 +58,10 @@ export type CordeiraDeps = {
     isHtml?: boolean
     mentionUserIds?: number[]
   }) => Promise<unknown>
-  listMessages?: (contact: string) => Promise<CordeiraHistoryMessage[] | null>
+  /** Reply seen in FUB after the inbound text. `unknown` retries on the next minute. */
+  laterActivity?: (item: { contact: string; personId?: number; since: string }) => Promise<'reply' | 'clear' | 'unknown'>
+  loadCall?: (id: number) => Promise<unknown>
+  loadText?: (id: number) => Promise<unknown>
 }
 
 type DueItem = {
@@ -63,7 +70,8 @@ type DueItem = {
   id: string
   contact: string
   at: string
-  conversationId?: string
+  personId?: number
+  personName?: string
 }
 
 type Recipient = { phone: string; userId?: number; name: string }
@@ -87,7 +95,9 @@ function dryRun(): boolean {
 }
 
 function linePhoneId(): string {
-  return env('CORDEIRA_LINE_PHONE_NUMBER_ID').trim()
+  const raw = env('CORDEIRA_LINE_PHONE_ID').trim()
+  if (!raw || raw === '0') return ''
+  return raw
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -95,133 +105,122 @@ function asRecord(value: unknown): Record<string, unknown> | null {
   return value as Record<string, unknown>
 }
 
-function phoneList(value: unknown): string[] {
-  if (Array.isArray(value)) return value.flatMap((item) => phoneList(item))
-  if (typeof value !== 'string') return []
-  const phone = normalizePhone(value)
-  return phone ? [phone] : []
+function textOf(value: unknown): string {
+  return typeof value === 'string' || typeof value === 'number' ? String(value) : ''
 }
 
-function eventTime(resource: Record<string, unknown>, root: Record<string, unknown>, now: Date): string {
-  const raw = resource.createdAt ?? resource.completedAt ?? root.createdAt
-  if (typeof raw === 'string' && Number.isFinite(Date.parse(raw))) return new Date(raw).toISOString()
-  return now.toISOString()
-}
-
-function directionOf(type: string, resource: Record<string, unknown>): 'in' | 'out' | 'unknown' {
-  const raw = String(resource.direction ?? '').toLowerCase()
-  if (raw === 'incoming' || raw === 'inbound') return 'in'
-  if (raw === 'outgoing' || raw === 'outbound') return 'out'
-  if (type === 'call.missed') return 'in'
-  if (OUTBOUND_MESSAGE_TYPES.has(type)) return 'out'
-  if (type === 'message.received' || type === 'message') return 'in'
-  return 'unknown'
-}
-
-function isMissedCall(type: string, resource: Record<string, unknown>, direction: 'in' | 'out' | 'unknown'): boolean {
-  if (direction === 'out') return false
-  if (type === 'call.missed') return true
-  if (type !== 'call.completed') return false
-  if (direction === 'unknown') return false
-  const status = String(resource.status ?? '').toLowerCase()
-  if (status === 'answered' || status === 'forwarded' || status === 'ai-handled') return false
-  if (status === 'completed') {
-    const duration = resource.duration
-    const answeredAt = resource.answeredAt
-    return (duration === 0 || duration === '0') && (answeredAt == null || answeredAt === '')
-  }
-  if (MISSED_STATUSES.has(status)) return true
-  return false
-}
-
-function otherParty(groups: string[][], line: string): string | undefined {
-  for (const group of groups) {
-    const found = group.find((phone) => phone !== line)
-    if (found) return found
-  }
-  return undefined
-}
-
-/** Quo call/message on CORDEIRA_LINE_NUMBER, or null when the event is some other line. */
-export function parseCordeiraEvent(payload: unknown, now = new Date()): CordeiraEvent | null {
-  const line = cordeiraLineNumber()
-  if (!line) return null
-  if (!payload || typeof payload !== 'object') return null
-  const root = payload as Record<string, unknown>
-  const data = asRecord(root.data) ?? root
-  const resource = asRecord(data.resource) ?? asRecord(data.object) ?? data
-  const context = asRecord(data.context) ?? {}
-  const type = String(root.type ?? data.type ?? resource.type ?? '')
-  if (!type) return null
-
-  const participants = asRecord(context.participants)
-  const external = phoneList(participants?.external)
-  const workspace = phoneList(participants?.workspace)
-  const sender = phoneList(context.senderIdentifier)
-  const recipients = phoneList(context.recipientIdentifiers)
-  const from = phoneList(resource.from)
-  const to = phoneList(resource.to)
-  const parties = [...external, ...workspace, ...sender, ...recipients, ...from, ...to]
-  const phoneId = String(context.phoneNumberId ?? resource.phoneNumberId ?? '')
-  const idMatch = Boolean(linePhoneId() && phoneId && phoneId === linePhoneId())
-  if (!parties.includes(line) && !idMatch) return null
-
-  const direction = directionOf(type, resource)
-  const contact = otherParty(
-    direction === 'out' ? [external, recipients, to, sender, from, workspace] : [external, sender, from, recipients, to, workspace],
-    line,
-  )
-  if (!contact) return null
-  const id = String(resource.id ?? root.id ?? '')
-  if (!id) return null
-  const at = eventTime(resource, root, now)
-  const atMs = Date.parse(at)
-  if (!Number.isFinite(atMs) || now.getTime() - atMs > MAX_AGE_MS || atMs - now.getTime() > 5 * 60 * 1000) return null
-  const conversationRaw = context.conversationId ?? resource.conversationId
-  const conversationId = typeof conversationRaw === 'string' && conversationRaw ? conversationRaw : undefined
-
-  if (type === 'call.missed' || type === 'call.completed') {
-    if (!isMissedCall(type, resource, direction)) return null
-    return { kind: 'missed-call', id, contact, at, conversationId }
-  }
-
-  const messageType = type === 'message' || type === 'message.received' || OUTBOUND_MESSAGE_TYPES.has(type)
-  if (!messageType) return null
-  if (direction === 'out') return { kind: 'text-out', id, contact, at, conversationId }
-  if (direction === 'in') return { kind: 'text-in', id, contact, at, conversationId }
+function incomingFlag(value: unknown): boolean | null {
+  if (value === true || value === 1 || value === '1' || value === 'true') return true
+  if (value === false || value === 0 || value === '0' || value === 'false') return false
   return null
 }
 
-/** True when this payload is a call or text on the Cordeira line, even if it is too old to alert. */
-export function payloadTouchesCordeiraLine(payload: unknown, now = new Date()): boolean {
-  if (parseCordeiraEvent(payload, now)) return true
-  const line = cordeiraLineNumber()
-  if (!line || !payload || typeof payload !== 'object') return false
-  const root = payload as Record<string, unknown>
-  const data = asRecord(root.data) ?? root
-  const resource = asRecord(data.resource) ?? asRecord(data.object) ?? data
-  const context = asRecord(data.context) ?? {}
-  const type = String(root.type ?? data.type ?? '')
-  if (!type.startsWith('message') && !type.startsWith('call')) return false
-  const participants = asRecord(context.participants)
-  const parties = [
-    ...phoneList(participants?.external),
-    ...phoneList(participants?.workspace),
-    ...phoneList(context.senderIdentifier),
-    ...phoneList(context.recipientIdentifiers),
-    ...phoneList(resource.from),
-    ...phoneList(resource.to),
-  ]
-  if (parties.includes(line)) return true
-  const phoneId = String(context.phoneNumberId ?? resource.phoneNumberId ?? '')
-  return Boolean(linePhoneId() && phoneId && phoneId === linePhoneId())
+function positiveId(value: unknown): number | undefined {
+  const id = typeof value === 'number' ? value : typeof value === 'string' && /^\d+$/.test(value) ? Number(value) : Number.NaN
+  return Number.isInteger(id) && id > 0 ? id : undefined
 }
 
-function answeredAfter(item: { contact: string; conversationId?: string; inboundAt: string }): boolean {
+function onCordeiraLine(record: Record<string, unknown>): boolean {
+  const line = cordeiraLineNumber()
+  const from = normalizePhone(textOf(record.fromNumber))
+  const to = normalizePhone(textOf(record.toNumber))
+  if (line && (from === line || to === line)) return true
+  const configured = linePhoneId()
+  if (!configured) return false
+  return LINE_ID_FIELDS.some((field) => textOf(record[field]) === configured)
+}
+
+function contactOn(record: Record<string, unknown>, incoming: boolean): string | undefined {
+  const line = cordeiraLineNumber()
+  const from = normalizePhone(textOf(record.fromNumber))
+  const to = normalizePhone(textOf(record.toNumber))
+  const phone = normalizePhone(textOf(record.phone))
+  const ordered = incoming ? [from, phone, to] : [to, phone, from]
+  return ordered.find((number) => number && number !== line)
+}
+
+function eventTime(record: Record<string, unknown>, now: Date): string | null {
+  const raw = record.created ?? record.sent ?? record.updated
+  const at = typeof raw === 'string' && Number.isFinite(Date.parse(raw)) ? new Date(raw).toISOString() : now.toISOString()
+  const atMs = Date.parse(at)
+  if (!Number.isFinite(atMs) || now.getTime() - atMs > MAX_AGE_MS || atMs - now.getTime() > 5 * 60 * 1000) return null
+  return at
+}
+
+function personFields(record: Record<string, unknown>, useName: boolean): { personId?: number; personName?: string } {
+  const personId = positiveId(record.personId)
+  const personName = useName && typeof record.name === 'string' && record.name.trim() ? record.name.trim() : undefined
+  return { personId, personName }
+}
+
+/**
+ * FUB text: `toNumber` is the company line on an inbound text, `fromNumber` is that line on a reply
+ * sent from it. `name` is the person. `sharedInboxId` 0 means the text is not in a shared inbox.
+ * `phone` on a call is the lead, not the dialer line. Calls also carry `fromNumber` / `toNumber`
+ * when Follow Up Boss exposes them.
+ */
+export function parseFubText(record: unknown, now = new Date()): CordeiraEvent | null {
+  const raw = asRecord(record)
+  if (!raw) return null
+  const id = positiveId(raw.id)
+  if (!id) return null
+  const at = eventTime(raw, now)
+  if (!at) return null
+  const onLine = onCordeiraLine(raw)
+  const line = cordeiraLineNumber()
+  const from = normalizePhone(textOf(raw.fromNumber))
+  const to = normalizePhone(textOf(raw.toNumber))
+  let incoming = incomingFlag(raw.isIncoming)
+  if (incoming == null && line) {
+    if (to === line && from !== line) incoming = true
+    else if (from === line && to !== line) incoming = false
+  }
+  if (incoming == null) return null
+  const contact = contactOn(raw, incoming)
+  if (!contact) return null
+  // A team reply from any FUB line cancels the timer. Only this line starts one.
+  if (!onLine) {
+    if (incoming) return null
+    return { kind: 'text-out', id: String(id), contact, at, ...personFields(raw, true) }
+  }
+  return { kind: incoming ? 'text-in' : 'text-out', id: String(id), contact, at, ...personFields(raw, true) }
+}
+
+export function parseFubCall(record: unknown, now = new Date()): CordeiraEvent | null {
+  const raw = asRecord(record)
+  if (!raw) return null
+  const id = positiveId(raw.id)
+  if (!id) return null
+  const at = eventTime(raw, now)
+  if (!at) return null
+  const onLine = onCordeiraLine(raw)
+  const incoming = incomingFlag(raw.isIncoming)
+  const outcome = textOf(raw.outcome).trim().toLowerCase()
+  const duration = typeof raw.duration === 'number' ? raw.duration : null
+  const missed = MISSED_OUTCOMES.has(outcome) || (incoming === true && duration === 0 && !outcome)
+  const answered = !MISSED_OUTCOMES.has(outcome) && (ANSWERED_OUTCOMES.has(outcome) || (duration != null && duration > 0))
+  const person = personFields(raw, false)
+  if (!onLine) {
+    if (!answered) return null
+    const contact = contactOn(raw, incoming !== false)
+    if (!contact) return null
+    return { kind: 'answered-call', id: String(id), contact, at, ...person }
+  }
+  if (incoming == null) return null
+  const contact = contactOn(raw, incoming)
+  if (!contact) return null
+  const base = { id: String(id), contact, at, ...person }
+  if (!incoming) return answered ? { kind: 'answered-call', ...base } : null
+  if (missed) return { kind: 'missed-call', ...base }
+  if (answered) return { kind: 'answered-call', ...base }
+  return null
+}
+
+function answeredAfter(item: { contact: string; personId?: number; inboundAt: string }): boolean {
   const state = getCordeiraState()
   const inbound = Date.parse(item.inboundAt)
   const stamps = [state.answeredAt[item.contact]]
-  if (item.conversationId) stamps.push(state.answeredAt[`conv:${item.conversationId}`])
+  if (item.personId) stamps.push(state.answeredAt[`person:${item.personId}`])
   return stamps.some((stamp) => stamp != null && Number.isFinite(Date.parse(stamp)) && Date.parse(stamp) >= inbound)
 }
 
@@ -238,15 +237,13 @@ function rememberAnswer(key: string, at: string) {
 
 function applyEvent(event: CordeiraEvent) {
   const state = getCordeiraState()
-  if (event.kind === 'text-out') {
+  if (event.kind === 'text-out' || event.kind === 'answered-call') {
     rememberAnswer(event.contact, event.at)
-    if (event.conversationId) rememberAnswer(`conv:${event.conversationId}`, event.at)
+    if (event.personId) rememberAnswer(`person:${event.personId}`, event.at)
     for (const [id, text] of Object.entries(state.pendingTexts)) {
       const sameContact = text.contact === event.contact
-      const sameConversation = Boolean(event.conversationId && text.conversationId === event.conversationId)
-      if ((sameContact || sameConversation) && Date.parse(text.inboundAt) <= Date.parse(event.at)) {
-        delete state.pendingTexts[id]
-      }
+      const samePerson = event.personId != null && text.personId === event.personId
+      if ((sameContact || samePerson) && Date.parse(text.inboundAt) <= Date.parse(event.at)) delete state.pendingTexts[id]
     }
     return
   }
@@ -256,8 +253,9 @@ function applyEvent(event: CordeiraEvent) {
     const text: PendingText = {
       id: event.id,
       contact: event.contact,
-      conversationId: event.conversationId,
       inboundAt: event.at,
+      personId: event.personId,
+      personName: event.personName,
     }
     if (answeredAfter(text)) return
     state.pendingTexts[event.id] = text
@@ -269,7 +267,8 @@ function applyEvent(event: CordeiraEvent) {
     id: event.id,
     contact: event.contact,
     at: event.at,
-    conversationId: event.conversationId,
+    personId: event.personId,
+    personName: event.personName,
   }
   state.queuedCalls[event.id] = call
 }
@@ -291,7 +290,15 @@ function pullDue(now: Date): DueItem[] {
       continue
     }
     delete state.pendingTexts[text.id]
-    items.push({ key, kind: 'text', id: text.id, contact: text.contact, at: text.inboundAt, conversationId: text.conversationId })
+    items.push({
+      key,
+      kind: 'text',
+      id: text.id,
+      contact: text.contact,
+      at: text.inboundAt,
+      personId: text.personId,
+      personName: text.personName,
+    })
   }
   for (const call of Object.values(state.queuedCalls)) {
     const key = `alert/call/${call.id}`
@@ -300,7 +307,15 @@ function pullDue(now: Date): DueItem[] {
       continue
     }
     delete state.queuedCalls[call.id]
-    items.push({ key, kind: 'call', id: call.id, contact: call.contact, at: call.at, conversationId: call.conversationId })
+    items.push({
+      key,
+      kind: 'call',
+      id: call.id,
+      contact: call.contact,
+      at: call.at,
+      personId: call.personId,
+      personName: call.personName,
+    })
   }
   return items
 }
@@ -310,8 +325,9 @@ function restoreText(item: DueItem) {
   getCordeiraState().pendingTexts[item.id] = {
     id: item.id,
     contact: item.contact,
-    conversationId: item.conversationId,
     inboundAt: item.at,
+    personId: item.personId,
+    personName: item.personName,
   }
 }
 
@@ -345,30 +361,55 @@ function clip(text: string): string {
   return text.length > SMS_CAP ? `${text.slice(0, SMS_CAP - 1).trimEnd()}…` : text
 }
 
-async function defaultListMessages(contact: string): Promise<CordeiraHistoryMessage[] | null> {
-  const id = linePhoneId()
-  if (!id || isDemoMode() || !env('QUO_API_KEY').trim() || !env('QUO_FROM_NUMBER').trim()) return null
-  const rows = await listQuoMessagesOnNumber(id, contact)
-  return rows.map((row) => ({ id: row.id, at: row.at, direction: row.direction }))
+function rowsOf(raw: unknown, keys: string[]): Record<string, unknown>[] {
+  const record = asRecord(raw)
+  if (!record) return []
+  for (const key of keys) {
+    const list = record[key]
+    if (!Array.isArray(list)) continue
+    return list.map(asRecord).filter((item): item is Record<string, unknown> => item != null)
+  }
+  return []
 }
 
-async function replySeen(item: DueItem, deps: CordeiraDeps): Promise<'yes' | 'no' | 'unknown'> {
-  if (item.kind !== 'text') return 'no'
-  if (answeredAfter({ contact: item.contact, conversationId: item.conversationId, inboundAt: item.at })) return 'yes'
-  const list = deps.listMessages ?? defaultListMessages
+/** Follow Up Boss examples store US numbers as 10 digits, without a leading +1. */
+function fubPhoneQuery(e164: string): string {
+  const digits = e164.replace(/\D/g, '')
+  if (digits.length === 11 && digits.startsWith('1')) return digits.slice(1)
+  return digits || e164
+}
+
+async function defaultLaterActivity(item: { contact: string; personId?: number; since: string }): Promise<'reply' | 'clear' | 'unknown'> {
+  if (isDemoMode() || !env('FOLLOW_UP_BOSS_API_KEY').trim()) return 'clear'
   try {
-    const rows = await list(item.contact)
-    if (!rows) return 'no'
-    const inbound = Date.parse(item.at)
-    const replied = rows.some((row) => row.direction === 'out' && Number.isFinite(Date.parse(row.at)) && Date.parse(row.at) >= inbound)
-    return replied ? 'yes' : 'no'
+    const since = Date.parse(item.since)
+    const number = encodeURIComponent(fubPhoneQuery(item.contact))
+    const textQuery = item.personId ? `personId=${item.personId}&limit=20` : `toNumber=${number}&limit=20`
+    const callQuery = item.personId ? `personId=${item.personId}&limit=10` : `phone=${number}&limit=10`
+    const [texts, calls] = await Promise.all([fubGetStrict(`/textMessages?${textQuery}`), fubGetStrict(`/calls?${callQuery}`)])
+    const repliedText = rowsOf(texts, ['textmessages', 'textMessages']).some((row) => {
+      const parsed = parseFubText(row)
+      return parsed?.kind === 'text-out' && Date.parse(parsed.at) >= since
+    })
+    const answered = rowsOf(calls, ['calls']).some((row) => {
+      const parsed = parseFubCall(row)
+      return parsed?.kind === 'answered-call' && Date.parse(parsed.at) >= since
+    })
+    return repliedText || answered ? 'reply' : 'clear'
   } catch {
     return 'unknown'
   }
 }
 
+async function replySeen(item: DueItem, deps: CordeiraDeps): Promise<'reply' | 'clear' | 'unknown'> {
+  if (item.kind !== 'text') return 'clear'
+  if (answeredAfter({ contact: item.contact, personId: item.personId, inboundAt: item.at })) return 'reply'
+  const check = deps.laterActivity ?? defaultLaterActivity
+  return check({ contact: item.contact, personId: item.personId, since: item.at })
+}
+
 function personFrom(person: FubPerson | null): CordeiraPerson | null {
-  if (!person || !Number.isInteger(person.id)) return null
+  if (!person || !Number.isInteger(person.id) || person.id <= 0) return null
   return { id: person.id, name: person.name }
 }
 
@@ -379,6 +420,12 @@ async function lookupPerson(contact: string, deps: CordeiraDeps): Promise<Cordei
   } catch {
     return null
   }
+}
+
+async function personFor(item: DueItem, deps: CordeiraDeps): Promise<CordeiraPerson | null> {
+  const looked = item.personName?.trim() ? null : await lookupPerson(item.contact, deps)
+  if (item.personId) return { id: item.personId, name: item.personName?.trim() || looked?.name || '' }
+  return looked
 }
 
 function mentionNote(recipients: Recipient[], lines: string[]): { body: string; mentionUserIds: number[] } {
@@ -413,7 +460,15 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
     for (const item of due) {
       releaseClaim(item.key)
       if (item.kind === 'text') restoreText(item)
-      else getCordeiraState().queuedCalls[item.id] = { id: item.id, contact: item.contact, at: item.at, conversationId: item.conversationId }
+      else {
+        getCordeiraState().queuedCalls[item.id] = {
+          id: item.id,
+          contact: item.contact,
+          at: item.at,
+          personId: item.personId,
+          personName: item.personName,
+        }
+      }
     }
     await persistCordeiraState()
     return { sent: 0, notes: 0, skipped: 'dry_run' }
@@ -422,7 +477,7 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
   const ready: DueItem[] = []
   for (const item of due) {
     const reply = await replySeen(item, deps)
-    if (reply === 'yes') {
+    if (reply === 'reply') {
       await confirmClaim(item.key, now.toISOString())
       continue
     }
@@ -441,15 +496,15 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
   if (!recipients.length) {
     for (const item of ready) {
       releaseClaim(item.key)
-      if (item.kind === 'text') {
-        getCordeiraState().pendingTexts[item.id] = {
+      if (item.kind === 'text') restoreText(item)
+      else {
+        getCordeiraState().queuedCalls[item.id] = {
           id: item.id,
           contact: item.contact,
-          conversationId: item.conversationId,
-          inboundAt: item.at,
+          at: item.at,
+          personId: item.personId,
+          personName: item.personName,
         }
-      } else {
-        getCordeiraState().queuedCalls[item.id] = { id: item.id, contact: item.contact, at: item.at, conversationId: item.conversationId }
       }
     }
     await persistCordeiraState()
@@ -468,7 +523,7 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
   const people = new Map<string, CordeiraPerson | null>()
   for (const item of claimed) {
     if (people.has(item.contact)) continue
-    people.set(item.contact, await lookupPerson(item.contact, deps))
+    people.set(item.contact, await personFor(item, deps))
   }
   const lines = claimed.map((item) => {
     const person = people.get(item.contact)
@@ -491,9 +546,9 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
   for (let index = 0; index < claimed.length; index += 1) {
     const item = claimed[index]
     const person = people.get(item.contact)
-    if (!person) continue
+    if (!person || person.id <= 0) continue
     const list = byPerson.get(person.id) ?? []
-    list.push(lines[index] ?? sentence(item.kind, person.name))
+    list.push(lines[index] ?? sentence(item.kind, person.name || item.contact))
     byPerson.set(person.id, list)
   }
   const postNote = deps.addNote ?? addNote
@@ -521,15 +576,71 @@ export async function ingestCordeiraEvent(event: CordeiraEvent, deps: CordeiraDe
   if (!cordeiraAlertsEnabled()) return { sent: 0, notes: 0, skipped: 'disabled' as const }
   await hydrateCordeiraState()
   applyEvent(event)
-  if (event.kind === 'missed-call') {
-    return runCordeiraLineAlerts({ ...deps, hydrate: false, now: deps.now })
-  }
+  if (event.kind === 'missed-call') return runCordeiraLineAlerts({ ...deps, hydrate: false, now: deps.now })
   await persistCordeiraState()
   return { sent: 0, notes: 0 }
 }
 
-export async function ingestCordeiraPayload(payload: unknown, deps: CordeiraDeps = {}) {
-  const event = parseCordeiraEvent(payload, deps.now ?? new Date())
+export async function ingestFubText(record: unknown, deps: CordeiraDeps = {}) {
+  const event = parseFubText(record, deps.now ?? new Date())
   if (!event) return { sent: 0, notes: 0, ignored: true as const }
   return ingestCordeiraEvent(event, deps)
+}
+
+export async function ingestFubCall(record: unknown, deps: CordeiraDeps = {}) {
+  const event = parseFubCall(record, deps.now ?? new Date())
+  if (!event) return { sent: 0, notes: 0, ignored: true as const }
+  return ingestCordeiraEvent(event, deps)
+}
+
+function resourceIds(payload: Record<string, unknown>): number[] {
+  if (!Array.isArray(payload.resourceIds)) return []
+  return payload.resourceIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)
+}
+
+async function defaultLoadCall(id: number): Promise<unknown> {
+  return fubGetStrict(`/calls/${id}`)
+}
+
+async function defaultLoadText(id: number): Promise<unknown> {
+  return fubGetStrict(`/textMessages/${id}`)
+}
+
+function unwrap(raw: unknown, keys: string[]): unknown {
+  const record = asRecord(raw)
+  if (!record) return raw
+  for (const key of keys) {
+    if (record[key] && typeof record[key] === 'object') return record[key]
+  }
+  return raw
+}
+
+/** Follow Up Boss `calls*` and `textMessages*` webhooks. Resource ids are loaded from the API. */
+export async function handleFubCordeiraWebhook(payload: unknown, deps: CordeiraDeps = {}) {
+  if (!cordeiraAlertsEnabled()) return { sent: 0, notes: 0, skipped: 'disabled' as const }
+  const body = asRecord(payload)
+  if (!body) return { sent: 0, notes: 0, ignored: true as const }
+  const eventName = textOf(body.event)
+  const ids = resourceIds(body)
+  const now = deps.now ?? new Date()
+  let sent = 0
+  let notes = 0
+  if (/^calls/i.test(eventName)) {
+    const load = deps.loadCall ?? defaultLoadCall
+    for (const id of ids) {
+      const record = unwrap(await load(id), ['call'])
+      const result = await ingestFubCall(record, { ...deps, now })
+      sent += result.sent
+      notes += result.notes
+    }
+  } else if (/^textMessages/i.test(eventName)) {
+    const load = deps.loadText ?? defaultLoadText
+    for (const id of ids) {
+      const record = unwrap(await load(id), ['textMessage', 'textmessage'])
+      const result = await ingestFubText(record, { ...deps, now })
+      sent += result.sent
+      notes += result.notes
+    }
+  }
+  return { sent, notes }
 }
