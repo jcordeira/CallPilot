@@ -1,7 +1,12 @@
-import { createHmac } from 'node:crypto'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
-import handler from '../../netlify/functions/quo-webhook'
-import { ingestCordeiraPayload, runCordeiraLineAlerts, type CordeiraDeps } from '../../netlify/functions/_shared/cordeiraLine'
+import fubWebhook from '../../netlify/functions/fub-webhook'
+import {
+  handleFubCordeiraWebhook,
+  ingestFubCall,
+  ingestFubText,
+  runCordeiraLineAlerts,
+  type CordeiraDeps,
+} from '../../netlify/functions/_shared/cordeiraLine'
 import { resetCordeiraStateForTests } from '../../netlify/functions/_shared/cordeiraLineStore'
 
 const line = '+15163094960'
@@ -29,9 +34,11 @@ function envOn() {
   process.env.FUB_LOA_USER_ID = '16'
   process.env.FUB_LOA_PHONE_16 = frankie
   delete process.env.CORDEIRA_LINE_ALERTS_DRY_RUN
-  delete process.env.CORDEIRA_LINE_PHONE_NUMBER_ID
+  delete process.env.CORDEIRA_LINE_PHONE_ID
   delete process.env.QUO_API_KEY
   delete process.env.QUO_FROM_NUMBER
+  delete process.env.FOLLOW_UP_BOSS_API_KEY
+  delete process.env.LOA_REMINDERS_ENABLED
 }
 
 type Sms = { to: string; content: string }
@@ -51,50 +58,66 @@ function deps(partial: Partial<CordeiraDeps> = {}): CordeiraDeps & { sms: Sms[];
     addNote: async (input) => {
       notes.push(input)
     },
+    laterActivity: async () => 'clear',
     ...partial,
   }
 }
 
-function message(input: { id: string; at: Date; direction: 'in' | 'out'; contact: string; on?: string }) {
+function text(input: {
+  id: number
+  at: Date
+  incoming: boolean
+  contact: string
+  on?: string
+  personId?: number
+  name?: string
+  isIncoming?: boolean | number
+}) {
   const on = input.on ?? line
-  const inbound = input.direction === 'in'
   return {
-    type: inbound ? 'message.received' : 'message.delivered',
-    data: {
-      resource: {
-        id: input.id,
-        direction: inbound ? 'incoming' : 'outgoing',
-        text: inbound ? 'hello' : 'on it',
-        createdAt: input.at.toISOString(),
-      },
-      context: {
-        conversationId: 'CN-1',
-        senderIdentifier: inbound ? input.contact : on,
-        recipientIdentifiers: [inbound ? on : input.contact],
-      },
-    },
+    id: input.id,
+    created: input.at.toISOString(),
+    personId: input.personId ?? 0,
+    name: input.name,
+    userName: 'Agent White',
+    isIncoming: input.isIncoming ?? input.incoming,
+    fromNumber: input.incoming ? input.contact : on,
+    toNumber: input.incoming ? on : input.contact,
+    message: input.incoming ? 'hello' : 'on it',
+    sharedInboxId: 0,
   }
 }
 
-function missedCall(input: { id: string; at: Date; contact: string; on?: string; type?: string; status?: string }) {
+function call(input: {
+  id: number
+  at: Date
+  incoming?: boolean
+  contact?: string
+  on?: string
+  personId?: number
+  outcome?: string | null
+  duration?: number | null
+  fromNumber?: string
+  toNumber?: string
+  phone?: string
+  sharedInboxId?: number
+}) {
+  const incoming = input.incoming !== false
+  const on = input.on
+  const contact = input.contact
   return {
-    type: input.type ?? 'call.missed',
-    data: {
-      resource: {
-        id: input.id,
-        direction: 'incoming',
-        status: input.status,
-        createdAt: input.at.toISOString(),
-      },
-      context: {
-        conversationId: 'CN-call',
-        participants: {
-          workspace: [input.on ?? line],
-          external: [input.contact],
-          resolution: 'available',
-        },
-      },
-    },
+    id: input.id,
+    created: input.at.toISOString(),
+    phone: input.phone ?? contact,
+    personId: input.personId ?? 0,
+    userId: 4,
+    userName: 'Agent White',
+    isIncoming: incoming ? 1 : 0,
+    outcome: input.outcome,
+    duration: input.duration,
+    fromNumber: input.fromNumber ?? (on ? (incoming ? contact : on) : undefined),
+    toNumber: input.toNumber ?? (on ? (incoming ? on : contact) : undefined),
+    sharedInboxId: input.sharedInboxId,
   }
 }
 
@@ -109,18 +132,32 @@ afterEach(() => {
   delete process.env.CORDEIRA_LINE_NUMBER
   delete process.env.CORDEIRA_LINE_TEXT_WAIT_MINUTES
   delete process.env.CORDEIRA_LINE_ALERTS_DRY_RUN
-  delete process.env.CORDEIRA_LINE_PHONE_NUMBER_ID
+  delete process.env.CORDEIRA_LINE_PHONE_ID
+  delete process.env.FOLLOW_UP_BOSS_API_KEY
+  delete process.env.LOA_REMINDERS_ENABLED
+  delete process.env.QUO_API_KEY
+  delete process.env.QUO_FROM_NUMBER
+  process.env.ASSISTANT_DEMO_MODE = 'true'
   vi.unstubAllGlobals()
 })
 
 describe('Cordeira line alerts', () => {
-  it('alerts once for a missed call, including a second event for the same call', async () => {
+  it('alerts once for a missed FUB call, including callsUpdated for the same id', async () => {
     const fx = deps({
       findPerson: async () => ({ id: 99, name: 'Ada Buyer' }),
     })
-    const first = await ingestCordeiraPayload(missedCall({ id: 'AC-1', at: t0, contact: client }), { ...fx, now: t0 })
-    const again = await ingestCordeiraPayload(
-      missedCall({ id: 'AC-1', at: t0, contact: client, type: 'call.completed', status: 'unanswered' }),
+    const missed = call({
+      id: 18,
+      at: t0,
+      contact: '5165550100',
+      on: '5163094960',
+      personId: 99,
+      outcome: 'No Answer',
+      duration: 0,
+    })
+    const first = await ingestFubCall(missed, { ...fx, now: t0 })
+    const again = await ingestFubCall(
+      { ...missed, outcome: 'Left Message', duration: 12 },
       { ...fx, now: plus(1) },
     )
     expect(first.sent).toBe(2)
@@ -129,6 +166,7 @@ describe('Cordeira line alerts', () => {
     expect(fx.sms[0]?.content).toBe(
       'Missed call from Ada Buyer on Cordeira line https://teamcordeira.followupboss.com/2/people/view/99',
     )
+    expect(fx.sms[0]?.content).not.toContain('Agent White')
     expect(fx.sms[1]?.content).toBe(fx.sms[0]?.content)
     expect(fx.notes).toHaveLength(1)
     expect(fx.notes[0]).toMatchObject({
@@ -144,19 +182,25 @@ describe('Cordeira line alerts', () => {
     expect(fx.notes[0]?.body).toContain('Missed call from Ada Buyer on Cordeira line')
   })
 
-  it('does not alert when the Cordeira line replies within 10 minutes', async () => {
+  it('does not alert when a team text replies within 10 minutes', async () => {
     const fx = deps()
-    await ingestCordeiraPayload(message({ id: 'msg-in', at: t0, direction: 'in', contact: client }), { ...fx, now: t0 })
-    await ingestCordeiraPayload(message({ id: 'msg-out', at: plus(5), direction: 'out', contact: client }), { ...fx, now: plus(5) })
+    await ingestFubText(text({ id: 14, at: t0, incoming: true, contact: client, personId: 99, name: 'Ada Buyer' }), {
+      ...fx,
+      now: t0,
+    })
+    await ingestFubText(
+      text({ id: 15, at: plus(5), incoming: false, contact: client, on: sales, personId: 99, name: 'Ada Buyer' }),
+      { ...fx, now: plus(5) },
+    )
     const result = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
     expect(result.sent).toBe(0)
     expect(fx.sms).toEqual([])
     expect(fx.notes).toEqual([])
   })
 
-  it('alerts once when an inbound text is still unanswered after 10 minutes', async () => {
+  it('alerts once when an inbound FUB text is still unanswered after 10 minutes', async () => {
     const fx = deps()
-    await ingestCordeiraPayload(message({ id: 'msg-in', at: t0, direction: 'in', contact: client }), { ...fx, now: t0 })
+    await ingestFubText(text({ id: 14, at: t0, incoming: true, contact: client }), { ...fx, now: t0 })
     const early = await runCordeiraLineAlerts({ ...fx, now: plus(9) })
     const due = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
     const repeat = await runCordeiraLineAlerts({ ...fx, now: plus(11) })
@@ -169,10 +213,26 @@ describe('Cordeira line alerts', () => {
     expect(fx.notes).toEqual([])
   })
 
+  it('uses the text name and posts one mention note when the person is known', async () => {
+    const fx = deps({ findPerson: async () => ({ id: 1, name: 'Should Not Lookup' }) })
+    await ingestFubText(
+      text({ id: 14, at: t0, incoming: true, contact: client, personId: 99, name: 'Ada Buyer' }),
+      { ...fx, now: t0 },
+    )
+    const due = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
+    expect(due.sent).toBe(2)
+    expect(due.notes).toBe(1)
+    expect(fx.sms[0]?.content).toBe(
+      'Unanswered text from Ada Buyer for 10 min on Cordeira line https://teamcordeira.followupboss.com/2/people/view/99',
+    )
+    expect(fx.notes[0]?.personId).toBe(99)
+    expect(fx.notes[0]?.body).not.toContain('Should Not Lookup')
+  })
+
   it('sends one digest per person when several texts become due together', async () => {
     const fx = deps()
-    await ingestCordeiraPayload(message({ id: 'msg-a', at: t0, direction: 'in', contact: client }), { ...fx, now: t0 })
-    await ingestCordeiraPayload(message({ id: 'msg-b', at: t0, direction: 'in', contact: otherClient }), { ...fx, now: t0 })
+    await ingestFubText(text({ id: 14, at: t0, incoming: true, contact: client }), { ...fx, now: t0 })
+    await ingestFubText(text({ id: 16, at: t0, incoming: true, contact: otherClient }), { ...fx, now: t0 })
     const due = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
     expect(due.sent).toBe(2)
     expect(fx.sms).toHaveLength(2)
@@ -187,7 +247,7 @@ describe('Cordeira line alerts', () => {
 
   it('does not double-alert when two runs flush the same due text', async () => {
     const fx = deps()
-    await ingestCordeiraPayload(message({ id: 'msg-in', at: t0, direction: 'in', contact: client }), { ...fx, now: t0 })
+    await ingestFubText(text({ id: 14, at: t0, incoming: true, contact: client }), { ...fx, now: t0 })
     const [left, right] = await Promise.all([
       runCordeiraLineAlerts({ ...fx, now: plus(10) }),
       runCordeiraLineAlerts({ ...fx, now: plus(10) }),
@@ -199,60 +259,175 @@ describe('Cordeira line alerts', () => {
 
   it('does not double-alert when two workers ingest the same missed call', async () => {
     const fx = deps({ findPerson: async () => ({ id: 99, name: 'Ada Buyer' }) })
-    const payload = missedCall({ id: 'AC-race', at: t0, contact: client })
+    const missed = call({ id: 18, at: t0, contact: client, on: line, outcome: 'Busy', duration: 0, personId: 99 })
     await Promise.all([
-      ingestCordeiraPayload(payload, { ...fx, now: t0 }),
-      ingestCordeiraPayload(payload, { ...fx, now: t0 }),
+      ingestFubCall(missed, { ...fx, now: t0 }),
+      ingestFubCall(missed, { ...fx, now: t0 }),
     ])
     expect(fx.sms).toHaveLength(2)
     expect(fx.notes).toHaveLength(1)
   })
 
-  it('ignores the Sales line and stays quiet until alerts are enabled', async () => {
+  it('ignores other FUB lines, open calls, and stays quiet until alerts are enabled', async () => {
     const fx = deps()
-    await ingestCordeiraPayload(missedCall({ id: 'AC-sales', at: t0, contact: client, on: sales }), { ...fx, now: t0 })
+    await ingestFubCall(
+      call({ id: 20, at: t0, contact: client, on: sales, outcome: 'No Answer', duration: 0 }),
+      { ...fx, now: t0 },
+    )
+    await ingestFubCall(
+      call({ id: 21, at: t0, contact: client, on: line, outcome: null, duration: null }),
+      { ...fx, now: t0 },
+    )
+    await ingestFubCall(
+      call({ id: 22, at: t0, contact: client, outcome: 'No Answer', duration: 0, fromNumber: undefined, toNumber: undefined }),
+      { ...fx, now: t0 },
+    )
     expect(fx.sms).toEqual([])
     delete process.env.CORDEIRA_LINE_ALERTS_ENABLED
-    await ingestCordeiraPayload(missedCall({ id: 'AC-off', at: t0, contact: client }), { ...fx, now: t0 })
+    const loaded = vi.fn(async () => call({ id: 23, at: t0, contact: client, on: line, outcome: 'No Answer', duration: 0 }))
+    await handleFubCordeiraWebhook({ event: 'callsCreated', resourceIds: [23] }, { ...fx, now: t0, loadCall: loaded })
+    expect(loaded).not.toHaveBeenCalled()
     expect(fx.sms).toEqual([])
   })
 
-  it('cancels the timer when message history shows a reply the webhook missed', async () => {
-    const fx = deps({
-      listMessages: async () => [{ id: 'late-out', at: plus(4).toISOString(), direction: 'out' }],
+  it('cancels the timer when an answered call or a later FUB reply is already on the person', async () => {
+    const fx = deps()
+    await ingestFubText(text({ id: 14, at: t0, incoming: true, contact: client, personId: 99, name: 'Ada Buyer' }), {
+      ...fx,
+      now: t0,
     })
-    await ingestCordeiraPayload(message({ id: 'msg-in', at: t0, direction: 'in', contact: client }), { ...fx, now: t0 })
-    const due = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
+    await ingestFubCall(
+      call({
+        id: 30,
+        at: plus(4),
+        contact: client,
+        personId: 99,
+        outcome: 'Interested',
+        duration: 30,
+        incoming: false,
+      }),
+      { ...fx, now: plus(4) },
+    )
+    const answered = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
+    expect(answered.sent).toBe(0)
+
+    await ingestFubText(text({ id: 40, at: t0, incoming: true, contact: otherClient }), { ...fx, now: t0 })
+    const due = await runCordeiraLineAlerts({
+      ...fx,
+      now: plus(10),
+      laterActivity: async () => 'reply',
+    })
     expect(due.sent).toBe(0)
     expect(fx.sms).toEqual([])
   })
 
-  it('does not treat a client text on the Cordeira line as a Sales command', async () => {
-    delete process.env.CORDEIRA_LINE_ALERTS_ENABLED
-    process.env.COMMAND_MODE_ENABLED = 'true'
-    process.env.QUO_WEBHOOK_SECRET = `whsec_${Buffer.from('supersecretkey1').toString('base64')}`
-    const raw = JSON.stringify(message({ id: 'msg-client', at: new Date(), direction: 'in', contact: joseph }))
-    const webhookId = 'wh_cordeira'
-    const webhookTimestamp = String(Math.floor(Date.now() / 1000))
-    const signature = createHmac('sha256', Buffer.from('supersecretkey1'))
-      .update(`${webhookId}.${webhookTimestamp}.${raw}`)
-      .digest('base64')
-    const res = await handler(
-      new Request('http://localhost/api/webhooks/quo', {
+  it('matches the dialer line by shared inbox id when the text has no from or to number', async () => {
+    process.env.CORDEIRA_LINE_PHONE_ID = '42'
+    const fx = deps()
+    const ignored = await ingestFubText(
+      {
+        id: 50,
+        created: t0.toISOString(),
+        personId: 0,
+        isIncoming: true,
+        fromNumber: client,
+        sharedInboxId: 0,
+      },
+      { ...fx, now: t0 },
+    )
+    const matched = await ingestFubText(
+      {
+        id: 51,
+        created: t0.toISOString(),
+        personId: 0,
+        isIncoming: true,
+        fromNumber: client,
+        sharedInboxId: 42,
+      },
+      { ...fx, now: t0 },
+    )
+    expect(ignored).toMatchObject({ ignored: true })
+    expect(matched.sent).toBe(0)
+    const due = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
+    expect(due.sent).toBe(2)
+    expect(fx.sms[0]?.content).toContain(client)
+  })
+
+  it('loads the call from Follow Up Boss when callsCreated fires', async () => {
+    const fx = deps({
+      findPerson: async (phone) => (phone === client ? { id: 99, name: 'Ada Buyer' } : null),
+    })
+    const missed = call({ id: 18, at: t0, contact: client, on: line, personId: 99, outcome: 'No Answer', duration: 0 })
+    const result = await handleFubCordeiraWebhook(
+      { event: 'callsCreated', resourceIds: [18], uri: 'https://api.followupboss.com/v1/calls?id=18' },
+      { ...fx, now: t0, loadCall: async (id) => ({ call: { ...missed, id } }) },
+    )
+    expect(result.sent).toBe(2)
+    expect(fx.sms[0]?.content).toContain('Ada Buyer')
+
+    const wrapped = await handleFubCordeiraWebhook(
+      { event: 'textMessagesCreated', resourceIds: [14] },
+      {
+        ...fx,
+        now: t0,
+        loadText: async () => ({ textmessage: text({ id: 14, at: t0, incoming: true, contact: otherClient }) }),
+      },
+    )
+    expect(wrapped.sent).toBe(0)
+    const due = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
+    expect(due.sent).toBe(2)
+    expect(fx.sms.some((item) => item.content.includes(otherClient))).toBe(true)
+  })
+
+  it('asks Follow Up Boss for the call on the live webhook and texts from the Sales line', async () => {
+    process.env.ASSISTANT_DEMO_MODE = 'false'
+    process.env.FOLLOW_UP_BOSS_API_KEY = 'test-key'
+    process.env.LOA_REMINDERS_ENABLED = 'false'
+    process.env.QUO_API_KEY = 'quo-test'
+    process.env.QUO_FROM_NUMBER = sales
+    const at = new Date()
+    const missed = call({ id: 18181, at, contact: client, on: line, personId: 99, outcome: 'voicemail', duration: 8 })
+    const quoBodies: { from?: string; to?: string[]; content?: string }[] = []
+    const urls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        urls.push(url)
+        if (url === 'https://api.followupboss.com/v1/calls/18181') {
+          return new Response(JSON.stringify(missed), { status: 200 })
+        }
+        if (url.startsWith('https://api.followupboss.com/v1/people')) {
+          return new Response(JSON.stringify({ people: [{ id: 99, name: 'Ada Buyer' }] }), { status: 200 })
+        }
+        if (url === 'https://api.followupboss.com/v1/notes') {
+          return new Response(JSON.stringify({ id: 1 }), { status: 200 })
+        }
+        if (url === 'https://api.openphone.com/v1/messages') {
+          quoBodies.push(JSON.parse(String(init?.body ?? '{}')) as { from?: string; to?: string[]; content?: string })
+          return new Response(JSON.stringify({ data: { id: 'msg-1' } }), { status: 200 })
+        }
+        return new Response('unexpected', { status: 500 })
+      }),
+    )
+    const res = await fubWebhook(
+      new Request('https://site.example/api/webhooks/fub', {
         method: 'POST',
-        body: raw,
-        headers: {
-          'webhook-id': webhookId,
-          'webhook-timestamp': webhookTimestamp,
-          'webhook-signature': `v1,${signature}`,
-        },
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          event: 'callsCreated',
+          resourceIds: [18181],
+          uri: 'https://api.followupboss.com/v1/calls?id=18181',
+        }),
       }),
     )
     expect(res.status).toBe(200)
-    const body = (await res.json()) as { acted: boolean; ignored: string }
-    expect(body.acted).toBe(false)
-    expect(body.ignored).toBe('cordeira-line')
-    delete process.env.COMMAND_MODE_ENABLED
-    delete process.env.QUO_WEBHOOK_SECRET
+    const body = (await res.json()) as { reminders?: { skipped?: string }; leads?: unknown }
+    expect(body.reminders?.skipped).toBe('disabled')
+    expect(body.leads).toBeUndefined()
+    expect(urls).toContain('https://api.followupboss.com/v1/calls/18181')
+    expect(quoBodies.map((item) => item.to?.[0])).toEqual([joseph, frankie])
+    expect(quoBodies[0]?.from).toBe(sales)
+    expect(quoBodies[0]?.content).toContain('Missed call from Ada Buyer on Cordeira line')
   })
 })

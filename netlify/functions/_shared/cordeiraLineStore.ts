@@ -6,6 +6,8 @@ export type PendingText = {
   contact: string
   conversationId?: string
   inboundAt: string
+  personId?: number
+  personName?: string
 }
 
 export type QueuedCall = {
@@ -13,6 +15,8 @@ export type QueuedCall = {
   contact: string
   at: string
   conversationId?: string
+  personId?: number
+  personName?: string
 }
 
 export type CordeiraState = {
@@ -53,6 +57,10 @@ async function ownsConditionalWrite(blob: Store, key: string, token: string, res
   return raw?.token === token
 }
 
+function personIdOf(value: unknown): number | undefined {
+  return typeof value === 'number' && Number.isInteger(value) && value > 0 ? value : undefined
+}
+
 function stringMap(value: unknown): Record<string, string> {
   const out: Record<string, string> = {}
   if (!value || typeof value !== 'object') return out
@@ -76,6 +84,8 @@ function normalize(raw: unknown): CordeiraState | null {
         contact: item.contact,
         conversationId: typeof item.conversationId === 'string' ? item.conversationId : undefined,
         inboundAt: item.inboundAt,
+        personId: personIdOf(item.personId),
+        personName: typeof item.personName === 'string' ? item.personName : undefined,
       }
     }
   }
@@ -90,6 +100,8 @@ function normalize(raw: unknown): CordeiraState | null {
         contact: item.contact,
         at: item.at,
         conversationId: typeof item.conversationId === 'string' ? item.conversationId : undefined,
+        personId: personIdOf(item.personId),
+        personName: typeof item.personName === 'string' ? item.personName : undefined,
       }
     }
   }

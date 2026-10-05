@@ -101,7 +101,7 @@ Point Quo’s inbound message webhook to `https://<your-site>/api/webhooks/sms`.
 
 Point Follow Up Boss webhooks (`peopleCreated`, `peopleUpdated`, `peopleStageUpdated`, `notesCreated`, `emailsCreated`, `textMessagesCreated`) to `https://<your-site>/api/webhooks/fub`. LoanPilot rescores that person and, when heat crosses a band, writes a note plus a task. An optional custom field named **LoanPilot Score** is stored as `customLoanPilotScore`. If that field does not exist yet, scoring still saves the note and the task.
 
-Also subscribe **`callsCreated`** and **`callsUpdated`** on that same URL so missed inbound calls are caught as they are logged. Overdue tasks have no “became overdue” webhook, so the 15-minute `loa-reminders` function polls them. `textMessagesCreated` is already on the list and is used for unanswered texts. Do not subscribe `tasksCreated` / `tasksUpdated` — scoring ignores task events so LoanPilot notes do not loop.
+Also subscribe **`callsCreated`** and **`callsUpdated`** on that same URL so missed inbound calls are caught as they are logged. Overdue tasks have no “became overdue” webhook, so the 15-minute `loa-reminders` function polls them. `textMessagesCreated` is already on the list and is used for unanswered texts. Those same three events also feed Cordeira-line alerts for +15163094960. Do not subscribe `tasksCreated` / `tasksUpdated` — scoring ignores task events so LoanPilot notes do not loop.
 
 ## LOA and LO miss reminders
 
@@ -255,7 +255,7 @@ Booked calls are titled `<Client Name> call <topic>` for 30 minutes in America/N
 
 **Quo webhook.** `POST /api/webhooks/quo`. A missing or bad signature returns 401. Set `QUO_WEBHOOK_SECRET` to the key Quo returns (`whsec_...`) or the base64 secret from the webhook details page. Current deliveries sign `{webhook-id}.{webhook-timestamp}.{raw body}` (HMAC-SHA256, base64, header `webhook-signature`). Older UI deliveries use `openphone-signature` (`hmac;1;timestamp;signature` over `timestamp.rawBody`). Both are accepted. Message id is the idempotency key.
 
-Register command mode on the Sales number. The Cordeira team line uses the same URL with extra events; see Cordeira line alerts below. Client texts on that line are not commands.
+Register command mode on the Sales number only. The Cordeira team line +15163094960 is a Follow Up Boss number, not a Quo inbox. Do not add it to this webhook.
 
 API (version `2026-03-30`):
 
@@ -300,48 +300,32 @@ The Hub Command mode card lists recent commands. It does not send anything.
 
 ## Cordeira line alerts
 
-Off until `CORDEIRA_LINE_ALERTS_ENABLED=true`. This watches only `CORDEIRA_LINE_NUMBER` (default `+15163094960`, the main client text and call line). It does not change LOA miss reminders, and it does not treat texts on this line as commands.
+Off until `CORDEIRA_LINE_ALERTS_ENABLED=true`. This watches only the Follow Up Boss dialer and texting line `CORDEIRA_LINE_NUMBER` (default `+15163094960`). It is not a Quo number. Do not add it to the Quo webhook. Alert SMS still goes out from `QUO_FROM_NUMBER` (the Sales line). LOA miss reminders are unchanged.
 
 | Event | What happens |
 |---|---|
-| Missed call (`call.missed`, or an incoming `call.completed` that was not answered) | Joseph and Frankie get one alert right away |
-| Inbound text with no outbound reply for 10 minutes | The same alert, after the timer. A reply on that contact or conversation cancels it |
-| Anything on the Sales line or any other number | Ignored |
+| Missed inbound call on that FUB line (`No Answer`, `Left Message`, `Busy`, voicemail, or a zero-duration incoming call) | Joseph and Frankie get one alert right away |
+| Inbound text on that line with no team reply for 10 minutes | The same alert, after the timer |
+| A team outbound text, or a call that is answered, before the timer | Cancels the text alert |
+| Calls and texts on any other number | Ignored |
+| A call that is still open (no outcome and no duration yet) | Ignored until `callsUpdated` |
 
-Several items that are due in the same check share one SMS per person (one digest per person for that 15-minute pile-up, not a separate text per item). A new miss after that digest has gone out still alerts. Each missed call and each unanswered text is claimed once in the `loanpilot-cordeira-line` Netlify Blobs store (strong consistency, fail closed), so a webhook retry or two minute-checks cannot send it twice.
+Follow Up Boss posts `callsCreated`, `callsUpdated`, and `textMessagesCreated` to the existing `POST /api/webhooks/fub` endpoint with resource ids only. LoanPilot loads `GET /v1/calls/:id` and `GET /v1/textMessages/:id`. On a text, `toNumber` is this line when the client texted in, and `fromNumber` is this line when the team replied from it. `name` is the person. `sharedInboxId` is `0` when the text is not in a shared inbox. On a call, `phone` is the lead. `fromNumber` and `toNumber` are the dialer fields when Follow Up Boss includes them (the same fields `GET /v1/calls` can filter on). A call is on this line when one of those numbers is `+15163094960`.
 
-The text is short: `Missed call from {name or number} on Cordeira line` or `Unanswered text from {name or number} for 10 min on Cordeira line`. When Follow Up Boss has that phone, the SMS includes the person link and one HTML note @mentions both Joseph and Frankie.
+Several items that are due in the same check share one SMS per person. A later item still alerts. Each missed call and each unanswered text is claimed once in the `loanpilot-cordeira-line` Netlify Blobs store (strong consistency, fail closed), so a webhook retry or two minute-checks cannot send it twice.
 
-**Recipients** reuse the existing team env. Joseph is `FUB_LO_PHONE` / `FUB_LO_USER_ID` / `FUB_LO_NAME`. Frankie is the loan officer assistant: `FUB_LOA_USER_ID` (16), `FUB_LOA_PHONE_16`, and `FUB_LOA_NAME_16`. Daniel and Debra are not alerted. The SMS is sent from `QUO_FROM_NUMBER` (the Sales line), not from the Cordeira line.
+The text is short: `Missed call from {name or number} on Cordeira line` or `Unanswered text from {name or number} for 10 min on Cordeira line`. When the person is known, the SMS includes the person link and one HTML note @mentions both Joseph and Frankie. Call `userName` is the agent, so it is not used as the contact name.
 
-**Webhook.** Same endpoint, `POST /api/webhooks/quo`, same `QUO_WEBHOOK_SECRET`. The Sales-number command webhook does not receive this line until you add it. Add the Cordeira number's phone-number id (`PNxxxx`) to `resourceIds`, or create a second webhook to the same URL whose signing key is that same secret. Subscribe to `message.received`, `message.delivered`, `call.missed`, and `call.completed`. `message.delivered` is the outbound reply that cancels the 10-minute timer. Set `CORDEIRA_LINE_PHONE_NUMBER_ID` to that `PNxxxx` if you also want the minute checker to look up Quo history before it alerts.
+**Recipients** reuse the existing team env. Joseph is `FUB_LO_PHONE` / `FUB_LO_USER_ID` / `FUB_LO_NAME`. Frankie is the loan officer assistant: `FUB_LOA_USER_ID` (16), `FUB_LOA_PHONE_16`, and `FUB_LOA_NAME_16`. Daniel and Debra are not alerted.
 
-```bash
-curl -s "https://api.quo.com/phone-numbers?phoneNumber=%2B15163094960" \
-  -H "Authorization: $QUO_API_KEY" \
-  -H "Quo-Api-Version: 2026-03-30"
-
-curl -s "https://api.quo.com/webhooks" \
-  -X POST \
-  -H "Authorization: $QUO_API_KEY" \
-  -H "Content-Type: application/json" \
-  -H "Quo-Api-Version: 2026-03-30" \
-  -d '{
-    "url": "https://<your-site>/api/webhooks/quo",
-    "events": ["message.received", "message.delivered", "call.missed", "call.completed"],
-    "resourceIds": ["<PNxxxx for +15163094960>"],
-    "label": "LoanPilot Cordeira line"
-  }'
-```
-
-The minute function is `cordeira-line-alerts`. `CORDEIRA_LINE_ALERTS_DRY_RUN=true` records nothing and sends nothing.
+The minute function is `cordeira-line-alerts`. It also checks Follow Up Boss for a reply the webhook has not applied yet. `CORDEIRA_LINE_ALERTS_DRY_RUN=true` records nothing and sends nothing.
 
 | Env | Default | Purpose |
 |---|---|---|
 | `CORDEIRA_LINE_ALERTS_ENABLED` | `false` | Master switch |
-| `CORDEIRA_LINE_NUMBER` | `+15163094960` | Only this inbox is watched |
+| `CORDEIRA_LINE_NUMBER` | `+15163094960` | Follow Up Boss line that is watched |
 | `CORDEIRA_LINE_TEXT_WAIT_MINUTES` | `10` | How long an inbound text may sit unanswered |
-| `CORDEIRA_LINE_PHONE_NUMBER_ID` | | Optional `PNxxxx` for a history check before the text alert |
+| `CORDEIRA_LINE_PHONE_ID` | | Optional. Set only when call or text records omit `fromNumber` / `toNumber`. Matches `sharedInboxId`, `phoneId`, `phoneNumberId`, `fromPhoneId`, or `lineId`. Not a Quo `PNxxxx` |
 | `CORDEIRA_LINE_ALERTS_DRY_RUN` | `false` | Leave the timer alone and send nothing |
 | `FUB_LO_PHONE` / `FUB_LO_USER_ID` | | Joseph's cell and mention id |
 | `FUB_LOA_PHONE_16` / `FUB_LOA_USER_ID` | | Frankie's cell and mention id when the assistant user is 16 |

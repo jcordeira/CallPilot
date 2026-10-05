@@ -462,3 +462,9 @@ export async function fubGet(path: string): Promise<unknown | null> {
     return null
   }
 }
+
+/** Like `fubGet`, but a failed request throws so the caller can retry instead of guessing. */
+export async function fubGetStrict(path: string): Promise<unknown | null> {
+  if (isDemoMode() || !env('FOLLOW_UP_BOSS_API_KEY').trim()) return null
+  return fubFetch(path)
+}
