@@ -101,7 +101,7 @@ Point Quo’s inbound message webhook to `https://<your-site>/api/webhooks/sms`.
 
 Point Follow Up Boss webhooks (`peopleCreated`, `peopleUpdated`, `peopleStageUpdated`, `notesCreated`, `emailsCreated`, `textMessagesCreated`) to `https://<your-site>/api/webhooks/fub`. LoanPilot rescores that person and, when heat crosses a band, writes a note plus a task. An optional custom field named **LoanPilot Score** is stored as `customLoanPilotScore`. If that field does not exist yet, scoring still saves the note and the task.
 
-Also subscribe **`callsCreated`** and **`callsUpdated`** on that same URL so missed inbound calls are caught as they are logged. Overdue tasks have no “became overdue” webhook, so the 15-minute `loa-reminders` function polls them. `textMessagesCreated` is already on the list and is used for unanswered texts. Those same three events also feed Cordeira-line alerts for +15163094960. Do not subscribe `tasksCreated` / `tasksUpdated` — scoring ignores task events so LoanPilot notes do not loop.
+Also subscribe **`callsCreated`** and **`callsUpdated`** on that same URL so missed inbound calls are caught as they are logged, and so call summaries can run when `CALL_SUMMARIES_ENABLED=true`. Overdue tasks have no “became overdue” webhook, so the 15-minute `loa-reminders` function polls them. `textMessagesCreated` is already on the list and is used for unanswered texts. Those same three events also feed Cordeira-line alerts for +15163094960. Do not subscribe `tasksCreated` / `tasksUpdated` — scoring ignores task events so LoanPilot notes do not loop.
 
 ## LOA and LO miss reminders
 
@@ -331,6 +331,25 @@ The minute function is `cordeira-line-alerts`. It also checks Follow Up Boss for
 | `FUB_LOA_PHONE_16` / `FUB_LOA_USER_ID` | | Frankie's cell and mention id when the assistant user is 16 |
 | `QUO_FROM_NUMBER` | | Sales line the alert SMS is sent from |
 
+## Call summaries
+
+Off until `CALL_SUMMARIES_ENABLED=true`. When a Follow Up Boss user on the account finishes a call through Follow Up Boss calling and that call has a transcript, LoanPilot posts one plain-text note on the lead. It does not text or email anyone, and it does not @mention.
+
+`callsCreated` and `callsUpdated` are already subscribed on `POST /api/webhooks/fub`. A transcript often arrives on a later `callsUpdated`, a few minutes after the call ends. The 15-minute `loa-reminders` function also checks calls created in the last 24 hours, so a missed webhook still gets one summary. Reminder behavior is unchanged. The summary sweep does nothing until this flag is on.
+
+Follow Up Boss documents `GET /v1/calls` and `GET /v1/calls/:id` with `duration`, `outcome`, `note`, and `recordingUrl`. The public reference does not include a transcript field, and it says some call data is only visible in the Follow Up Boss app. LoanPilot reads transcript text from `transcript`, `transcription`, `callTranscript`, speaker `segments` / `utterances`, nested `recording.transcript`, or `GET /calls/:id/transcript` and `GET /calls/:id/transcription` when those return text. The call `note` is the agent log and is not used as the transcript. Calls with no transcript, a transcript under 80 characters, a known duration under 30 seconds, or no person (`personId` 0) are skipped.
+
+The subject is `LoanPilot Call Summary - <Mon D, YYYY h:mm AM/PM ET>`. The body has who was on the call, the Eastern Time stamp, the duration, and only the mortgage sections the transcript supports: purpose, recap, borrower situation, concerns, commitments, documents, next steps, follow-ups, and quotes. The last line is `LoanPilot-call-id:<id>`.
+
+One note per call id. A strong-consistency blob in `loanpilot-call-summaries` (`summary/call/<id>`) is claimed before the write. A lost claim or a Blobs error does not post. Recent notes are also checked for that call id. If that lookup fails, nothing is posted.
+
+The summary uses the same Netlify AI Gateway client as command mode. Functions receive `OPENAI_BASE_URL` and `OPENAI_API_KEY` (or `NETLIFY_AI_GATEWAY_BASE_URL` and `NETLIFY_AI_GATEWAY_KEY`) when AI is enabled on the site. The model is `gpt-4o-mini` unless `COMMAND_MODEL` is set. If that client is missing, the call is skipped and no summary is invented.
+
+| Env | Default | Purpose |
+|---|---|---|
+| `CALL_SUMMARIES_ENABLED` | `false` | Master switch. Set `true` after deploy |
+| `COMMAND_MODEL` | `gpt-4o-mini` | Summary model on the Netlify AI Gateway |
+
 ## Lead heat (Joseph and Frank)
 
 Scores run in demo mode with no Follow Up Boss key (sample leads on the Hub). With a key, the hourly `score-leads` function and the FUB webhook rescore open people. A heat note is written when the band changes, or at most every 7 days. A task is created only when the band moves up and that person does not already have an open LoanPilot task of the same kind. `peopleUpdated` is ignored so writing the score does not rescore. Set `LEAD_HEAT_WRITES_ENABLED=false` to keep Hub scores and stop Follow Up Boss notes and tasks. Closed, Past Client, and Outside Partner stages are skipped, as is the person named LoanPilot.
@@ -413,7 +432,7 @@ curl -s -H "Authorization: Bearer demo-key" -H "Content-Type: application/json" 
 | `netlify/functions/_shared/` | Classify, AI reply, FUB, Gmail, Neo, Quo, Calendar, pipeline |
 | `netlify/functions/process-inbox.ts` | Cron every 5 minutes |
 | `netlify/functions/score-leads.ts` | Cron hourly — rescore FUB leads |
-| `netlify/functions/loa-reminders.ts` | Cron every 15 minutes — LOA/LO miss reminders (off until enabled) |
+| `netlify/functions/loa-reminders.ts` | Cron every 15 minutes — LOA/LO miss reminders, plus the 24-hour call-summary sweep (each off until its own flag) |
 | `netlify/functions/calendar-guest.ts` | Cron every 15 minutes — add Frankie to client appointments (off until enabled) |
 | `netlify/functions/whatsapp-autoreply.ts` | Cron every minute — WhatsApp away reply (off until enabled) |
 | `netlify/functions/cordeira-line-alerts.ts` | Cron every minute — Cordeira line missed calls and unanswered texts (off until enabled) |
