@@ -392,16 +392,28 @@ export async function listRecentEvents(personId: number): Promise<FubEvent[]> {
   }
 }
 
-export async function listRecentNotes(personId: number): Promise<FubNote[]> {
-  if (isDemoMode() || !personId) return []
-  const data = (await fubFetch(`/notes?personId=${personId}&sort=-created&limit=10`)) as { notes?: FubNote[] } | null
-  return (data?.notes ?? []).map((note) => ({
+function mapNotes(notes: FubNote[] | undefined): FubNote[] {
+  return (notes ?? []).map((note) => ({
     id: note.id,
     personId: note.personId,
     subject: note.subject,
     body: note.body,
     created: note.created,
   }))
+}
+
+export async function listRecentNotes(personId: number): Promise<FubNote[]> {
+  if (isDemoMode() || !personId) return []
+  const data = (await fubFetch(`/notes?personId=${personId}&sort=-created&limit=10`)) as { notes?: FubNote[] } | null
+  return mapNotes(data?.notes)
+}
+
+/** Wider note window for call-summary dedupe. Throws when Follow Up Boss fails so the caller can skip the write. */
+export async function listPersonNotes(personId: number, limit = 100): Promise<FubNote[]> {
+  if (isDemoMode() || !personId) return []
+  const capped = Math.min(Math.max(limit, 1), 100)
+  const data = (await fubFetch(`/notes?personId=${personId}&sort=-created&limit=${capped}`)) as { notes?: FubNote[] } | null
+  return mapNotes(data?.notes)
 }
 
 export async function getNote(id: number): Promise<FubNote | null> {

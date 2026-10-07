@@ -1,4 +1,5 @@
 import type { Config, Context } from '@netlify/functions'
+import { handleFubCallSummaryWebhook } from './_shared/callSummary'
 import { handleFubCordeiraWebhook } from './_shared/cordeiraLine'
 import { env } from './_shared/env'
 import { fubSignatureMatches, fubWebhookVerificationEnabled } from './_shared/fubSignature'
@@ -61,15 +62,17 @@ export default async (req: Request, context?: Context) => {
 
   // Call events are not scored (that would change lead routing). They feed miss reminders.
   // callsUpdated shares each item claim and the 15-minute SMS digest claim with callsCreated.
-  // The same events also feed Cordeira-line alerts when that flag is on. LOA behavior is unchanged.
+  // The same events also feed Cordeira-line alerts when that flag is on, and call summaries
+  // when CALL_SUMMARIES_ENABLED=true. Both no-op before any fetch while their flags are off.
   if (/^calls/i.test(event)) {
     const reminders = settle(runLoaReminders({ trigger: event || 'calls', callIds: ids }))
     const cordeira = settle(handleFubCordeiraWebhook(body))
+    const summaries = settle(handleFubCallSummaryWebhook(body))
     if (context?.waitUntil) {
-      context.waitUntil(Promise.all([reminders, cordeira]).then(() => undefined))
+      context.waitUntil(Promise.all([reminders, cordeira, summaries]).then(() => undefined))
       return Response.json({ ok: true, event, reminders: { accepted: true } })
     }
-    const [reminderResult] = await Promise.all([reminders, cordeira])
+    const [reminderResult] = await Promise.all([reminders, cordeira, summaries])
     return Response.json({ ok: true, event, reminders: reminderResult })
   }
 
