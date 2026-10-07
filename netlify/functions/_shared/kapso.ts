@@ -24,6 +24,7 @@ export type KapsoListedMessage = {
   to?: string
   text?: { body?: string }
   direction?: string
+  reaction?: { message_id?: string; emoji?: string }
   kapso?: { direction?: string; origin?: string; content?: string; phone_number?: string }
 }
 
