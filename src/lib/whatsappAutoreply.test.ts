@@ -158,6 +158,216 @@ describe('whatsapp auto-reply', () => {
     expect(sendWhatsapp).not.toHaveBeenCalled()
   })
 
+  it('treats Joseph’s outbound emoji reaction as an answer', async () => {
+    const sendWhatsapp = vi.fn(async () => ({ id: 'wamid.out' }))
+    const sendAlert = vi.fn(async () => ({ id: 'sms-1' }))
+    await inbound(started, 'wamid.in')
+    const at = new Date(started.getTime() + 60_000)
+    const wrapped = await ingestKapsoWebhook({
+      event: 'whatsapp.message.sent',
+      now: at,
+      idempotencyKey: 'react-wrapped',
+      body: {
+        message: {
+          id: 'wamid.react',
+          timestamp: String(Math.floor(at.getTime() / 1000)),
+          type: 'reaction',
+          to: contact,
+          reaction: { message_id: 'wamid.in', emoji: '👍' },
+          kapso: { direction: 'outbound', origin: 'business_app', content: '👍' },
+        },
+        conversation: {
+          id: 'conv_1',
+          contact_name: 'Alex Buyer',
+          phone_number: contact,
+          phone_number_id: '123',
+        },
+        phone_number_id: '123',
+      },
+    })
+    expect(wrapped.cancelled).toBe(1)
+    const due = await runWhatsappAutoreply({
+      now: new Date(started.getTime() + 10 * 60_000),
+      sendWhatsapp,
+      sendAlert,
+    })
+    expect(due.deliveries).toHaveLength(0)
+    expect(sendWhatsapp).not.toHaveBeenCalled()
+
+    await resetWhatsappStateForTests()
+    await inbound(started, 'wamid.echo-in')
+    const echoAt = new Date(started.getTime() + 45_000)
+    const echo = await ingestKapsoWebhook({
+      event: 'smb_message_echoes',
+      now: echoAt,
+      idempotencyKey: 'react-echo',
+      body: {
+        object: 'whatsapp_business_account',
+        entry: [{
+          changes: [{
+            field: 'smb_message_echoes',
+            value: {
+              messaging_product: 'whatsapp',
+              metadata: { display_phone_number: '15169969070', phone_number_id: '123' },
+              message_echoes: [{
+                from: '15169969070',
+                to: contact,
+                id: 'wamid.react-echo',
+                timestamp: String(Math.floor(echoAt.getTime() / 1000)),
+                type: 'reaction',
+                reaction: { message_id: 'wamid.echo-in', emoji: '😀' },
+              }],
+            },
+          }],
+        }],
+      },
+    })
+    expect(echo.cancelled).toBe(1)
+
+    await resetWhatsappStateForTests()
+    await inbound(started, 'wamid.history-in')
+    const fromHistory = await runWhatsappAutoreply({
+      now: new Date(started.getTime() + 10 * 60_000),
+      sendWhatsapp,
+      sendAlert,
+      listMessages: async () => [{
+        id: 'wamid.react-history',
+        timestamp: String(Math.floor((started.getTime() + 90_000) / 1000)),
+        type: 'reaction',
+        from: '15169969070',
+        to: contact,
+        reaction: { message_id: 'wamid.other', emoji: '❤️' },
+        kapso: { direction: 'outbound', origin: 'business_app' },
+      }],
+    })
+    expect(fromHistory.deliveries).toHaveLength(0)
+    expect(sendWhatsapp).not.toHaveBeenCalled()
+  })
+
+  it('does not treat a removed reaction as an answer', async () => {
+    const sendWhatsapp = vi.fn(async () => ({ id: 'wamid.out' }))
+    await inbound(started, 'wamid.in')
+    const at = new Date(started.getTime() + 60_000)
+    const removed = await ingestKapsoWebhook({
+      event: 'whatsapp.message.sent',
+      now: at,
+      idempotencyKey: 'react-removed',
+      body: {
+        message: {
+          id: 'wamid.react-off',
+          timestamp: String(Math.floor(at.getTime() / 1000)),
+          type: 'reaction',
+          to: contact,
+          reaction: { message_id: 'wamid.in', emoji: '' },
+          kapso: { direction: 'outbound', origin: 'business_app' },
+        },
+        conversation: {
+          id: 'conv_1',
+          contact_name: 'Alex Buyer',
+          phone_number: contact,
+          phone_number_id: '123',
+        },
+        phone_number_id: '123',
+      },
+    })
+    const omitted = await ingestKapsoWebhook({
+      event: 'whatsapp.message.sent',
+      now: new Date(at.getTime() + 1000),
+      idempotencyKey: 'react-omitted',
+      body: {
+        id: 'wamid.react-omit',
+        timestamp: String(Math.floor((at.getTime() + 1000) / 1000)),
+        type: 'reaction',
+        to: contact,
+        from: '15169969070',
+        reaction: { message_id: 'wamid.in' },
+        kapso: { direction: 'outbound', origin: 'business_app' },
+        conversation: {
+          id: 'conv_1',
+          contact_name: 'Alex Buyer',
+          phone_number: contact,
+          phone_number_id: '123',
+        },
+        phone_number_id: '123',
+      },
+    })
+    expect(removed.cancelled).toBe(0)
+    expect(omitted.cancelled).toBe(0)
+    await runWhatsappAutoreply({
+      now: new Date(started.getTime() + 10 * 60_000),
+      sendWhatsapp,
+      sendAlert: async () => ({ id: 'sms-1' }),
+      listMessages: async () => [{
+        id: 'wamid.react-off',
+        timestamp: String(Math.floor(at.getTime() / 1000)),
+        type: 'reaction',
+        to: contact,
+        reaction: { message_id: 'wamid.in' },
+        kapso: { direction: 'outbound', origin: 'business_app' },
+      }],
+    })
+    expect(sendWhatsapp).toHaveBeenCalledOnce()
+  })
+
+  it('does not auto-reply to an inbound reaction', async () => {
+    const sendWhatsapp = vi.fn(async () => ({ id: 'wamid.out' }))
+    const reaction = await ingestKapsoWebhook({
+      event: 'whatsapp.message.received',
+      now: started,
+      idempotencyKey: 'react-in',
+      body: {
+        message: {
+          id: 'wamid.react-in',
+          timestamp: String(Math.floor(started.getTime() / 1000)),
+          type: 'reaction',
+          from: contact,
+          reaction: { message_id: 'wamid.old', emoji: '❤️' },
+          kapso: { direction: 'inbound', origin: 'cloud_api', content: '❤️' },
+        },
+        conversation: {
+          id: 'conv_1',
+          contact_name: 'Alex Buyer',
+          phone_number: contact,
+          phone_number_id: '123',
+        },
+        phone_number_id: '123',
+      },
+    })
+    expect(reaction.recorded).toBe(0)
+    expect(reaction.cancelled).toBe(0)
+    await inbound(started, 'wamid.in')
+    const later = await ingestKapsoWebhook({
+      event: 'whatsapp.message.received',
+      now: new Date(started.getTime() + 30_000),
+      idempotencyKey: 'react-in-2',
+      body: {
+        message: {
+          id: 'wamid.react-in-2',
+          timestamp: String(Math.floor((started.getTime() + 30_000) / 1000)),
+          type: 'reaction',
+          from: contact,
+          reaction: { message_id: 'wamid.in', emoji: '😂' },
+          kapso: { direction: 'inbound', origin: 'cloud_api' },
+        },
+        conversation: {
+          id: 'conv_1',
+          contact_name: 'Alex Buyer',
+          phone_number: contact,
+          phone_number_id: '123',
+        },
+        phone_number_id: '123',
+      },
+    })
+    expect(later.recorded).toBe(0)
+    expect(later.cancelled).toBe(0)
+    await runWhatsappAutoreply({
+      now: new Date(started.getTime() + 10 * 60_000),
+      sendWhatsapp,
+      sendAlert: async () => ({ id: 'sms-1' }),
+    })
+    expect(sendWhatsapp).toHaveBeenCalledOnce()
+  })
+
   it('does not treat LoanPilot’s own API echo as Joseph’s reply', async () => {
     const sendWhatsapp = vi.fn(async () => ({ id: 'wamid.out' }))
     await inbound(started)

@@ -16,7 +16,7 @@ import {
 const DEFAULT_REPLY =
   "Thanks for your message! I'm on another call or in a meeting right now and will get back to you as soon as possible. - Joseph"
 
-const IGNORED_TYPES = new Set(['reaction', 'system', 'unsupported', 'status', 'ephemeral', 'revoke'])
+const IGNORED_TYPES = new Set(['system', 'unsupported', 'status', 'ephemeral', 'revoke'])
 const STATUS_EVENTS = new Set(['whatsapp.message.delivered', 'whatsapp.message.read', 'whatsapp.message.failed'])
 const MAX_ATTEMPTS = 3
 
@@ -142,6 +142,40 @@ function isGroup(message: Rec, conversation: Rec | null): boolean {
 function ignoredType(message: Rec): boolean {
   const type = typeof message.type === 'string' ? message.type.toLowerCase() : ''
   return IGNORED_TYPES.has(type)
+}
+
+/**
+ * Kapso wraps a reaction as `message.reaction` (`message_id` + `emoji`) on
+ * `whatsapp.message.sent`. Meta's Cloud API and Business-app echoes use the
+ * same object on the message itself. A removed reaction omits `emoji` or sends it empty.
+ */
+function reactionSource(message: Rec): Rec | null {
+  const nested = asRec(message.message)
+  const candidates = [asRec(message.reaction), asRec(nested?.reaction), asRec(asRec(message.kapso)?.message_type_data)]
+  for (const candidate of candidates) {
+    if (!candidate) continue
+    if ('emoji' in candidate || 'message_id' in candidate || 'messageId' in candidate) return candidate
+  }
+  return null
+}
+
+function isReaction(message: Rec): boolean {
+  const type = typeof message.type === 'string' ? message.type.toLowerCase() : ''
+  return type === 'reaction' || asRec(message.reaction) != null || asRec(asRec(message.message)?.reaction) != null
+}
+
+function reactionEmoji(message: Rec): string {
+  const source = reactionSource(message)
+  const raw = source?.emoji
+  return typeof raw === 'string' ? raw.trim() : ''
+}
+
+function payloadMessage(payload: Rec): Rec | null {
+  const wrapped = asRec(payload.message)
+  if (wrapped) return wrapped
+  const type = typeof payload.type === 'string' ? payload.type.toLowerCase() : ''
+  if (type === 'reaction' || asRec(payload.reaction)) return payload
+  return null
 }
 
 function passive(message: Rec): boolean {
@@ -314,7 +348,7 @@ export async function ingestKapsoWebhook(input: {
       continue
     }
     if (STATUS_EVENTS.has(event)) continue
-    const message = asRec(payload.message)
+    const message = payloadMessage(payload)
     const conversation = asRec(payload.conversation)
     if (!message) continue
     if (originOf(message) === 'history_sync' || passive(message) || ignoredType(message) || isGroup(message, conversation)) {
@@ -322,6 +356,8 @@ export async function ingestKapsoWebhook(input: {
     }
     const direction = directionOf(message, event)
     if (!direction) continue
+    // Inbound reactions are not new messages. An empty emoji is a removed reaction, not an answer.
+    if (isReaction(message) && (direction !== 'outbound' || !reactionEmoji(message))) continue
     const messageId = typeof message.id === 'string' ? message.id : ''
     if (messageId && state.seenMessageIds.includes(messageId)) {
       duplicates += 1
@@ -438,6 +474,7 @@ function historyBlocks(messages: Rec[], state: WhatsappState, pending: WhatsappP
     if (!sameParty(message, pending)) return false
     if (messageTime(message, new Date(0)).getTime() + 1000 < inboundAt) return false
     if (isOwnApiMessage(message, state, replyText)) return false
+    if (isReaction(message) && !reactionEmoji(message)) return false
     return true
   })
 }
