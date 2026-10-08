@@ -1,5 +1,6 @@
 import type { Config, Context } from '@netlify/functions'
 import { handleFubCallSummaryWebhook } from './_shared/callSummary'
+import { handleFubContractWebhook } from './_shared/contractAlerts'
 import { handleFubCordeiraWebhook } from './_shared/cordeiraLine'
 import { env } from './_shared/env'
 import { fubSignatureMatches, fubWebhookVerificationEnabled } from './_shared/fubSignature'
@@ -16,6 +17,11 @@ function signatureOk(rawBody: string, req: Request): boolean {
 function resourceIds(payload: Record<string, unknown>): number[] {
   if (!Array.isArray(payload.resourceIds)) return []
   return payload.resourceIds.map((id) => Number(id)).filter((id) => Number.isInteger(id) && id > 0)
+}
+
+/** People, notes, email, texts, and tasks stay on the scoring path. Anything else is acknowledged and ignored. */
+function isScoredEvent(event: string): boolean {
+  return event === '' || /^(people|notes|emails|textMessages|tasks)/i.test(event)
 }
 
 function settle(pending: Promise<unknown>) {
@@ -74,6 +80,22 @@ export default async (req: Request, context?: Context) => {
     }
     const [reminderResult] = await Promise.all([reminders, cordeira, summaries])
     return Response.json({ ok: true, event, reminders: reminderResult })
+  }
+
+  // Deal pipeline stages are not person stages. Buyer Contract alerts read GET /v1/deals/:id.
+  // dealsCreated and dealsUpdated only. Other deal events are acknowledged with no fetch.
+  if (/^deals/i.test(event)) {
+    const alerts = settle(handleFubContractWebhook(body))
+    if (context?.waitUntil) {
+      context.waitUntil(alerts.then(() => undefined))
+      return Response.json({ ok: true, event })
+    }
+    await alerts
+    return Response.json({ ok: true, event })
+  }
+
+  if (!isScoredEvent(event)) {
+    return Response.json({ ok: true, event, skipped: 'ignored' })
   }
 
   const result = await handleFubWebhook(body)
