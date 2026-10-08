@@ -350,6 +350,27 @@ The summary uses the same Netlify AI Gateway client as command mode. Functions r
 | `CALL_SUMMARIES_ENABLED` | `false` | Master switch. Set `true` after deploy |
 | `COMMAND_MODEL` | `gpt-4o-mini` | Summary model on the Netlify AI Gateway |
 
+## Buyer Contract alerts
+
+On unless `CONTRACT_ALERTS_ENABLED=false`. Unset stays on, so a deploy does not need a new env var. When a deal in the Purchase pipeline (id 1) is created in Buyer Contract or moves into it (stage id 14), LoanPilot texts Debra Rose and posts one Follow Up Boss note that @mentions her. No client is texted. Other pipelines are ignored. The stage name `Buyer Contract` counts only when `stageId` is missing.
+
+`dealsCreated` and `dealsUpdated` are not registered yet. Point both at the existing `POST /api/webhooks/fub` URL. The payload is resource ids; LoanPilot loads `GET /v1/deals/:id` and reads `pipelineId`, `stageId`, `stageName`, `enteredStageAt`, `name`, `price`, `people[]`, and `users[]`, plus an address when the deal has one. The 15-minute `loa-reminders` function also checks `GET /v1/deals?pipelineId=1` for a Buyer Contract entry in the last 24 hours, so a missed webhook still alerts once. An edit to a deal that has been in that stage longer than 24 hours does not text. Reminder behavior is unchanged.
+
+One text and one note per deal id per entry. The entry key is `enteredStageAt`, stored in the `loanpilot-contract-alerts` blob (strong consistency, fail closed). A webhook retry or the sweep sees the same entry time and does not send again. A later entry, with a new `enteredStageAt`, can alert once more. If the text or the note fails before it is sent, that claim is released.
+
+The text goes out through Quo from `QUO_FROM_NUMBER` (the Sales line) to `CONTRACT_ALERT_PHONES` (default `+12013946798`). The note uses the same @mention shape as LOA reminders: `data-user-id="32"`, `mentions.user: [32]`, and Debra Rose's name (`CONTRACT_ALERT_USER_ID` / `CONTRACT_ALERT_NAME`).
+
+`LoanPilot: Contract is in! <Lead name> moved to Buyer Contract (Purchase). Deal: <deal name>. Price: <$>. Address: <address>. Agent: <agent>. FUB: https://teamcordeira.followupboss.com/2/people/view/<personId>`
+
+Price, address, and agent are included only when the deal has them. The profile link uses `FUB_PERSON_URL_BASE` (default `https://teamcordeira.followupboss.com/2/people/view`).
+
+| Env | Default | Purpose |
+|---|---|---|
+| `CONTRACT_ALERTS_ENABLED` | on when unset | Set `false` to stop texts and notes |
+| `CONTRACT_ALERT_PHONES` | `+12013946798` | Debra's cell. Comma-separate to add a recipient |
+| `CONTRACT_ALERT_USER_ID` | `32` | Follow Up Boss user @mentioned on the note |
+| `CONTRACT_ALERT_NAME` | `Debra Rose` | Name inside the mention chip |
+
 ## Lead heat (Joseph and Frank)
 
 Scores run in demo mode with no Follow Up Boss key (sample leads on the Hub). With a key, the hourly `score-leads` function and the FUB webhook rescore open people. A heat note is written when the band changes, or at most every 7 days. A task is created only when the band moves up and that person does not already have an open LoanPilot task of the same kind. `peopleUpdated` is ignored so writing the score does not rescore. Set `LEAD_HEAT_WRITES_ENABLED=false` to keep Hub scores and stop Follow Up Boss notes and tasks. Closed, Past Client, and Outside Partner stages are skipped, as is the person named LoanPilot.
@@ -432,7 +453,7 @@ curl -s -H "Authorization: Bearer demo-key" -H "Content-Type: application/json" 
 | `netlify/functions/_shared/` | Classify, AI reply, FUB, Gmail, Neo, Quo, Calendar, pipeline |
 | `netlify/functions/process-inbox.ts` | Cron every 5 minutes |
 | `netlify/functions/score-leads.ts` | Cron hourly — rescore FUB leads |
-| `netlify/functions/loa-reminders.ts` | Cron every 15 minutes — LOA/LO miss reminders, plus the 24-hour call-summary sweep (each off until its own flag) |
+| `netlify/functions/loa-reminders.ts` | Cron every 15 minutes — LOA/LO miss reminders, the 24-hour call-summary sweep, and Buyer Contract alerts |
 | `netlify/functions/calendar-guest.ts` | Cron every 15 minutes — add Frankie to client appointments (off until enabled) |
 | `netlify/functions/whatsapp-autoreply.ts` | Cron every minute — WhatsApp away reply (off until enabled) |
 | `netlify/functions/cordeira-line-alerts.ts` | Cron every minute — Cordeira line missed calls and unanswered texts (off until enabled) |
