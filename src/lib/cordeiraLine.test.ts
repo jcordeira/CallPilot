@@ -1,6 +1,7 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import fubWebhook from '../../netlify/functions/fub-webhook'
 import {
+  cordeiraSmsPhones,
   handleFubCordeiraWebhook,
   ingestFubCall,
   ingestFubText,
@@ -134,6 +135,8 @@ afterEach(() => {
   delete process.env.CORDEIRA_LINE_TEXT_WAIT_MINUTES
   delete process.env.CORDEIRA_LINE_ALERTS_DRY_RUN
   delete process.env.CORDEIRA_LINE_PHONE_ID
+  delete process.env.CORDEIRA_WEEKDAY_PHONES
+  delete process.env.CORDEIRA_WEEKEND_PHONES
   delete process.env.FOLLOW_UP_BOSS_API_KEY
   delete process.env.LOA_REMINDERS_ENABLED
   delete process.env.QUO_API_KEY
@@ -161,14 +164,13 @@ describe('Cordeira line alerts', () => {
       { ...missed, outcome: 'Left Message', duration: 12 },
       { ...fx, now: plus(1) },
     )
-    expect(first.sent).toBe(2)
+    expect(first.sent).toBe(1)
     expect(again.sent).toBe(0)
-    expect(fx.sms.map((item) => item.to)).toEqual([joseph, frankie])
+    expect(fx.sms.map((item) => item.to)).toEqual([frankie])
     expect(fx.sms[0]?.content).toBe(
       'Missed call Ada Buyer thriving-faloodeh-857600.netlify.app/p/99',
     )
     expect(fx.sms[0]?.content).not.toContain('Agent White')
-    expect(fx.sms[1]?.content).toBe(fx.sms[0]?.content)
     expect(fx.notes).toHaveLength(1)
     expect(fx.notes[0]).toMatchObject({
       personId: 99,
@@ -207,11 +209,11 @@ describe('Cordeira line alerts', () => {
     const due = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
     const repeat = await runCordeiraLineAlerts({ ...fx, now: plus(11) })
     expect(early.sent).toBe(0)
-    expect(due.sent).toBe(2)
+    expect(due.sent).toBe(1)
     expect(repeat.sent).toBe(0)
-    expect(fx.sms).toHaveLength(2)
+    expect(fx.sms).toHaveLength(1)
     expect(fx.sms[0]?.content).toBe(`Text unanswered ${client} 10m`)
-    expect(fx.sms[1]?.to).toBe(frankie)
+    expect(fx.sms[0]?.to).toBe(frankie)
     expect(fx.notes).toEqual([])
   })
 
@@ -222,7 +224,7 @@ describe('Cordeira line alerts', () => {
       { ...fx, now: t0 },
     )
     const due = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
-    expect(due.sent).toBe(2)
+    expect(due.sent).toBe(1)
     expect(due.notes).toBe(1)
     expect(fx.sms[0]?.content).toBe(
       'Text unanswered Ada Buyer 10m thriving-faloodeh-857600.netlify.app/p/99',
@@ -236,15 +238,15 @@ describe('Cordeira line alerts', () => {
     await ingestFubText(text({ id: 14, at: t0, incoming: true, contact: client }), { ...fx, now: t0 })
     await ingestFubText(text({ id: 16, at: t0, incoming: true, contact: otherClient }), { ...fx, now: t0 })
     const due = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
-    expect(due.sent).toBe(2)
-    expect(fx.sms).toHaveLength(2)
+    expect(due.sent).toBe(1)
+    expect(fx.sms).toHaveLength(1)
     expect(fx.sms[0]?.content).toBe(
       [
         `Text unanswered ${client} 10m`,
         `Text unanswered ${otherClient} 10m`,
       ].join('\n'),
     )
-    expect(fx.sms[1]?.content).toBe(fx.sms[0]?.content)
+    expect(fx.sms[0]?.to).toBe(frankie)
   })
 
   it('does not double-alert when two runs flush the same due text', async () => {
@@ -254,9 +256,9 @@ describe('Cordeira line alerts', () => {
       runCordeiraLineAlerts({ ...fx, now: plus(10) }),
       runCordeiraLineAlerts({ ...fx, now: plus(10) }),
     ])
-    expect(left.sent + right.sent).toBe(2)
-    expect(fx.sms).toHaveLength(2)
-    expect(new Set(fx.sms.map((item) => item.to))).toEqual(new Set([joseph, frankie]))
+    expect(left.sent + right.sent).toBe(1)
+    expect(fx.sms).toHaveLength(1)
+    expect(fx.sms.map((item) => item.to)).toEqual([frankie])
   })
 
   it('does not double-alert when two workers ingest the same missed call', async () => {
@@ -266,7 +268,8 @@ describe('Cordeira line alerts', () => {
       ingestFubCall(missed, { ...fx, now: t0 }),
       ingestFubCall(missed, { ...fx, now: t0 }),
     ])
-    expect(fx.sms).toHaveLength(2)
+    expect(fx.sms).toHaveLength(1)
+    expect(fx.sms[0]?.to).toBe(frankie)
     expect(fx.notes).toHaveLength(1)
   })
 
@@ -351,7 +354,8 @@ describe('Cordeira line alerts', () => {
     expect(ignored).toMatchObject({ ignored: true })
     expect(matched.sent).toBe(0)
     const due = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
-    expect(due.sent).toBe(2)
+    expect(due.sent).toBe(1)
+    expect(fx.sms[0]?.to).toBe(frankie)
     expect(fx.sms[0]?.content).toContain(client)
   })
 
@@ -364,7 +368,7 @@ describe('Cordeira line alerts', () => {
       { event: 'callsCreated', resourceIds: [18], uri: 'https://api.followupboss.com/v1/calls?id=18' },
       { ...fx, now: t0, loadCall: async (id) => ({ call: { ...missed, id } }) },
     )
-    expect(result.sent).toBe(2)
+    expect(result.sent).toBe(1)
     expect(fx.sms[0]?.content).toContain('Ada Buyer')
 
     const wrapped = await handleFubCordeiraWebhook(
@@ -377,7 +381,7 @@ describe('Cordeira line alerts', () => {
     )
     expect(wrapped.sent).toBe(0)
     const due = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
-    expect(due.sent).toBe(2)
+    expect(due.sent).toBe(1)
     expect(fx.sms.some((item) => item.content.includes(otherClient))).toBe(true)
   })
 
@@ -428,7 +432,7 @@ describe('Cordeira line alerts', () => {
     expect(body.reminders?.skipped).toBe('disabled')
     expect(body.leads).toBeUndefined()
     expect(urls).toContain('https://api.followupboss.com/v1/calls/18181')
-    expect(quoBodies.map((item) => item.to?.[0])).toEqual([joseph, frankie])
+    expect(quoBodies.map((item) => item.to?.[0])).toEqual(cordeiraSmsPhones(at))
     expect(quoBodies[0]?.from).toBe(sales)
     expect(quoBodies[0]?.content).toContain('Missed call Ada Buyer')
   })
@@ -445,9 +449,9 @@ describe('Cordeira line alerts', () => {
     })
     const due = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
     const soon = await runCordeiraLineAlerts({ ...fx, now: plus(11) })
-    expect(due.sent).toBe(2)
+    expect(due.sent).toBe(1)
     expect(soon.sent).toBe(0)
-    expect(fx.sms).toHaveLength(2)
+    expect(fx.sms).toHaveLength(1)
     expect(fx.sms[0]?.content).toBe(
       'Text unanswered Ada Buyer 10m thriving-faloodeh-857600.netlify.app/p/99',
     )
@@ -455,9 +459,9 @@ describe('Cordeira line alerts', () => {
     expect(fx.notes).toHaveLength(1)
     const again = await runCordeiraLineAlerts({ ...fx, now: plus(10 + 4 * 60) })
     const quiet = await runCordeiraLineAlerts({ ...fx, now: plus(10 + 4 * 60 + 1) })
-    expect(again.sent).toBe(2)
+    expect(again.sent).toBe(1)
     expect(quiet.sent).toBe(0)
-    expect(fx.sms).toHaveLength(4)
+    expect(fx.sms).toHaveLength(2)
   })
 
   it('starts a new text stretch after a reply and does not re-alert a closed one', async () => {
@@ -480,8 +484,8 @@ describe('Cordeira line alerts', () => {
     const early = await runCordeiraLineAlerts({ ...fx, now: plus(39) })
     const opened = await runCordeiraLineAlerts({ ...fx, now: plus(40) })
     expect(early.sent).toBe(0)
-    expect(opened.sent).toBe(2)
-    expect(fx.sms).toHaveLength(4)
+    expect(opened.sent).toBe(1)
+    expect(fx.sms).toHaveLength(2)
   })
 
   it('sends one missed-call alert per lead every 4 hours', async () => {
@@ -502,10 +506,51 @@ describe('Cordeira line alerts', () => {
       call({ id: 20, at: plus(4 * 60), contact: client, on: line, personId: 99, outcome: 'No Answer', duration: 0 }),
       { ...fx, now: plus(4 * 60) },
     )
-    expect(first.sent).toBe(2)
+    expect(first.sent).toBe(1)
     expect(second.sent).toBe(0)
-    expect(third.sent).toBe(2)
-    expect(fx.sms).toHaveLength(4)
+    expect(third.sent).toBe(1)
+    expect(fx.sms).toHaveLength(2)
     expect(fx.notes).toHaveLength(2)
+  })
+
+  it('texts Frankie on weekdays and Joe on weekends, including the ET midnight and DST edges', async () => {
+    expect(cordeiraSmsPhones(new Date('2026-10-05T15:00:00.000Z'))).toEqual([frankie])
+    expect(cordeiraSmsPhones(new Date('2026-10-10T03:59:00.000Z'))).toEqual([frankie])
+    expect(cordeiraSmsPhones(new Date('2026-10-10T04:00:00.000Z'))).toEqual([joseph])
+    expect(cordeiraSmsPhones(new Date('2026-10-11T16:00:00.000Z'))).toEqual([joseph])
+    expect(cordeiraSmsPhones(new Date('2026-10-12T03:59:00.000Z'))).toEqual([joseph])
+    expect(cordeiraSmsPhones(new Date('2026-10-12T04:00:00.000Z'))).toEqual([frankie])
+    expect(cordeiraSmsPhones(new Date('2026-11-07T04:59:00.000Z'))).toEqual([frankie])
+    expect(cordeiraSmsPhones(new Date('2026-11-07T05:00:00.000Z'))).toEqual([joseph])
+    expect(cordeiraSmsPhones(new Date('2026-03-08T04:59:00.000Z'))).toEqual([joseph])
+    expect(cordeiraSmsPhones(new Date('2026-03-08T06:30:00.000Z'))).toEqual([joseph])
+    expect(cordeiraSmsPhones(new Date('2026-03-09T04:00:00.000Z'))).toEqual([frankie])
+
+    process.env.CORDEIRA_WEEKDAY_PHONES = '+15555550111, +15555550112'
+    process.env.CORDEIRA_WEEKEND_PHONES = '+15555550113'
+    expect(cordeiraSmsPhones(new Date('2026-10-05T15:00:00.000Z'))).toEqual(['+15555550111', '+15555550112'])
+    expect(cordeiraSmsPhones(new Date('2026-10-10T04:00:00.000Z'))).toEqual(['+15555550113'])
+    delete process.env.CORDEIRA_WEEKDAY_PHONES
+    delete process.env.CORDEIRA_WEEKEND_PHONES
+
+    const saturday = new Date('2026-10-10T16:00:00.000Z')
+    const fx = deps({ findPerson: async () => ({ id: 99, name: 'Ada Buyer' }) })
+    const missed = await ingestFubCall(
+      call({ id: 80, at: saturday, contact: client, on: line, personId: 99, outcome: 'No Answer', duration: 0 }),
+      { ...fx, now: saturday },
+    )
+    expect(missed.sent).toBe(1)
+    expect(fx.sms.map((item) => item.to)).toEqual([joseph])
+    expect(fx.notes[0]?.mentionUserIds).toEqual([1, 16])
+    expect(fx.notes[0]?.body).toContain('Frankie Cordeira')
+    expect(fx.notes[0]?.body).toContain('Joseph Cordeira')
+
+    await ingestFubText(
+      text({ id: 81, at: saturday, incoming: true, contact: otherClient, personId: 99, name: 'Ada Buyer' }),
+      { ...fx, now: saturday },
+    )
+    const textDue = await runCordeiraLineAlerts({ ...fx, now: new Date(saturday.getTime() + 10 * 60 * 1000) })
+    expect(textDue.sent).toBe(1)
+    expect(fx.sms.map((item) => item.to)).toEqual([joseph, joseph])
   })
 })
