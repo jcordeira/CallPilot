@@ -6,6 +6,7 @@ import {
   createHubTask,
   disconnectGoogle,
   fetchHubSummary,
+  fetchSmsUsage,
   fetchLeadHeat,
   fetchCommandPanel,
   fetchReminderPanel,
@@ -24,6 +25,7 @@ import {
   type HubCalendarEvent,
   type HubSummary,
   type HubTask,
+  type SmsUsageStatus,
   type ScoredLead,
 } from '../lib/hubApi'
 import { FubPersonLink, TextWithPerson } from '../components/FubPersonLink'
@@ -127,6 +129,7 @@ export function HubPage() {
   const formId = useId()
   const [searchParams, setSearchParams] = useSearchParams()
   const [summary, setSummary] = useState<HubSummary | null>(null)
+  const [smsUsage, setSmsUsage] = useState<SmsUsageStatus | null>(null)
   const [leads, setLeads] = useState<ScoredLead[]>([])
   const [reminders, setReminders] = useState<ReminderPanel | null>(null)
   const [commands, setCommands] = useState<CommandPanel | null>(null)
@@ -153,7 +156,7 @@ export function HubPage() {
 
   const load = useCallback(async () => {
     try {
-      const [nextSummary, nextActivity, heat, reminderPanel, whatsappPanel, guestPanel, commandPanel] = await Promise.all([
+      const [nextSummary, nextActivity, heat, reminderPanel, whatsappPanel, guestPanel, commandPanel, usage] = await Promise.all([
         fetchHubSummary(),
         fetchActivity(12),
         fetchLeadHeat().catch(() => null),
@@ -161,8 +164,10 @@ export function HubPage() {
         fetchWhatsappPanel().catch(() => null),
         fetchCalendarGuestPanel().catch(() => null),
         fetchCommandPanel().catch(() => null),
+        fetchSmsUsage().catch(() => null),
       ])
       setSummary(nextSummary)
+      setSmsUsage(usage)
       setActivity(nextActivity.items)
       setReminders(reminderPanel && Array.isArray(reminderPanel.recent) ? reminderPanel : null)
       setWhatsapp(whatsappPanel && Array.isArray(whatsappPanel.recent) ? whatsappPanel : null)
@@ -381,6 +386,7 @@ export function HubPage() {
           <p className="hub__lede">
             Upcoming calls, open tasks, and which leads are hot again for Joseph and Frank. Grok still drafts the replies.
           </p>
+          {smsUsage ? <p className="hub__demo">Texts today: {smsUsage.used} / {smsUsage.cap}</p> : null}
           {summary?.google?.connected ? (
             <p className="hub__demo hub__demo--ok">
               Google connected{summary.google.email ? ` as ${summary.google.email}` : ''}

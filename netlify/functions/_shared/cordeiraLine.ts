@@ -1,6 +1,6 @@
 import { env, isDemoMode } from './env'
 import { addNote, findPersonByPhone, fubGetStrict, type FubPerson } from './followupboss'
-import { escapeHtml, normalizePhone, personLink } from './loaReminders'
+import { escapeHtml, normalizePhone, personLink, smsPersonLink } from './loaReminders'
 import { sendSmsIfConfigured } from './quo'
 import { loanOfficer, loanOfficerAssistant } from './team'
 import {
@@ -50,7 +50,7 @@ export type CordeiraPerson = { id: number; name: string }
 
 export type CordeiraDeps = {
   now?: Date
-  sendSms?: (input: { to: string; content: string }) => Promise<{ id: string } | { skipped: 'not_configured' }>
+  sendSms?: (input: { to: string; content: string }) => Promise<{ id: string } | { skipped: 'not_configured' | 'budget' }>
   findPerson?: (phone: string) => Promise<CordeiraPerson | null>
   addNote?: (input: {
     personId: number
@@ -424,11 +424,16 @@ export function alertRecipients(): Recipient[] {
 }
 
 function sentence(kind: 'call' | 'text', who: string): string {
-  if (kind === 'call') return `Missed call from ${who} on Cordeira line`
-  return `Unanswered text from ${who} for ${waitMinutes()} min on Cordeira line`
+  if (kind === 'call') return `Missed call ${who}`
+  return `Text unanswered ${who} ${waitMinutes()}m`
 }
 
 function smsLine(text: string, personId?: number): string {
+  if (!personId) return text
+  return `${text} ${smsPersonLink(personId)}`
+}
+
+function noteLine(text: string, personId?: number): string {
   if (!personId) return text
   return `${text} ${personLink(personId)}`
 }
@@ -587,12 +592,17 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
     const who = person?.name.trim() || item.personName?.trim() || item.contact
     return smsLine(sentence(item.kind, who), person?.id ?? item.personId)
   })
+  const noted = claimed.map((item) => {
+    const person = people.get(item.contact)
+    const who = person?.name.trim() || item.personName?.trim() || item.contact
+    return noteLine(sentence(item.kind, who), person?.id ?? item.personId)
+  })
   const lines: string[] = []
   for (const line of rendered) {
     if (!lines.includes(line)) lines.push(line)
   }
   const body = clip(lines.join('\n'))
-  const send = deps.sendSms ?? sendSmsIfConfigured
+  const send = deps.sendSms ?? ((input: { to: string; content: string }) => sendSmsIfConfigured({ ...input, priority: 'high', truncateStyle: 'fub' }))
   let sent = 0
   for (const recipient of recipients) {
     try {
@@ -609,7 +619,7 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
     const person = people.get(item.contact)
     const personId = person?.id ?? item.personId
     if (!personId || personId <= 0) continue
-    const line = rendered[index] ?? sentence(item.kind, person?.name || item.contact)
+    const line = noted[index] ?? sentence(item.kind, person?.name || item.contact)
     const list = byPerson.get(personId) ?? []
     if (!list.includes(line)) list.push(line)
     byPerson.set(personId, list)

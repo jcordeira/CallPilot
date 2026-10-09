@@ -1,7 +1,7 @@
 import { claimContractAlert, releaseContractAlert } from './contractAlertStore'
 import { env, isDemoMode } from './env'
 import { addNote, fubGetStrict } from './followupboss'
-import { escapeHtml, normalizePhone, personLink } from './loaReminders'
+import { escapeHtml, normalizePhone, personLink, smsPersonLink } from './loaReminders'
 import { sendSmsIfConfigured } from './quo'
 
 /** Purchase pipeline on the teamcordeira account. */
@@ -29,7 +29,7 @@ export type ContractAlertDeps = {
   now?: Date
   loadDeal?: (id: number) => Promise<unknown>
   listDeals?: () => Promise<unknown[]>
-  sendSms?: (input: { to: string; content: string }) => Promise<{ id: string } | { skipped: 'not_configured' }>
+  sendSms?: (input: { to: string; content: string }) => Promise<{ id: string } | { skipped: 'not_configured' | 'budget' }>
   postNote?: (note: ContractNote) => Promise<void>
 }
 
@@ -210,13 +210,13 @@ export function contractAlertMessage(input: {
   const lead = input.leadName.trim() || 'A lead'
   const deal = input.dealName.trim() || 'Purchase deal'
   const parts = [
-    `LoanPilot: Contract is in! ${lead} moved to Buyer Contract (Purchase).`,
-    `Deal: ${deal}.`,
+    `LoanPilot: Contract in. ${lead} moved to Buyer Contract.`,
+    `Deal ${deal}.`,
   ]
-  if (input.priceLabel?.trim()) parts.push(`Price: ${input.priceLabel.trim()}.`)
-  if (input.address?.trim()) parts.push(`Address: ${input.address.trim()}.`)
-  if (input.agentName?.trim()) parts.push(`Agent: ${input.agentName.trim()}.`)
-  if (input.personId) parts.push(`FUB: ${personLink(input.personId)}`)
+  if (input.priceLabel?.trim()) parts.push(`${input.priceLabel.trim()}.`)
+  if (input.address?.trim()) parts.push(`${input.address.trim()}.`)
+  if (input.agentName?.trim()) parts.push(`Agent ${input.agentName.trim()}.`)
+  if (input.personId) parts.push(smsPersonLink(input.personId))
   return parts.join(' ')
 }
 
@@ -277,7 +277,7 @@ export async function notifyBuyerContract(
   })
   const token = entryToken(deal.enteredStageAt)
   const at = now.toISOString()
-  const send = deps.sendSms ?? sendSmsIfConfigured
+  const send = deps.sendSms ?? ((input: { to: string; content: string }) => sendSmsIfConfigured({ ...input, priority: 'high', truncateStyle: 'fub' }))
   const postNote = deps.postNote ?? (async (note: ContractNote) => {
     await addNote(note)
   })
@@ -286,17 +286,21 @@ export async function notifyBuyerContract(
   const smsKey = `sms/${deal.id}/${token}`
   if (await claimContractAlert(smsKey, at)) {
     let failed = false
+    let budgetSkip = false
     for (const phone of contractAlertPhones()) {
       try {
         const result = await send({ to: phone, content: message })
-        if (!('skipped' in result)) sent += 1
+        if ('skipped' in result) {
+          if (result.skipped === 'budget') budgetSkip = true
+        } else sent += 1
       } catch (err) {
         failed = true
         const reason = err instanceof Error && err.message ? err.message : 'sms failed'
         console.log(`[contract-alert] deal ${deal.id} sms failed: ${reason.slice(0, 200)}`)
       }
     }
-    if (sent === 0) await releaseContractAlert(smsKey)
+    if (sent === 0 && budgetSkip) console.log(`[contract-alert] deal ${deal.id} sms skipped, budget`)
+    if (sent === 0 && !budgetSkip) await releaseContractAlert(smsKey)
     else if (failed) console.log(`[contract-alert] deal ${deal.id} kept the sms claim after a partial send`)
   }
 

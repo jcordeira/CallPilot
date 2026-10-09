@@ -121,7 +121,7 @@ export async function processIncomingMessage(
     })
   } else if (!dryRun && message.channel === 'sms' && message.fromPhone) {
     if (!settings.draftOnly) {
-      await sendSms({ to: message.fromPhone, content: ai.replyBody })
+      await sendSms({ to: message.fromPhone, content: ai.replyBody, priority: 'normal', truncateStyle: 'fub' })
     }
   }
 

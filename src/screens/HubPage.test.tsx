@@ -106,6 +106,12 @@ function mockHub() {
     'fetch',
     vi.fn(async (input: RequestInfo | URL) => {
       const url = String(input)
+      if (url.includes('/api/hub/sms-usage')) {
+        return new Response(JSON.stringify({ ok: true, data: { date: '2026-10-09', used: 3, cap: 60, normalCeiling: 48, perRecipientCap: 20, noticeSent: false } }), {
+          status: 200,
+          headers: { 'Content-Type': 'application/json' },
+        })
+      }
       if (url.includes('/api/hub/summary')) {
         return new Response(JSON.stringify(summary), { status: 200, headers: { 'Content-Type': 'application/json' } })
       }
@@ -131,6 +137,7 @@ describe('Hub', () => {
     mockHub()
     renderApp(<App />, { route: '/' })
     expect(await screen.findByRole('heading', { name: 'Hub' })).toBeInTheDocument()
+    expect(await screen.findByText('Texts today: 3 / 60')).toBeInTheDocument()
     expect(await screen.findByRole('link', { name: 'Week' })).toBeInTheDocument()
     const nav = screen.getByRole('navigation', { name: 'Primary' })
     expect(Array.from(nav.querySelectorAll('a')).map((link) => link.textContent)).toEqual([

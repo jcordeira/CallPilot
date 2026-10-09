@@ -104,6 +104,19 @@ export function fetchHubSummary() {
   return hubRequest<HubSummary>('summary')
 }
 
+export type SmsUsageStatus = {
+  date: string
+  used: number
+  cap: number
+  normalCeiling: number
+  perRecipientCap: number
+  noticeSent: boolean
+}
+
+export function fetchSmsUsage() {
+  return hubRequest<SmsUsageStatus>('sms-usage')
+}
+
 export function fetchLeadHeat() {
   return hubRequest<{ leads: ScoredLead[]; demo: boolean }>('leads')
 }

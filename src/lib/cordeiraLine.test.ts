@@ -165,7 +165,7 @@ describe('Cordeira line alerts', () => {
     expect(again.sent).toBe(0)
     expect(fx.sms.map((item) => item.to)).toEqual([joseph, frankie])
     expect(fx.sms[0]?.content).toBe(
-      'Missed call from Ada Buyer on Cordeira line https://teamcordeira.followupboss.com/2/people/view/99',
+      'Missed call Ada Buyer thriving-faloodeh-857600.netlify.app/p/99',
     )
     expect(fx.sms[0]?.content).not.toContain('Agent White')
     expect(fx.sms[1]?.content).toBe(fx.sms[0]?.content)
@@ -180,7 +180,8 @@ describe('Cordeira line alerts', () => {
     expect(fx.notes[0]?.body).toContain('Joseph Cordeira')
     expect(fx.notes[0]?.body).toContain('data-user-id="16"')
     expect(fx.notes[0]?.body).toContain('Frankie Cordeira')
-    expect(fx.notes[0]?.body).toContain('Missed call from Ada Buyer on Cordeira line')
+    expect(fx.notes[0]?.body).toContain('Missed call Ada Buyer')
+    expect(fx.notes[0]?.body).toContain('https://teamcordeira.followupboss.com/2/people/view/99')
   })
 
   it('does not alert when a team text replies within 10 minutes', async () => {
@@ -209,7 +210,7 @@ describe('Cordeira line alerts', () => {
     expect(due.sent).toBe(2)
     expect(repeat.sent).toBe(0)
     expect(fx.sms).toHaveLength(2)
-    expect(fx.sms[0]?.content).toBe(`Unanswered text from ${client} for 10 min on Cordeira line`)
+    expect(fx.sms[0]?.content).toBe(`Text unanswered ${client} 10m`)
     expect(fx.sms[1]?.to).toBe(frankie)
     expect(fx.notes).toEqual([])
   })
@@ -224,7 +225,7 @@ describe('Cordeira line alerts', () => {
     expect(due.sent).toBe(2)
     expect(due.notes).toBe(1)
     expect(fx.sms[0]?.content).toBe(
-      'Unanswered text from Ada Buyer for 10 min on Cordeira line https://teamcordeira.followupboss.com/2/people/view/99',
+      'Text unanswered Ada Buyer 10m thriving-faloodeh-857600.netlify.app/p/99',
     )
     expect(fx.notes[0]?.personId).toBe(99)
     expect(fx.notes[0]?.body).not.toContain('Should Not Lookup')
@@ -239,8 +240,8 @@ describe('Cordeira line alerts', () => {
     expect(fx.sms).toHaveLength(2)
     expect(fx.sms[0]?.content).toBe(
       [
-        `Unanswered text from ${client} for 10 min on Cordeira line`,
-        `Unanswered text from ${otherClient} for 10 min on Cordeira line`,
+        `Text unanswered ${client} 10m`,
+        `Text unanswered ${otherClient} 10m`,
       ].join('\n'),
     )
     expect(fx.sms[1]?.content).toBe(fx.sms[0]?.content)
@@ -429,7 +430,7 @@ describe('Cordeira line alerts', () => {
     expect(urls).toContain('https://api.followupboss.com/v1/calls/18181')
     expect(quoBodies.map((item) => item.to?.[0])).toEqual([joseph, frankie])
     expect(quoBodies[0]?.from).toBe(sales)
-    expect(quoBodies[0]?.content).toContain('Missed call from Ada Buyer on Cordeira line')
+    expect(quoBodies[0]?.content).toContain('Missed call Ada Buyer')
   })
 
   it('alerts once per lead for an unanswered stretch, then again after 4 hours', async () => {
@@ -448,7 +449,7 @@ describe('Cordeira line alerts', () => {
     expect(soon.sent).toBe(0)
     expect(fx.sms).toHaveLength(2)
     expect(fx.sms[0]?.content).toBe(
-      'Unanswered text from Ada Buyer for 10 min on Cordeira line https://teamcordeira.followupboss.com/2/people/view/99',
+      'Text unanswered Ada Buyer 10m thriving-faloodeh-857600.netlify.app/p/99',
     )
     expect(isGsm7(fx.sms[0]?.content ?? '')).toBe(true)
     expect(fx.notes).toHaveLength(1)

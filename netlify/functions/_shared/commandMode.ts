@@ -18,9 +18,9 @@ import {
   loadCommandState,
   saveCommandState,
 } from './commandStore'
-import { sendSmsIfConfigured } from './quo'
+import { countSmsSegments, sendSmsIfConfigured, toGsm7, type SmsSendResult } from './quo'
 import { addDays, formatSlot, formatWhen, openSlots, parseWhen, zonedDate, zonedParts } from './commandTime'
-import { personLink } from './loaReminders'
+import { smsPersonLink } from './loaReminders'
 import { membersForLabel, teamRoster } from './teamRoster'
 
 export type { CommandCall, CommandRole }
@@ -46,7 +46,13 @@ export type CommandEffects = {
   createFubTask: (input: { personId: number; personName: string; title: string; due?: string }) => Promise<void>
   createPersonalTask: (input: { title: string; due?: string }) => Promise<void>
   assignLead: (personId: number, userId: number) => Promise<void>
-  sendSms: (input: { to: string; content: string }) => Promise<void>
+  sendSms: (input: {
+    to: string
+    content: string
+    priority?: 'high' | 'normal'
+    truncate?: 'auto' | 'exempt'
+    truncateStyle?: 'fub' | 'hub'
+  }) => Promise<SmsSendResult | void>
   listEvents: (start: Date, end: Date) => Promise<CalEvent[]>
   createEvent: (input: { summary: string; description?: string; start: Date; end: Date; guests: string[] }) => Promise<{ id: string }>
   moveEvent: (id: string, start: Date, end: Date) => Promise<void>
@@ -200,7 +206,7 @@ function clip(text: string, dryRun: boolean): string {
 /** Append the Follow Up Boss profile and keep it inside the SMS cap. */
 function withProfileLink(text: string, personId: number): string {
   if (!Number.isInteger(personId) || personId <= 0) return text
-  const href = personLink(personId)
+  const href = smsPersonLink(personId)
   const suffix = ` ${href}`
   const clean = text.replace(/[ \t]+\n/g, '\n').trim()
   const budget = 700 - suffix.length
@@ -616,8 +622,15 @@ async function finishPending(
     const body = String(pending.payload.body ?? '')
     const name = String(pending.payload.leadName ?? 'the client')
     if (dryRun) return { reply: clip(`Would text ${name}: ${body}`, true), status: 'preview' }
-    await effects.sendSms({ to: phone, content: body })
-    return { reply: clip(`Texted ${name}.`, false), status: 'done' }
+    const sent = await effects.sendSms({ to: phone, content: body, priority: 'high', truncate: 'exempt' })
+    if (sent && 'skipped' in sent && sent.skipped === 'budget') {
+      return { reply: clip(`Could not text ${name}. Daily text limit hit.`, false), status: 'error' }
+    }
+    const segments = countSmsSegments(toGsm7(body)).segments
+    const max = Number(env('SMS_MAX_SEGMENTS_PER_MESSAGE').trim())
+    const cap = Number.isInteger(max) && max > 0 ? max : 2
+    const warning = segments > cap ? ` That text is ${segments} segments.` : ''
+    return { reply: clip(`Texted ${name}.${warning}`, false), status: 'done' }
   }
   if (call?.intent === 'assign_lead') {
     const leadId = Number(pending.payload.leadId)
@@ -888,9 +901,13 @@ async function defaultEffects(): Promise<CommandEffects> {
     assignLead: async (personId, userId) => {
       await assignPerson(personId, userId)
     },
-    sendSms: async (input) => {
-      await sendSmsIfConfigured(input)
-    },
+    sendSms: async (input) => sendSmsIfConfigured({
+      to: input.to,
+      content: input.content,
+      priority: input.priority ?? 'high',
+      truncate: input.truncate,
+      truncateStyle: input.truncateStyle ?? 'hub',
+    }),
     listEvents: async (start, end) => {
       const { accessToken } = await resolveGoogleAccessToken()
       if (!accessToken) return []
@@ -984,5 +1001,5 @@ async function defaultEffects(): Promise<CommandEffects> {
 
 export async function deliverCommandReply(to: string, reply: string | undefined) {
   if (!reply) return
-  await sendSmsIfConfigured({ to, content: reply })
+  await sendSmsIfConfigured({ to, content: reply, priority: 'high', truncateStyle: 'hub' })
 }
