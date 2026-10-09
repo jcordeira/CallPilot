@@ -198,6 +198,21 @@ describe('command mode', () => {
     expect(result.reply).toBeUndefined()
     expect(fx.sent).toEqual([])
     expect(fx.created).toEqual([])
+
+    const help = await handleCommandMessage({
+      from: client,
+      to: line,
+      body: 'help',
+      messageId: 'm-client-help',
+      now,
+      parse: async () => {
+        throw new Error('should not parse')
+      },
+      effects: fx,
+    })
+    expect(help.ignored).toBe('sender')
+    expect(help.reply).toBeUndefined()
+    expect(fx.sent).toEqual([])
   })
 
   it('asks for YES before cancelling and does not delete in dry run', async () => {

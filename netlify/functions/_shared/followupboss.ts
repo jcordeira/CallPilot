@@ -371,6 +371,31 @@ export async function listPeople(limit = 30): Promise<FubPerson[]> {
   return data.people ?? []
 }
 
+/**
+ * Record a text that Quo already sent. Follow Up Boss stores this as a timeline log.
+ * The textMessages API does not send an SMS.
+ */
+export async function logExternalText(input: {
+  personId: number
+  message: string
+  toNumber: string
+  fromNumber: string
+}): Promise<void> {
+  if (isDemoMode() || !env('FOLLOW_UP_BOSS_API_KEY').trim()) return
+  if (!input.personId || !input.message.trim() || !input.toNumber.trim() || !input.fromNumber.trim()) return
+  await fubFetch('/textMessages', {
+    method: 'POST',
+    body: JSON.stringify({
+      personId: input.personId,
+      message: input.message,
+      toNumber: input.toNumber,
+      fromNumber: input.fromNumber,
+      isIncoming: false,
+      externalLabel: 'LoanPilot',
+    }),
+  })
+}
+
 export async function getPerson(id: number): Promise<FubPerson | null> {
   if (isDemoMode() || !id) return null
   try {
