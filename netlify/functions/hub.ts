@@ -10,6 +10,7 @@ import { getWhatsappPanel, runWhatsappAutoreply } from './_shared/whatsappAutore
 import { getCalendarGuestPanel, runCalendarGuest } from './_shared/calendarGuest'
 import { getCommandCenter, listContactMessages, postCommandCenter, searchMessageLeads, sendHubText } from './_shared/commandCenter'
 import { errorResponse, jsonFail, jsonOk, readJson } from './_shared/http'
+import { getSmsUsage } from './_shared/quo'
 
 export default async (req: Request, context: Context) => {
   const denied = requireHubSession(req)
@@ -18,6 +19,10 @@ export default async (req: Request, context: Context) => {
   const action = context.params?.action ?? url.pathname.split('/').filter(Boolean).pop()
 
   try {
+    if (action === 'sms-usage') {
+      if (req.method !== 'GET') return jsonFail('Method not allowed', 405)
+      return jsonOk(await getSmsUsage())
+    }
     if (action === 'summary') {
       if (req.method !== 'GET') return jsonFail('Method not allowed', 405)
       return jsonOk(await getHubSummary())

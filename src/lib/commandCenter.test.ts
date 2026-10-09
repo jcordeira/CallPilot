@@ -124,7 +124,7 @@ describe('command center', () => {
       },
     })
     expect(sent.pending).toBeNull()
-    expect(fx.sent).toEqual([{ to: siddick.phone, content: 'running late' }])
+    expect(fx.sent).toEqual([{ to: siddick.phone, content: 'running late', priority: 'high', truncate: 'exempt' }])
     expect(sent.reply).toMatch(/Texted Siddick Chowdhury/)
   })
 

@@ -51,7 +51,7 @@ export type WhatsappPanel = {
 }
 
 type SendWhatsapp = (input: { to?: string; recipient?: string; body: string }) => Promise<{ id: string }>
-type SendAlert = (input: { to: string; content: string }) => Promise<{ id: string } | { skipped: 'not_configured' }>
+type SendAlert = (input: { to: string; content: string }) => Promise<{ id: string } | { skipped: 'not_configured' | 'budget' }>
 
 type Rec = Record<string, unknown>
 
@@ -505,7 +505,7 @@ export async function runWhatsappAutoreply(options?: {
 
   const state = await loadWhatsappState()
   const sendWhatsapp = options?.sendWhatsapp ?? sendKapsoText
-  const sendAlert = options?.sendAlert ?? sendSmsIfConfigured
+  const sendAlert = options?.sendAlert ?? ((input: { to: string; content: string }) => sendSmsIfConfigured({ ...input, priority: 'normal', truncateStyle: 'fub' }))
   const listMessages = options?.listMessages ?? (async (input: { phone?: string; conversationId?: string; since: string }) => {
     const rows = await listKapsoMessages(input)
     return rows ?? []
@@ -593,7 +593,7 @@ export async function runWhatsappAutoreply(options?: {
         alertBody = summary
         try {
           const alert = await sendAlert({ to: loPhone, content: summary })
-          if ('skipped' in alert) note = 'Quo alert skipped'
+          if ('skipped' in alert) note = alert.skipped === 'budget' ? 'SMS budget' : 'Quo alert skipped'
         } catch (err) {
           note = err instanceof Error && err.message ? err.message : 'Quo alert failed'
         }

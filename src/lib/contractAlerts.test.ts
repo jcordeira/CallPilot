@@ -25,6 +25,7 @@ const now = new Date('2026-10-08T18:00:00.000Z')
 const entered = '2026-10-08T17:30:00.000Z'
 const debra = '+12013946798'
 const profile = 'https://teamcordeira.followupboss.com/2/people/view/9'
+const smsProfile = 'thriving-faloodeh-857600.netlify.app/p/9'
 
 function buyerContract(overrides: Record<string, unknown> = {}) {
   return {
@@ -107,7 +108,7 @@ describe('Buyer Contract alerts', () => {
       agentName: 'Frankie Cordeira',
     })
     expect(message).toBe(
-      `LoanPilot: Contract is in! Ada Buyer moved to Buyer Contract (Purchase). Deal: 12 Oak Street. Price: $650,000. Address: 12 Oak Street, Garden City, NY. Agent: Frankie Cordeira. FUB: ${profile}`,
+      `LoanPilot: Contract in. Ada Buyer moved to Buyer Contract. Deal 12 Oak Street. $650,000. 12 Oak Street, Garden City, NY. Agent Frankie Cordeira. ${smsProfile}`,
     )
     expect(contractAlertMessage({ leadName: 'Ada Buyer', dealName: '12 Oak Street', personId: 9 })).not.toContain('Price:')
     expect(contractAlertMessage({ leadName: 'Ada Buyer', dealName: '12 Oak Street', personId: 9 })).not.toContain('Address:')
@@ -119,12 +120,12 @@ describe('Buyer Contract alerts', () => {
     const created = await handleFubContractWebhook({ event: 'dealsCreated', resourceIds: [70] }, { ...fx.deps, loadDeal: async () => deal })
     expect(created.sent).toBe(1)
     expect(created.noted).toBe(1)
-    expect(fx.texts).toEqual([{ to: debra, content: expect.stringContaining(`FUB: ${profile}`) }])
-    expect(fx.texts[0]?.content).toContain('Ada Buyer moved to Buyer Contract (Purchase)')
-    expect(fx.texts[0]?.content).toContain('Deal: 12 Oak Street')
-    expect(fx.texts[0]?.content).toContain('Price: $650,000')
-    expect(fx.texts[0]?.content).toContain('Address: 12 Oak Street, Garden City, NY')
-    expect(fx.texts[0]?.content).toContain('Agent: Frankie Cordeira')
+    expect(fx.texts).toEqual([{ to: debra, content: expect.stringContaining(smsProfile) }])
+    expect(fx.texts[0]?.content).toContain('Ada Buyer moved to Buyer Contract')
+    expect(fx.texts[0]?.content).toContain('Deal 12 Oak Street')
+    expect(fx.texts[0]?.content).toContain('$650,000')
+    expect(fx.texts[0]?.content).toContain('12 Oak Street, Garden City, NY')
+    expect(fx.texts[0]?.content).toContain('Agent Frankie Cordeira')
     expect(fx.notes[0]).toMatchObject({
       personId: 9,
       subject: 'LoanPilot — Buyer Contract',
@@ -277,7 +278,7 @@ describe('Buyer Contract alerts', () => {
       expect.objectContaining({
         from: '+15163869773',
         to: [debra],
-        content: expect.stringContaining('Address: 12 Oak Street, Garden City, NY'),
+        content: expect.stringContaining('12 Oak Street, Garden City, NY'),
       }),
     ])
     expect(notes).toHaveLength(1)

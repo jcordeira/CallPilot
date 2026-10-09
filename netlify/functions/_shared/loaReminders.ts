@@ -173,7 +173,7 @@ export type ReminderPanel = {
 }
 
 type PostNote = (input: NotePayload) => Promise<void>
-type SendText = (input: { to: string; content: string }) => Promise<{ id: string } | { skipped: 'not_configured' }>
+type SendText = (input: { to: string; content: string }) => Promise<{ id: string } | { skipped: 'not_configured' | 'budget' }>
 
 export function remindersEnabled(): boolean {
   return env('LOA_REMINDERS_ENABLED', 'false').trim().toLowerCase() === 'true'
@@ -265,6 +265,16 @@ export function mentionNoteHtml(userId: number, name: string, lines: string[]): 
 export function personLink(personId: number): string {
   const base = env('FUB_PERSON_URL_BASE', PERSON_URL_BASE).replace(/\/$/, '')
   return `${base}/${personId}`
+}
+
+/** Host only, no scheme. SMS templates use this so the profile link stays short. */
+export const SMS_DEFAULT_HOST = 'thriving-faloodeh-857600.netlify.app'
+
+export function smsPersonLink(personId: number): string {
+  if (!Number.isInteger(personId) || personId <= 0) return ''
+  const configured = env('SMS_LINK_BASE').trim().replace(/^https?:\/\//i, '').replace(/\/$/, '')
+  const base = configured || SMS_DEFAULT_HOST
+  return `${base}/p/${personId}`
 }
 
 /** Convert a wall-clock time in `timeZone` to UTC. */
@@ -452,7 +462,7 @@ export function collectMissedItems(input: {
       title,
       line: `Overdue task: ${title}${task.dueDate ? ` (due ${task.dueDate.slice(0, 10)})` : ''}`,
       missedAt: missed.toISOString(),
-      href: task.personId && task.personId > 0 ? personLink(task.personId) : undefined,
+      href: task.personId && task.personId > 0 ? smsPersonLink(task.personId) : undefined,
     })
   }
 
@@ -482,7 +492,7 @@ export function collectMissedItems(input: {
           title: 'Unanswered text',
           line: 'Unanswered inbound text',
           missedAt: new Date(at + input.textWindowMinutes * 60_000).toISOString(),
-          href: personLink(personId),
+          href: smsPersonLink(personId),
         })
       }
     }
@@ -502,7 +512,7 @@ export function collectMissedItems(input: {
           title: 'Missed call',
           line: `Missed inbound call (${outcome})`,
           missedAt: new Date(at).toISOString(),
-          href: personLink(personId),
+          href: smsPersonLink(personId),
         })
       }
     }
@@ -531,9 +541,19 @@ export function collectMissedItems(input: {
   return items.sort((a, b) => a.missedAt.localeCompare(b.missedAt) || a.key.localeCompare(b.key))
 }
 
+function smsDetail(item: MissedItem): string {
+  return item.line
+    .replace(/^Overdue task:\s*/i, '')
+    .replace(/^Google Task overdue:\s*/i, '')
+    .replace(/^Missed inbound call\b/i, 'missed call')
+    .replace(/^Unanswered inbound text\b/i, 'text')
+    .replace(/\s+/g, ' ')
+    .trim()
+}
+
 function digestBullet(item: MissedItem): string {
-  const label = item.kind === 'google_task' ? item.line : `${item.personName} - ${item.line}`
-  return `- ${label}${item.href ? ` ${item.href}` : ''}`
+  const label = item.kind === 'google_task' ? smsDetail(item) : `${item.personName} ${smsDetail(item)}`
+  return `${label}${item.href ? ` ${item.href}` : ''}`.replace(/\s+/g, ' ').trim()
 }
 
 function digestFromBullets(name: string, bullets: string[]): string {
@@ -896,7 +916,13 @@ async function flushSmsBacklog(input: {
     const summary = smsBody.split('\n')[0] ?? 'Reminder'
     try {
       const sent = await input.sendText({ to: entry.phone, content: smsBody })
-      if ('skipped' in sent) continue
+      if ('skipped' in sent) {
+        if (sent.skipped === 'budget') {
+          await removeSmsBacklog(entry.userId)
+          console.log(`[loa-reminders] sms budget skip for ${entry.name}`)
+        }
+        continue
+      }
       await removeSmsBacklog(entry.userId)
       input.deliveries.push({
         seatUserId: entry.userId,
@@ -984,7 +1010,7 @@ export async function runLoaReminders(options?: {
   const postNote: PostNote = options?.postNote ?? (async (input) => {
     await addNote(input)
   })
-  const sendText: SendText = options?.sendText ?? (async (input) => sendSmsIfConfigured(input))
+  const sendText: SendText = options?.sendText ?? (async (input) => sendSmsIfConfigured({ ...input, priority: 'normal', truncateStyle: 'fub' }))
 
   const deliveries: Delivery[] = []
   const reminded = { ...state.reminded }
@@ -1133,18 +1159,36 @@ export async function runLoaReminders(options?: {
             try {
               const sent = await sendText({ to: seat.phone, content: smsBody })
               if ('skipped' in sent) {
-                await releaseUnsent()
-                deliveries.push({
-                  seatUserId: seat.userId,
-                  seatName: seat.name,
-                  seatRole: seat.role,
-                  channel: 'sms',
-                  summary: `${summary} (Quo is not configured)`,
-                  itemKeys: keys,
-                  smsBody,
-                  phoneLast4: phoneLast4(seat.phone),
-                  status: 'skipped',
-                })
+                if (sent.skipped === 'budget') {
+                  for (const item of smsFresh) {
+                    if (!seat.fubNote || notedKeys.has(item.key) || !item.personId) reminded[item.key] = at
+                  }
+                  console.log(`[loa-reminders] sms budget skip for ${seat.name}`)
+                  deliveries.push({
+                    seatUserId: seat.userId,
+                    seatName: seat.name,
+                    seatRole: seat.role,
+                    channel: 'sms',
+                    summary: `${summary} (SMS budget)`,
+                    itemKeys: keys,
+                    smsBody,
+                    phoneLast4: phoneLast4(seat.phone),
+                    status: 'skipped',
+                  })
+                } else {
+                  await releaseUnsent()
+                  deliveries.push({
+                    seatUserId: seat.userId,
+                    seatName: seat.name,
+                    seatRole: seat.role,
+                    channel: 'sms',
+                    summary: `${summary} (Quo is not configured)`,
+                    itemKeys: keys,
+                    smsBody,
+                    phoneLast4: phoneLast4(seat.phone),
+                    status: 'skipped',
+                  })
+                }
               } else {
                 for (const item of smsFresh) {
                   if (!seat.fubNote || notedKeys.has(item.key) || !item.personId) reminded[item.key] = at

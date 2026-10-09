@@ -254,8 +254,17 @@ export async function sendHubText(input: {
   } else {
     return { sent: false, error: 'Pick a team member or a lead.' }
   }
-  const result = await sendSmsIfConfigured({ to: phone, content })
-  if ('skipped' in result) return { sent: false, error: 'Quo is not configured.' }
+  const result = await sendSmsIfConfigured({
+    to: phone,
+    content,
+    priority: 'high',
+    truncate: input.kind === 'lead' ? 'exempt' : 'auto',
+    truncateStyle: 'hub',
+  })
+  if ('skipped' in result) {
+    if (result.skipped === 'budget') return { sent: false, error: 'Daily text limit reached.' }
+    return { sent: false, error: 'Quo is not configured.' }
+  }
   const sent = await loadTexts()
   await saveTexts([
     { id: result.id, at: new Date().toISOString(), phone, name, direction: 'out', text: content },

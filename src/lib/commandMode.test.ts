@@ -257,6 +257,35 @@ describe('command mode', () => {
     expect(fx.sent).toEqual([])
   })
 
+  it('warns when a client text the user asked to send is over 2 segments', async () => {
+    process.env.COMMAND_MODE_DRY_RUN = 'false'
+    const fx = effects()
+    const body = 'x'.repeat(400)
+    await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'text Siddick: long',
+      messageId: 'm-long-text',
+      now,
+      parse: async () => ({ name: 'text_client', arguments: { clientName: 'Siddick Chowdhury', body } }),
+      effects: fx,
+    })
+    const yes = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'YES',
+      messageId: 'm-long-text-yes',
+      now: new Date(now.getTime() + 60_000),
+      parse: async () => {
+        throw new Error('pending')
+      },
+      effects: fx,
+    })
+    expect(fx.sent[0]?.content).toBe(body)
+    expect(yes.reply).toContain('Texted Siddick Chowdhury.')
+    expect(yes.reply).toContain('3 segments')
+  })
+
   it('resolves an ambiguous lead from a numbered reply', async () => {
     const people: LeadHit[] = [
       { id: 1, name: 'Siddick Chowdhury', phone: '+15165551001' },
@@ -291,11 +320,11 @@ describe('command mode', () => {
     expect(picked.reply).not.toContain('|')
     expect(isGsm7((picked.reply ?? '').replace(/^\[preview\] /, ''))).toBe(true)
     expect(picked.reply).toContain('Pre-approval')
-    expect(picked.reply).toContain('https://teamcordeira.followupboss.com/2/people/view/42')
+    expect(picked.reply).toContain('thriving-faloodeh-857600.netlify.app/p/42')
   })
 
   it('keeps the Follow Up Boss link whole on a long lead brief', async () => {
-    const href = 'https://teamcordeira.followupboss.com/2/people/view/42'
+    const href = 'thriving-faloodeh-857600.netlify.app/p/42'
     const fx = effects({
       leadDetail: async () => ({ lead: siddick, tasks: ['Call back'], notes: ['x'.repeat(900)] }),
     })
