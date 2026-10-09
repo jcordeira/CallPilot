@@ -1,3 +1,4 @@
+import { zonedParts } from './commandTime'
 import { env, isDemoMode } from './env'
 import { addNote, findPersonByPhone, fubGetStrict, type FubPerson } from './followupboss'
 import { escapeHtml, normalizePhone, personLink, smsPersonLink } from './loaReminders'
@@ -17,6 +18,9 @@ import {
 
 const DEFAULT_LINE = '+15163094960'
 const DEFAULT_WAIT_MINUTES = 10
+const DEFAULT_WEEKDAY_PHONE = '+16315126480'
+const DEFAULT_WEEKEND_PHONE = '+15169969070'
+const SMS_TIME_ZONE = 'America/New_York'
 const MAX_AGE_MS = 24 * 60 * 60 * 1000
 const FOUR_H_MS = 4 * 60 * 60 * 1000
 const SMS_CAP = 700
@@ -423,6 +427,35 @@ export function alertRecipients(): Recipient[] {
   return people
 }
 
+function defaultWeekdayPhone(): string {
+  const loa = loanOfficerAssistant()
+  const phone = loa.userId
+    ? normalizePhone(env(`FUB_LOA_PHONE_${loa.userId}`)) ?? normalizePhone(env('FUB_LOA_PHONE'))
+    : normalizePhone(env('FUB_LOA_PHONE'))
+  return phone ?? DEFAULT_WEEKDAY_PHONE
+}
+
+function defaultWeekendPhone(): string {
+  return normalizePhone(env('FUB_LO_PHONE')) ?? DEFAULT_WEEKEND_PHONE
+}
+
+function phonesFrom(key: string, fallback: string): string[] {
+  const raw = env(key).trim()
+  const phones: string[] = []
+  for (const part of (raw || fallback).split(/[,;\s]+/)) {
+    const phone = normalizePhone(part)
+    if (phone && !phones.includes(phone)) phones.push(phone)
+  }
+  return phones
+}
+
+/** Monday–Friday texts the weekday list. Saturday and Sunday text the weekend list. */
+export function cordeiraSmsPhones(now: Date): string[] {
+  const weekday = zonedParts(now, SMS_TIME_ZONE).weekday
+  const weekend = weekday === 0 || weekday === 6
+  return phonesFrom(weekend ? 'CORDEIRA_WEEKEND_PHONES' : 'CORDEIRA_WEEKDAY_PHONES', weekend ? defaultWeekendPhone() : defaultWeekdayPhone())
+}
+
 function sentence(kind: 'call' | 'text', who: string): string {
   if (kind === 'call') return `Missed call ${who}`
   return `Text unanswered ${who} ${waitMinutes()}m`
@@ -604,9 +637,9 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
   const body = clip(lines.join('\n'))
   const send = deps.sendSms ?? ((input: { to: string; content: string }) => sendSmsIfConfigured({ ...input, priority: 'high', truncateStyle: 'fub' }))
   let sent = 0
-  for (const recipient of recipients) {
+  for (const phone of cordeiraSmsPhones(now)) {
     try {
-      const result = await send({ to: recipient.phone, content: body })
+      const result = await send({ to: phone, content: body })
       if (!('skipped' in result)) sent += 1
     } catch {
       /* item is already claimed; do not retry */
