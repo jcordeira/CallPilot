@@ -14,7 +14,7 @@ import {
   type ReminderSource,
 } from '../../netlify/functions/_shared/loaReminders'
 import { resetReminderStateForTests } from '../../netlify/functions/_shared/loaReminderStore'
-import { sendSmsIfConfigured } from '../../netlify/functions/_shared/quo'
+import { QuoSmsError, resetQuoForTests, sendSmsIfConfigured } from '../../netlify/functions/_shared/quo'
 import { followUpPlan } from '../../netlify/functions/_shared/team'
 
 const now = new Date('2026-10-02T15:00:00.000Z')
@@ -118,12 +118,14 @@ function source(): ReminderSource {
 }
 
 beforeEach(async () => {
+  resetQuoForTests()
   await resetReminderStateForTests()
   reminderEnv()
 })
 
 afterEach(async () => {
   clearReminderEnv()
+  resetQuoForTests()
   await resetReminderStateForTests()
   vi.unstubAllGlobals()
 })
@@ -239,7 +241,7 @@ describe('miss detection', () => {
     expect(sms.length).toBeLessThanOrEqual(640)
     expect(sms).toContain(href)
     expect(sms).not.toMatch(/https:\/\/teamcordeira\.followupboss\.com\/2\/people\/view\/10[^0\s]/)
-    expect(clipSms(`${href}\n${'x'.repeat(700)}`)).toBe(`${href}…`)
+    expect(clipSms(`${href}\n${'x'.repeat(700)}`)).toBe(`${href}...`)
   })
 })
 
@@ -411,6 +413,84 @@ describe('runLoaReminders', () => {
     expect(fetchMock).not.toHaveBeenCalled()
     expect(notes).toHaveLength(1)
     expect(result.deliveries.some((delivery) => delivery.channel === 'sms' && delivery.status === 'skipped')).toBe(true)
+  })
+
+  it('holds a 402 backlog and sends one digest per person when Quo resumes', async () => {
+    const notes: NotePayload[] = []
+    const texts: { to: string; content: string }[] = []
+    let calls = 0
+    const sendText = async (input: { to: string; content: string }) => {
+      calls += 1
+      texts.push(input)
+      if (calls === 1) throw new QuoSmsError(402, 'payment required')
+      return { id: 'sms-later' }
+    }
+    const base = {
+      people: [{ id: 100, name: 'Alex Buyer', assignedUserId: 16 }],
+      texts: [],
+      calls: [],
+      googleTasks: [],
+    }
+    const first = await runLoaReminders({
+      now,
+      trigger: 'test',
+      source: {
+        ...base,
+        tasks: [{ id: 1, name: 'Follow up', isCompleted: 0, dueDate: '2026-10-01', personId: 100, assignedUserId: 16 }],
+      },
+      postNote: async (input) => {
+        notes.push(input)
+      },
+      sendText,
+    })
+    expect(notes).toHaveLength(1)
+    expect(notes[0]?.body).toContain('Overdue task: Follow up')
+    expect(first.deliveries.some((delivery) => delivery.channel === 'sms' && delivery.status === 'skipped')).toBe(true)
+    expect(calls).toBe(1)
+
+    const during = new Date(now.getTime() + 15 * 60 * 1000)
+    await runLoaReminders({
+      now: during,
+      trigger: 'test',
+      source: {
+        ...base,
+        tasks: [
+          { id: 1, name: 'Follow up', isCompleted: 0, dueDate: '2026-10-01', personId: 100, assignedUserId: 16 },
+          { id: 2, name: 'Order appraisal', isCompleted: 0, dueDate: '2026-10-01', personId: 100, assignedUserId: 16 },
+        ],
+      },
+      postNote: async (input) => {
+        notes.push(input)
+      },
+      sendText,
+    })
+    expect(calls).toBe(1)
+    expect(notes).toHaveLength(2)
+    expect(notes[1]?.body).toContain('Overdue task: Order appraisal')
+
+    const resumed = new Date(now.getTime() + 31 * 60 * 1000)
+    await runLoaReminders({
+      now: resumed,
+      trigger: 'test',
+      source: {
+        ...base,
+        tasks: [
+          { id: 1, name: 'Follow up', isCompleted: 0, dueDate: '2026-10-01', personId: 100, assignedUserId: 16 },
+          { id: 2, name: 'Order appraisal', isCompleted: 0, dueDate: '2026-10-01', personId: 100, assignedUserId: 16 },
+        ],
+      },
+      postNote: async (input) => {
+        notes.push(input)
+      },
+      sendText,
+    })
+    expect(calls).toBe(2)
+    expect(notes).toHaveLength(2)
+    const digest = texts[1]?.content ?? ''
+    expect(digest).toContain('2 items need you')
+    expect(digest).toContain('Alex Buyer - Overdue task: Follow up')
+    expect(digest).toContain('Alex Buyer - Overdue task: Order appraisal')
+    expect(digest).not.toContain('—')
   })
 
   it('does not call Quo from the demo SMS helper', async () => {

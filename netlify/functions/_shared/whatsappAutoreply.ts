@@ -1,7 +1,7 @@
 import { env, isDemoMode } from './env'
 import { kapsoConfigured, listKapsoMessages, sendKapsoText, type KapsoListedMessage } from './kapso'
 import { normalizePhone } from './loaReminders'
-import { sendSmsIfConfigured } from './quo'
+import { sendSmsIfConfigured, toGsm7 } from './quo'
 import { commandBusyUntil } from './commandStore'
 import {
   claimAutoreplySend,
@@ -283,12 +283,13 @@ function collectEvents(body: unknown, event: string): { event: string; payload: 
 }
 
 function clip(text: string): string {
-  const flat = text.replace(/\s+/g, ' ').trim()
-  return flat.length > 80 ? `${flat.slice(0, 77)}…` : flat
+  const flat = toGsm7(text).replace(/\s+/g, ' ').trim()
+  const ellipsis = '...'
+  return flat.length > 80 ? `${flat.slice(0, 80 - ellipsis.length)}${ellipsis}` : flat
 }
 
 export function whatsappAlert(label: string, minutes: number, snippet: string): string {
-  return `LoanPilot: WhatsApp from ${label}, no reply in ${minutes} min, auto-replied. '${clip(snippet)}'`
+  return toGsm7(`LoanPilot: WhatsApp from ${label}, no reply in ${minutes} min, auto-replied. '${clip(snippet)}'`)
 }
 
 function pushLog(state: WhatsappState, log: WhatsappLog) {

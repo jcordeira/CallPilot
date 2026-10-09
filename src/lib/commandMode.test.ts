@@ -3,13 +3,16 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { calendarCanReadFreeBusy, calendarCanWriteEvents } from '../../netlify/functions/_shared/googleAuth'
 import { commandClient, commandFromToolCall, commandModel, GATEWAY_COMMAND_MODEL, intentsForRole, parseCommand, probeCommandGateway, toolSchema } from '../../netlify/functions/_shared/commandParse'
 import {
+  commandHelpText,
   fubMentionNote,
   handleCommandMessage,
+  isAutoResponder,
   matchLeads,
   type CommandEffects,
   type LeadHit,
 } from '../../netlify/functions/_shared/commandMode'
 import { resetCommandStateForTests } from '../../netlify/functions/_shared/commandStore'
+import { isGsm7 } from '../../netlify/functions/_shared/quo'
 import { teamRoster } from '../../netlify/functions/_shared/teamRoster'
 import { parseWhen } from '../../netlify/functions/_shared/commandTime'
 import { verifyQuoWebhook } from '../../netlify/functions/_shared/quoSignature'
@@ -283,7 +286,10 @@ describe('command mode', () => {
       },
       effects: fx,
     })
-    expect(picked.reply).toContain('[preview] Siddick Chowdhury')
+    expect(picked.reply).toContain('[preview] Siddick Chowdhury - Pre-approval')
+    expect(picked.reply).not.toContain('—')
+    expect(picked.reply).not.toContain('|')
+    expect(isGsm7((picked.reply ?? '').replace(/^\[preview\] /, ''))).toBe(true)
     expect(picked.reply).toContain('Pre-approval')
     expect(picked.reply).toContain('https://teamcordeira.followupboss.com/2/people/view/42')
   })
@@ -723,6 +729,75 @@ describe('command mode gateway', () => {
     delete process.env.OPENAI_API_KEY
   })
 
+  it('ignores team auto-replies and does not answer with help', async () => {
+    const fx = effects()
+    const meeting = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'Hi sorry in a meeting, I will call you back.',
+      messageId: 'm-meeting',
+      now,
+      parse: async () => {
+        throw new Error('should not parse an auto-reply')
+      },
+      effects: fx,
+    })
+    expect(meeting.ignored).toBe('auto-reply')
+    expect(meeting.reply).toBeUndefined()
+    const focus = await handleCommandMessage({
+      from: frankie,
+      to: line,
+      body: '(I\'m not receiving notifications. If this is urgent, reply "urgent" to notify me.)',
+      messageId: 'm-focus',
+      now,
+      parse: async () => {
+        throw new Error('should not parse an auto-reply')
+      },
+      effects: fx,
+    })
+    expect(focus.ignored).toBe('auto-reply')
+    expect(isAutoResponder('This is an automatic reply from my phone.')).toBe(true)
+    expect(fx.sent).toEqual([])
+  })
+
+  it('sends the one-segment help menu once per sender per 12 hours', async () => {
+    const fx = effects()
+    expect(commandHelpText('owner').length).toBeLessThanOrEqual(160)
+    expect(commandHelpText('team').length).toBeLessThanOrEqual(160)
+    const parse = async () => ({ name: 'help' as const, arguments: {} })
+    const first = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'help',
+      messageId: 'm-help-1',
+      now,
+      parse,
+      effects: fx,
+    })
+    expect(first.reply).toBe(`[preview] ${commandHelpText('owner')}`)
+    const second = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'help',
+      messageId: 'm-help-2',
+      now: new Date(now.getTime() + 60_000),
+      parse,
+      effects: fx,
+    })
+    expect(second.ignored).toBe('help-limit')
+    expect(second.reply).toBeUndefined()
+    const later = await handleCommandMessage({
+      from: joseph,
+      to: line,
+      body: 'help',
+      messageId: 'm-help-3',
+      now: new Date(now.getTime() + 12 * 60 * 60 * 1000 + 1000),
+      parse,
+      effects: fx,
+    })
+    expect(later.reply).toBe(`[preview] ${commandHelpText('owner')}`)
+  })
+
   it('texts the allowlisted sender when parsing fails', async () => {
     process.env.COMMAND_MODE_DRY_RUN = 'false'
     const fx = effects()
@@ -804,6 +879,56 @@ describe('quo webhook endpoint', () => {
     const body = await res.json() as { acted: boolean }
     expect(body.acted).toBe(true)
     expect(posts.some((post) => post.url.includes('/messages') && post.body.includes("Sorry, I couldn't process that"))).toBe(true)
+    delete process.env.QUO_API_KEY
+    delete process.env.FOLLOW_UP_BOSS_API_KEY
+    process.env.ASSISTANT_DEMO_MODE = 'true'
+    process.env.COMMAND_MODE_DRY_RUN = 'true'
+  })
+
+  it('claims a Quo message once and acknowledges before a slow reply when waitUntil is available', async () => {
+    process.env.COMMAND_MODE_DRY_RUN = 'false'
+    process.env.ASSISTANT_DEMO_MODE = 'false'
+    process.env.FOLLOW_UP_BOSS_API_KEY = 'fub-test'
+    process.env.QUO_API_KEY = 'quo-test'
+    delete process.env.OPENAI_API_KEY
+    delete process.env.OPENAI_BASE_URL
+    delete process.env.OPENROUTER_API_KEY
+    delete process.env.NETLIFY_AI_GATEWAY_BASE_URL
+    delete process.env.NETLIFY_AI_GATEWAY_KEY
+    const secret = `whsec_${Buffer.from('supersecretkey1').toString('base64')}`
+    process.env.QUO_WEBHOOK_SECRET = secret
+    const raw = JSON.stringify({
+      type: 'message.received',
+      data: { object: { id: 'msg-once', from: joseph, to: line, direction: 'incoming', body: 'book someone tomorrow' } },
+    })
+    const sign = (webhookId: string) => {
+      const webhookTimestamp = String(Math.floor(Date.now() / 1000))
+      const signature = createHmac('sha256', Buffer.from('supersecretkey1')).update(`${webhookId}.${webhookTimestamp}.${raw}`).digest('base64')
+      return new Request('http://localhost/api/webhooks/quo', {
+        method: 'POST',
+        body: raw,
+        headers: { 'webhook-id': webhookId, 'webhook-timestamp': webhookTimestamp, 'webhook-signature': `v1,${signature}` },
+      })
+    }
+    let release: (value: Response) => void = () => {}
+    const gate = new Promise<Response>((resolve) => {
+      release = resolve
+    })
+    vi.stubGlobal('fetch', vi.fn(() => gate))
+    const pending: Promise<unknown>[] = []
+    const accepted = await handler(sign('wh_wait'), {
+      waitUntil(promise: Promise<unknown>) {
+        pending.push(promise)
+      },
+    } as Parameters<typeof handler>[1])
+    expect(accepted.status).toBe(200)
+    expect(await accepted.json()).toEqual({ ok: true, accepted: true })
+    expect(pending).toHaveLength(1)
+    const duplicate = await handler(sign('wh_dup'))
+    expect(await duplicate.json()).toMatchObject({ ignored: 'duplicate' })
+    release(new Response(JSON.stringify({ id: 'sms-1' }), { status: 200 }))
+    await Promise.all(pending)
+    expect(fetch).toHaveBeenCalledTimes(1)
     delete process.env.QUO_API_KEY
     delete process.env.FOLLOW_UP_BOSS_API_KEY
     process.env.ASSISTANT_DEMO_MODE = 'true'

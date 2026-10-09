@@ -1,8 +1,8 @@
 import { listGoogleTasks } from './calendar'
 import { env, isDemoMode } from './env'
 import { addNote, fubGet } from './followupboss'
-import { claimReminderItem, claimReminderItems, loadReminderState, releaseReminderItem, saveReminderState, type ReminderLog, type ReminderState } from './loaReminderStore'
-import { sendSmsIfConfigured } from './quo'
+import { claimReminderItem, claimReminderItems, listSmsBacklog, loadReminderState, mergeSmsBacklog, releaseReminderItem, removeSmsBacklog, saveReminderState, type ReminderLog, type ReminderState } from './loaReminderStore'
+import { isQuoPaymentBlock, noteQuoPaymentFailure, quoSmsPaused, sendSmsIfConfigured } from './quo'
 import { loanOfficer, loanOfficerAssistant } from './team'
 
 /**
@@ -531,26 +531,38 @@ export function collectMissedItems(input: {
   return items.sort((a, b) => a.missedAt.localeCompare(b.missedAt) || a.key.localeCompare(b.key))
 }
 
+function digestBullet(item: MissedItem): string {
+  const label = item.kind === 'google_task' ? item.line : `${item.personName} - ${item.line}`
+  return `- ${label}${item.href ? ` ${item.href}` : ''}`
+}
+
+function digestFromBullets(name: string, bullets: string[]): string {
+  const unique = [...new Set(bullets)]
+  const count = unique.length
+  const header = `LoanPilot: ${name}, ${count} ${count === 1 ? 'item needs' : 'items need'} you.`
+  const shown = unique.slice(0, 8)
+  const hidden = unique.length - shown.length
+  const more = hidden > 0 ? `\n+ ${hidden} more` : ''
+  return clipSms([header, ...shown].join('\n') + more)
+}
+
 export function digestSms(name: string, items: MissedItem[]): string {
   const count = items.length
   const header = `LoanPilot: ${name}, ${count} ${count === 1 ? 'item needs' : 'items need'} you.`
   const shown = items.slice(0, 8)
-  const lines = shown.map((item) => {
-    const label = item.kind === 'google_task' ? item.line : `${item.personName} — ${item.line}`
-    return `- ${label}${item.href ? ` ${item.href}` : ''}`
-  })
   const hidden = items.length - shown.length
   const more = hidden > 0 ? `\n+ ${hidden} more` : ''
-  return clipSms([header, ...lines].join('\n') + more)
+  return clipSms([header, ...shown.map(digestBullet)].join('\n') + more)
 }
 
 /** Keep Follow Up Boss links whole. Drop the last line instead of cutting a URL in half. */
 export function clipSms(body: string, limit = 640): string {
   if (body.length <= limit) return body
-  const budget = Math.max(1, limit - 1)
+  const ellipsis = '...'
+  const budget = Math.max(1, limit - ellipsis.length)
   const cut = body.lastIndexOf('\n', budget)
   const clipped = (cut > 40 ? body.slice(0, cut) : body.slice(0, budget)).trimEnd()
-  return `${clipped}…`
+  return `${clipped}${ellipsis}`
 }
 
 type NoteGroup = { personId: number; items: MissedItem[] }
@@ -853,6 +865,59 @@ function smsDigestKey(userId: number, now: Date, itemKeys: string[]): string {
   return `sms-digest:${userId}:${reminderWindowId(now)}:${[...itemKeys].sort().join('|')}`
 }
 
+async function holdDigest(input: {
+  seat: ReminderSeat
+  items: MissedItem[]
+  at: string
+  reminded: Record<string, string>
+}): Promise<void> {
+  if (!input.seat.phone) return
+  await mergeSmsBacklog({
+    userId: input.seat.userId,
+    phone: input.seat.phone,
+    name: input.seat.name,
+    role: input.seat.role,
+    bullets: input.items.map(digestBullet),
+    itemKeys: input.items.map((item) => item.key),
+    at: input.at,
+  })
+  for (const item of input.items) input.reminded[item.key] = input.at
+}
+
+async function flushSmsBacklog(input: {
+  sendText: SendText
+  now: Date
+  deliveries: Delivery[]
+}): Promise<void> {
+  const held = await listSmsBacklog()
+  for (const entry of held) {
+    if (await quoSmsPaused(input.now)) return
+    const smsBody = digestFromBullets(entry.name, entry.bullets)
+    const summary = smsBody.split('\n')[0] ?? 'Reminder'
+    try {
+      const sent = await input.sendText({ to: entry.phone, content: smsBody })
+      if ('skipped' in sent) continue
+      await removeSmsBacklog(entry.userId)
+      input.deliveries.push({
+        seatUserId: entry.userId,
+        seatName: entry.name,
+        seatRole: entry.role,
+        channel: 'sms',
+        summary,
+        itemKeys: entry.itemKeys,
+        smsBody,
+        phoneLast4: phoneLast4(entry.phone),
+        status: 'sent',
+      })
+    } catch (err) {
+      if (isQuoPaymentBlock(err)) {
+        await noteQuoPaymentFailure(input.now)
+        return
+      }
+    }
+  }
+}
+
 export async function runLoaReminders(options?: {
   now?: Date
   trigger?: string
@@ -925,6 +990,10 @@ export async function runLoaReminders(options?: {
   const reminded = { ...state.reminded }
   let deferred = 0
   const logs: ReminderLog[] = []
+
+  if (!dryRun && !(await quoSmsPaused(now))) {
+    await flushSmsBacklog({ sendText, now, deliveries })
+  }
 
   for (const seat of seats) {
     const grouped = groupForSeat(items, seat, settingsNow.maxNotes)
@@ -1047,6 +1116,19 @@ export async function runLoaReminders(options?: {
               smsBody,
               status: 'skipped',
             })
+          } else if (await quoSmsPaused(now)) {
+            await holdDigest({ seat, items: smsFresh, at, reminded })
+            deliveries.push({
+              seatUserId: seat.userId,
+              seatName: seat.name,
+              seatRole: seat.role,
+              channel: 'sms',
+              summary: `${summary} (Quo backoff)`,
+              itemKeys: keys,
+              smsBody,
+              phoneLast4: phoneLast4(seat.phone),
+              status: 'skipped',
+            })
           } else {
             try {
               const sent = await sendText({ to: seat.phone, content: smsBody })
@@ -1080,20 +1162,37 @@ export async function runLoaReminders(options?: {
                 })
               }
             } catch (err) {
-              await releaseUnsent()
-              const error = err instanceof Error && err.message ? err.message : 'SMS failed'
-              deliveries.push({
-                seatUserId: seat.userId,
-                seatName: seat.name,
-                seatRole: seat.role,
-                channel: 'sms',
-                summary,
-                itemKeys: keys,
-                smsBody,
-                phoneLast4: phoneLast4(seat.phone),
-                status: 'error',
-                error,
-              })
+              if (isQuoPaymentBlock(err)) {
+                await noteQuoPaymentFailure(now)
+                await holdDigest({ seat, items: smsFresh, at, reminded })
+                deliveries.push({
+                  seatUserId: seat.userId,
+                  seatName: seat.name,
+                  seatRole: seat.role,
+                  channel: 'sms',
+                  summary: `${summary} (Quo backoff)`,
+                  itemKeys: keys,
+                  smsBody,
+                  phoneLast4: phoneLast4(seat.phone),
+                  status: 'skipped',
+                  error: err instanceof Error ? err.message : 'Quo payment required',
+                })
+              } else {
+                await releaseUnsent()
+                const error = err instanceof Error && err.message ? err.message : 'SMS failed'
+                deliveries.push({
+                  seatUserId: seat.userId,
+                  seatName: seat.name,
+                  seatRole: seat.role,
+                  channel: 'sms',
+                  summary,
+                  itemKeys: keys,
+                  smsBody,
+                  phoneLast4: phoneLast4(seat.phone),
+                  status: 'error',
+                  error,
+                })
+              }
             }
           }
         }

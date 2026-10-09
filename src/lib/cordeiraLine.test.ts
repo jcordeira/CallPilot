@@ -8,6 +8,7 @@ import {
   type CordeiraDeps,
 } from '../../netlify/functions/_shared/cordeiraLine'
 import { resetCordeiraStateForTests } from '../../netlify/functions/_shared/cordeiraLineStore'
+import { isGsm7 } from '../../netlify/functions/_shared/quo'
 
 const line = '+15163094960'
 const sales = '+15163869773'
@@ -429,5 +430,81 @@ describe('Cordeira line alerts', () => {
     expect(quoBodies.map((item) => item.to?.[0])).toEqual([joseph, frankie])
     expect(quoBodies[0]?.from).toBe(sales)
     expect(quoBodies[0]?.content).toContain('Missed call from Ada Buyer on Cordeira line')
+  })
+
+  it('alerts once per lead for an unanswered stretch, then again after 4 hours', async () => {
+    const fx = deps()
+    await ingestFubText(text({ id: 14, at: t0, incoming: true, contact: client, personId: 99, name: 'Ada Buyer' }), {
+      ...fx,
+      now: t0,
+    })
+    await ingestFubText(text({ id: 15, at: plus(1), incoming: true, contact: otherClient, personId: 99, name: 'Ada Buyer' }), {
+      ...fx,
+      now: plus(1),
+    })
+    const due = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
+    const soon = await runCordeiraLineAlerts({ ...fx, now: plus(11) })
+    expect(due.sent).toBe(2)
+    expect(soon.sent).toBe(0)
+    expect(fx.sms).toHaveLength(2)
+    expect(fx.sms[0]?.content).toBe(
+      'Unanswered text from Ada Buyer for 10 min on Cordeira line https://teamcordeira.followupboss.com/2/people/view/99',
+    )
+    expect(isGsm7(fx.sms[0]?.content ?? '')).toBe(true)
+    expect(fx.notes).toHaveLength(1)
+    const again = await runCordeiraLineAlerts({ ...fx, now: plus(10 + 4 * 60) })
+    const quiet = await runCordeiraLineAlerts({ ...fx, now: plus(10 + 4 * 60 + 1) })
+    expect(again.sent).toBe(2)
+    expect(quiet.sent).toBe(0)
+    expect(fx.sms).toHaveLength(4)
+  })
+
+  it('starts a new text stretch after a reply and does not re-alert a closed one', async () => {
+    const fx = deps()
+    await ingestFubText(text({ id: 14, at: t0, incoming: true, contact: client, personId: 99, name: 'Ada Buyer' }), {
+      ...fx,
+      now: t0,
+    })
+    await runCordeiraLineAlerts({ ...fx, now: plus(10) })
+    await ingestFubText(
+      text({ id: 15, at: plus(20), incoming: false, contact: client, on: sales, personId: 99, name: 'Ada Buyer' }),
+      { ...fx, now: plus(20) },
+    )
+    const closed = await runCordeiraLineAlerts({ ...fx, now: plus(10 + 4 * 60) })
+    expect(closed.sent).toBe(0)
+    await ingestFubText(text({ id: 16, at: plus(30), incoming: true, contact: client, personId: 99, name: 'Ada Buyer' }), {
+      ...fx,
+      now: plus(30),
+    })
+    const early = await runCordeiraLineAlerts({ ...fx, now: plus(39) })
+    const opened = await runCordeiraLineAlerts({ ...fx, now: plus(40) })
+    expect(early.sent).toBe(0)
+    expect(opened.sent).toBe(2)
+    expect(fx.sms).toHaveLength(4)
+  })
+
+  it('sends one missed-call alert per lead every 4 hours', async () => {
+    const fx = deps({ findPerson: async () => ({ id: 99, name: 'Ada Buyer' }) })
+    const first = await ingestFubCall(
+      call({ id: 18, at: t0, contact: client, on: line, personId: 99, outcome: 'No Answer', duration: 0 }),
+      { ...fx, now: t0 },
+    )
+    await ingestFubText(
+      text({ id: 15, at: plus(10), incoming: false, contact: client, on: sales, personId: 99 }),
+      { ...fx, now: plus(10) },
+    )
+    const second = await ingestFubCall(
+      call({ id: 19, at: plus(30), contact: client, on: line, personId: 99, outcome: 'Busy', duration: 0 }),
+      { ...fx, now: plus(30) },
+    )
+    const third = await ingestFubCall(
+      call({ id: 20, at: plus(4 * 60), contact: client, on: line, personId: 99, outcome: 'No Answer', duration: 0 }),
+      { ...fx, now: plus(4 * 60) },
+    )
+    expect(first.sent).toBe(2)
+    expect(second.sent).toBe(0)
+    expect(third.sent).toBe(2)
+    expect(fx.sms).toHaveLength(4)
+    expect(fx.notes).toHaveLength(2)
   })
 })

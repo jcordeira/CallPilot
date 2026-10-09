@@ -8,6 +8,8 @@ export type PendingText = {
   inboundAt: string
   personId?: number
   personName?: string
+  /** Set after an alert goes out. The stretch stays open until someone replies. */
+  alertedAt?: string
 }
 
 export type QueuedCall = {
@@ -23,9 +25,11 @@ export type CordeiraState = {
   pendingTexts: Record<string, PendingText>
   queuedCalls: Record<string, QueuedCall>
   answeredAt: Record<string, string>
+  /** Last missed-call alert per lead. One alert per lead per 4 hours. */
+  lastCallAlert: Record<string, string>
 }
 
-const empty = (): CordeiraState => ({ pendingTexts: {}, queuedCalls: {}, answeredAt: {} })
+const empty = (): CordeiraState => ({ pendingTexts: {}, queuedCalls: {}, answeredAt: {}, lastCallAlert: {} })
 
 let memory: CordeiraState = empty()
 const claims = new Map<string, string>()
@@ -86,6 +90,7 @@ function normalize(raw: unknown): CordeiraState | null {
         inboundAt: item.inboundAt,
         personId: personIdOf(item.personId),
         personName: typeof item.personName === 'string' ? item.personName : undefined,
+        alertedAt: typeof item.alertedAt === 'string' ? item.alertedAt : undefined,
       }
     }
   }
@@ -105,10 +110,17 @@ function normalize(raw: unknown): CordeiraState | null {
       }
     }
   }
+  const byLead: Record<string, PendingText> = {}
+  for (const item of Object.values(pendingTexts)) {
+    const lead = item.personId ? `person:${item.personId}` : item.contact
+    const prev = byLead[lead]
+    if (!prev || item.inboundAt < prev.inboundAt) byLead[lead] = item
+  }
   return {
-    pendingTexts,
+    pendingTexts: byLead,
     queuedCalls,
     answeredAt: stringMap(record.answeredAt),
+    lastCallAlert: stringMap(record.lastCallAlert),
   }
 }
 

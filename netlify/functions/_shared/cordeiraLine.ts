@@ -18,6 +18,7 @@ import {
 const DEFAULT_LINE = '+15163094960'
 const DEFAULT_WAIT_MINUTES = 10
 const MAX_AGE_MS = 24 * 60 * 60 * 1000
+const FOUR_H_MS = 4 * 60 * 60 * 1000
 const SMS_CAP = 700
 
 const MISSED_OUTCOMES = new Set([
@@ -66,12 +67,20 @@ export type CordeiraDeps = {
 
 type DueItem = {
   key: string
+  leadClaim?: string
   kind: 'call' | 'text'
   id: string
   contact: string
   at: string
   personId?: number
   personName?: string
+  lead: string
+  previousAlertedAt?: string
+}
+
+function leadKey(item: { personId?: number; contact: string }): string {
+  if (item.personId && item.personId > 0) return `person:${item.personId}`
+  return item.contact
 }
 
 type Recipient = { phone: string; userId?: number; name: string }
@@ -248,8 +257,10 @@ function applyEvent(event: CordeiraEvent) {
     return
   }
   if (event.kind === 'text-in') {
-    const key = `alert/text/${event.id}`
-    if (claimHeld(key) || state.pendingTexts[event.id]) return
+    const lead = leadKey(event)
+    const existing = state.pendingTexts[lead]
+    if (claimHeld(`alert/text/${event.id}`)) return
+    if (existing && !answeredAfter(existing)) return
     const text: PendingText = {
       id: event.id,
       contact: event.contact,
@@ -258,11 +269,15 @@ function applyEvent(event: CordeiraEvent) {
       personName: event.personName,
     }
     if (answeredAfter(text)) return
-    state.pendingTexts[event.id] = text
+    reserveClaim(`alert/text/${event.id}`, event.at)
+    state.pendingTexts[lead] = text
     return
   }
-  const key = `alert/call/${event.id}`
-  if (claimHeld(key)) return
+  const lead = leadKey(event)
+  const lastCall = state.lastCallAlert[lead]
+  if (lastCall && Date.parse(event.at) < Date.parse(lastCall) + FOUR_H_MS) return
+  if (claimHeld(`alert/call/${event.id}`)) return
+  if (Object.values(state.queuedCalls).some((call) => leadKey(call) === lead)) return
   const call: QueuedCall = {
     id: event.id,
     contact: event.contact,
@@ -277,55 +292,116 @@ function pullDue(now: Date): DueItem[] {
   const state = getCordeiraState()
   const waitMs = waitMinutes() * 60 * 1000
   const items: DueItem[] = []
-  for (const text of Object.values(state.pendingTexts)) {
+  const seenTextLeads = new Set<string>()
+  for (const [key, text] of Object.entries(state.pendingTexts)) {
     const inbound = Date.parse(text.inboundAt)
+    const lead = leadKey(text)
     if (!Number.isFinite(inbound) || now.getTime() - inbound > MAX_AGE_MS || answeredAfter(text)) {
-      delete state.pendingTexts[text.id]
+      delete state.pendingTexts[key]
       continue
     }
-    if (inbound + waitMs > now.getTime()) continue
-    const key = `alert/text/${text.id}`
-    if (!reserveClaim(key, now.toISOString())) {
-      delete state.pendingTexts[text.id]
+    if (seenTextLeads.has(lead)) {
+      delete state.pendingTexts[key]
       continue
     }
-    delete state.pendingTexts[text.id]
+    const alerted = text.alertedAt ? Date.parse(text.alertedAt) : NaN
+    let claimKey: string
+    if (text.alertedAt) {
+      if (!Number.isFinite(alerted) || now.getTime() - alerted < FOUR_H_MS) continue
+      claimKey = `alert/text-lead/${lead}/re/${Math.floor(now.getTime() / FOUR_H_MS)}`
+    } else {
+      if (inbound + waitMs > now.getTime()) continue
+      claimKey = `alert/text-lead/${lead}/${text.inboundAt}`
+    }
+    if (!reserveClaim(claimKey, now.toISOString())) {
+      delete state.pendingTexts[key]
+      continue
+    }
+    seenTextLeads.add(lead)
+    delete state.pendingTexts[key]
     items.push({
-      key,
+      key: claimKey,
       kind: 'text',
       id: text.id,
       contact: text.contact,
       at: text.inboundAt,
       personId: text.personId,
       personName: text.personName,
+      lead,
+      previousAlertedAt: text.alertedAt,
     })
   }
+  const seenCallLeads = new Set<string>()
   for (const call of Object.values(state.queuedCalls)) {
-    const key = `alert/call/${call.id}`
-    if (!reserveClaim(key, now.toISOString())) {
+    const lead = leadKey(call)
+    const idKey = `alert/call/${call.id}`
+    const lastCall = state.lastCallAlert[lead]
+    if (seenCallLeads.has(lead) || (lastCall && now.getTime() < Date.parse(lastCall) + FOUR_H_MS)) {
       delete state.queuedCalls[call.id]
       continue
     }
+    const leadClaim = `alert/call-lead/${lead}/${Math.floor(now.getTime() / FOUR_H_MS)}`
+    if (!reserveClaim(idKey, now.toISOString())) {
+      delete state.queuedCalls[call.id]
+      continue
+    }
+    if (!reserveClaim(leadClaim, now.toISOString())) {
+      releaseClaim(idKey)
+      delete state.queuedCalls[call.id]
+      continue
+    }
+    seenCallLeads.add(lead)
     delete state.queuedCalls[call.id]
     items.push({
-      key,
+      key: idKey,
+      leadClaim,
       kind: 'call',
       id: call.id,
       contact: call.contact,
       at: call.at,
       personId: call.personId,
       personName: call.personName,
+      lead,
     })
   }
   return items
 }
 
-function restoreText(item: DueItem) {
-  releaseClaim(item.key)
-  getCordeiraState().pendingTexts[item.id] = {
+function rememberAlert(item: DueItem, at: string) {
+  const state = getCordeiraState()
+  if (item.kind === 'call') {
+    state.lastCallAlert[item.lead] = at
+    return
+  }
+  state.pendingTexts[item.lead] = {
     id: item.id,
     contact: item.contact,
     inboundAt: item.at,
+    personId: item.personId,
+    personName: item.personName,
+    alertedAt: at,
+  }
+}
+
+function restoreItem(item: DueItem) {
+  releaseClaim(item.key)
+  if (item.leadClaim) releaseClaim(item.leadClaim)
+  const state = getCordeiraState()
+  if (item.kind === 'text') {
+    state.pendingTexts[item.lead] = {
+      id: item.id,
+      contact: item.contact,
+      inboundAt: item.at,
+      personId: item.personId,
+      personName: item.personName,
+      alertedAt: item.previousAlertedAt,
+    }
+    return
+  }
+  state.queuedCalls[item.id] = {
+    id: item.id,
+    contact: item.contact,
+    at: item.at,
     personId: item.personId,
     personName: item.personName,
   }
@@ -358,7 +434,8 @@ function smsLine(text: string, personId?: number): string {
 }
 
 function clip(text: string): string {
-  return text.length > SMS_CAP ? `${text.slice(0, SMS_CAP - 1).trimEnd()}…` : text
+  const ellipsis = '...'
+  return text.length > SMS_CAP ? `${text.slice(0, SMS_CAP - ellipsis.length).trimEnd()}${ellipsis}` : text
 }
 
 function rowsOf(raw: unknown, keys: string[]): Record<string, unknown>[] {
@@ -457,19 +534,7 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
   }
 
   if (dryRun()) {
-    for (const item of due) {
-      releaseClaim(item.key)
-      if (item.kind === 'text') restoreText(item)
-      else {
-        getCordeiraState().queuedCalls[item.id] = {
-          id: item.id,
-          contact: item.contact,
-          at: item.at,
-          personId: item.personId,
-          personName: item.personName,
-        }
-      }
-    }
+    for (const item of due) restoreItem(item)
     await persistCordeiraState()
     return { sent: 0, notes: 0, skipped: 'dry_run' }
   }
@@ -479,10 +544,11 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
     const reply = await replySeen(item, deps)
     if (reply === 'reply') {
       await confirmClaim(item.key, now.toISOString())
+      if (item.leadClaim) await confirmClaim(item.leadClaim, now.toISOString())
       continue
     }
     if (reply === 'unknown') {
-      if (item.kind === 'text') restoreText(item)
+      if (item.kind === 'text') restoreItem(item)
       continue
     }
     ready.push(item)
@@ -494,26 +560,17 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
 
   const recipients = alertRecipients()
   if (!recipients.length) {
-    for (const item of ready) {
-      releaseClaim(item.key)
-      if (item.kind === 'text') restoreText(item)
-      else {
-        getCordeiraState().queuedCalls[item.id] = {
-          id: item.id,
-          contact: item.contact,
-          at: item.at,
-          personId: item.personId,
-          personName: item.personName,
-        }
-      }
-    }
+    for (const item of ready) restoreItem(item)
     await persistCordeiraState()
     return { sent: 0, notes: 0, skipped: 'no_recipients' }
   }
 
   const claimed: DueItem[] = []
   for (const item of ready) {
-    if (await confirmClaim(item.key, now.toISOString())) claimed.push(item)
+    if (!(await confirmClaim(item.key, now.toISOString()))) continue
+    if (item.leadClaim && !(await confirmClaim(item.leadClaim, now.toISOString()))) continue
+    rememberAlert(item, now.toISOString())
+    claimed.push(item)
   }
   if (!claimed.length) {
     await persistCordeiraState()
@@ -525,11 +582,15 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
     if (people.has(item.contact)) continue
     people.set(item.contact, await personFor(item, deps))
   }
-  const lines = claimed.map((item) => {
+  const rendered = claimed.map((item) => {
     const person = people.get(item.contact)
-    const who = person?.name.trim() || item.contact
-    return smsLine(sentence(item.kind, who), person?.id)
+    const who = person?.name.trim() || item.personName?.trim() || item.contact
+    return smsLine(sentence(item.kind, who), person?.id ?? item.personId)
   })
+  const lines: string[] = []
+  for (const line of rendered) {
+    if (!lines.includes(line)) lines.push(line)
+  }
   const body = clip(lines.join('\n'))
   const send = deps.sendSms ?? sendSmsIfConfigured
   let sent = 0
@@ -546,10 +607,12 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
   for (let index = 0; index < claimed.length; index += 1) {
     const item = claimed[index]
     const person = people.get(item.contact)
-    if (!person || person.id <= 0) continue
-    const list = byPerson.get(person.id) ?? []
-    list.push(lines[index] ?? sentence(item.kind, person.name || item.contact))
-    byPerson.set(person.id, list)
+    const personId = person?.id ?? item.personId
+    if (!personId || personId <= 0) continue
+    const line = rendered[index] ?? sentence(item.kind, person?.name || item.contact)
+    const list = byPerson.get(personId) ?? []
+    if (!list.includes(line)) list.push(line)
+    byPerson.set(personId, list)
   }
   const postNote = deps.addNote ?? addNote
   let notes = 0
