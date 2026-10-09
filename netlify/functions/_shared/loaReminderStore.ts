@@ -27,8 +27,18 @@ export type ReminderState = {
 
 const empty = (): ReminderState => ({ reminded: {}, recent: [] })
 
+export type SmsBacklogEntry = {
+  phone: string
+  name: string
+  role: 'lo' | 'loa'
+  bullets: string[]
+  itemKeys: string[]
+  at: string
+}
+
 let memory: ReminderState = empty()
 const claims = new Map<string, string>()
+let smsBacklog: Record<string, SmsBacklogEntry> = {}
 
 function claimKey(key: string): string {
   return `reminded/${key}`
@@ -37,10 +47,12 @@ function claimKey(key: string): string {
 export async function resetReminderStateForTests() {
   memory = empty()
   claims.clear()
+  smsBacklog = {}
   const blob = store()
   if (!blob) return
   try {
     await blob.delete('state')
+    await blob.delete('sms-backlog')
   } catch {
     /* memory is already clear */
   }
@@ -171,4 +183,88 @@ export async function saveReminderState(state: ReminderState): Promise<void> {
   } catch {
     /* memory still holds the merge */
   }
+}
+
+function normalizeBacklog(raw: unknown): Record<string, SmsBacklogEntry> | null {
+  if (!raw || typeof raw !== 'object') return null
+  const out: Record<string, SmsBacklogEntry> = {}
+  for (const [userId, value] of Object.entries(raw)) {
+    if (!/^\d+$/.test(userId) || !value || typeof value !== 'object') continue
+    const item = value as Partial<SmsBacklogEntry>
+    if (typeof item.phone !== 'string' || typeof item.name !== 'string') continue
+    if (item.role !== 'lo' && item.role !== 'loa') continue
+    out[userId] = {
+      phone: item.phone,
+      name: item.name,
+      role: item.role,
+      bullets: Array.isArray(item.bullets) ? item.bullets.filter((line) => typeof line === 'string') : [],
+      itemKeys: Array.isArray(item.itemKeys) ? item.itemKeys.filter((key) => typeof key === 'string') : [],
+      at: typeof item.at === 'string' ? item.at : new Date(0).toISOString(),
+    }
+  }
+  return out
+}
+
+async function loadBacklogMap(): Promise<Record<string, SmsBacklogEntry>> {
+  const blob = store()
+  if (blob) {
+    try {
+      const raw = normalizeBacklog(await blob.get('sms-backlog', { type: 'json', consistency: 'strong' }))
+      if (raw) {
+        for (const [userId, entry] of Object.entries(raw)) {
+          const prev = smsBacklog[userId]
+          smsBacklog[userId] = {
+            phone: entry.phone,
+            name: entry.name,
+            role: entry.role,
+            bullets: [...new Set([...(prev?.bullets ?? []), ...entry.bullets])],
+            itemKeys: [...new Set([...(prev?.itemKeys ?? []), ...entry.itemKeys])],
+            at: entry.at,
+          }
+        }
+      }
+    } catch {
+      /* memory */
+    }
+  }
+  return smsBacklog
+}
+
+async function saveBacklogMap(): Promise<void> {
+  const blob = store()
+  if (!blob) return
+  try {
+    await blob.setJSON('sms-backlog', smsBacklog)
+  } catch {
+    /* memory */
+  }
+}
+
+/** Collapse every held digest for one teammate into a single bullet list. */
+export async function mergeSmsBacklog(entry: SmsBacklogEntry & { userId: number }): Promise<void> {
+  const map = await loadBacklogMap()
+  const key = String(entry.userId)
+  const prev = map[key]
+  map[key] = {
+    phone: entry.phone,
+    name: entry.name,
+    role: entry.role,
+    bullets: [...new Set([...(prev?.bullets ?? []), ...entry.bullets])],
+    itemKeys: [...new Set([...(prev?.itemKeys ?? []), ...entry.itemKeys])],
+    at: entry.at,
+  }
+  smsBacklog = map
+  await saveBacklogMap()
+}
+
+export async function listSmsBacklog(): Promise<(SmsBacklogEntry & { userId: number })[]> {
+  const map = await loadBacklogMap()
+  return Object.entries(map).map(([userId, entry]) => ({ ...entry, userId: Number(userId) }))
+}
+
+export async function removeSmsBacklog(userId: number): Promise<void> {
+  const map = await loadBacklogMap()
+  delete map[String(userId)]
+  smsBacklog = map
+  await saveBacklogMap()
 }

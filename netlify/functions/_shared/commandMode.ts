@@ -2,7 +2,6 @@ import { env, isDemoMode } from './env'
 import { addNote, assignPerson, createTask, fubGet, listOpenFubTasks } from './followupboss'
 import { createCalendarEvent, createGoogleTask } from './calendar'
 import { calendarCanReadFreeBusy, calendarCanWriteEvents, loadGoogleTokens, resolveGoogleAccessToken } from './googleAuth'
-import { sendSmsIfConfigured } from './quo'
 import {
   type CommandCall,
   type CommandRole,
@@ -13,10 +12,13 @@ import {
   type CommandLog,
   type CommandPending,
   type CommandState,
+  claimHelpReply,
+  claimQuoMessage,
   commandBusyUntil,
   loadCommandState,
   saveCommandState,
 } from './commandStore'
+import { sendSmsIfConfigured } from './quo'
 import { addDays, formatSlot, formatWhen, openSlots, parseWhen, zonedDate, zonedParts } from './commandTime'
 import { personLink } from './loaReminders'
 import { membersForLabel, teamRoster } from './teamRoster'
@@ -202,8 +204,19 @@ function withProfileLink(text: string, personId: number): string {
   const suffix = ` ${href}`
   const clean = text.replace(/[ \t]+\n/g, '\n').trim()
   const budget = 700 - suffix.length
-  const body = clean.length > budget ? `${clean.slice(0, Math.max(0, budget - 1)).trimEnd()}…` : clean
+  const ellipsis = '...'
+  const body = clean.length > budget ? `${clean.slice(0, Math.max(0, budget - ellipsis.length)).trimEnd()}${ellipsis}` : clean
   return `${body}${suffix}`
+}
+
+/** iPhone Focus and other automatic replies. Never answer one of these with the help menu. */
+export function isAutoResponder(body: string): boolean {
+  const text = body.toLowerCase().replace(/[’‘]/g, "'")
+  if (text.includes('auto-reply') || text.includes('autoreply') || text.includes('automatic reply')) return true
+  if (text.includes('not receiving notifications')) return true
+  if (/\bi(?:'m| am) in a meeting\b/.test(text)) return true
+  if (text.includes('sorry') && text.includes('in a meeting')) return true
+  return false
 }
 
 function escapeHtml(text: string): string {
@@ -230,14 +243,12 @@ function eventTitle(name: string, topic?: string): string {
   return topicText ? `${name} call ${topicText}` : `${name} call`
 }
 
-function helpText(role: CommandRole): string {
-  const names = teamRoster().map((member) => member.name.split(' ')[0]).filter(Boolean)
-  const list = joinNames(names) || 'the team'
+/** One GSM-7 segment. The Hub has the long form. */
+export function commandHelpText(role: CommandRole): string {
   if (role === 'team') {
-    return 'You can ask: when is Joe free Thursday? book Joe with <name> <time>. brief <name>. note <name>: <text>. task <name>: <text>.'
+    return 'LoanPilot cmds: when is Joe free, book Joe with <name> <time>, brief <name>, note <name>: <text>, task <name>: <text>.'
   }
-  const assignable = joinNames(teamRoster().filter((member) => member.userId).map((member) => member.name.split(' ')[0])) || 'a LOA'
-  return `Commands: book <name> <time> <topic>. book <name> <time> and add ${names.at(-1) ?? 'someone'}. move my 3pm to 4pm. cancel <name> (YES to confirm). text ${list}: <msg>. text the team: <msg>. text <client>: <msg> (YES to send). what's on today. brief <name>. note <name>: <text>. task <name>: <text>. assign <name> to ${assignable} (YES). when am I free. hold calls till 2. help.`
+  return "LoanPilot cmds: book, move, cancel, text <name>:, note, task, brief, what's on today, when am I free, hold calls. Full list in the Hub."
 }
 
 async function resolveLead(
@@ -290,7 +301,7 @@ async function runCall(
     payload,
   })
 
-  if (call.intent === 'help') return { reply: clip(helpText(actor.role), dryRun), status: 'done' }
+  if (call.intent === 'help') return { reply: clip(commandHelpText(actor.role), dryRun), status: 'done' }
   if (call.intent === 'unknown') return { reply: clip('Text help for commands.', dryRun), status: 'done' }
 
   if (call.intent === 'book_call' || call.intent === 'request_booking') {
@@ -459,12 +470,12 @@ async function runCall(
       const detail = await effects.leadDetail(lead.id)
       const info = detail?.lead ?? lead
       const tasks = detail?.tasks.slice(0, 3).join('; ') || 'none'
-      const notes = detail?.notes.slice(0, 2).join(' | ') || 'none'
+      const notes = detail?.notes.slice(0, 2).join('; ') || 'none'
       const personId = info.id > 0 ? info.id : lead.id
       return {
         reply: clip(
           withProfileLink(
-            `${info.name} — ${info.stage || 'no stage'}, assigned ${info.assignedTo || 'nobody'}. Last contact ${info.lastActivity || 'unknown'}. Open: ${tasks}. Notes: ${notes}.`,
+            `${info.name} - ${info.stage || 'no stage'}, assigned ${info.assignedTo || 'nobody'}. Last contact ${info.lastActivity || 'unknown'}. Open: ${tasks}. Notes: ${notes}.`,
             personId,
           ),
           dryRun,
@@ -665,8 +676,10 @@ export async function handleCommandMessage(input: {
   parse?: ToolCompletion
   effects?: CommandEffects
   source?: 'hub' | 'sms'
+  /** Set when the Quo webhook already won the message-id claim. */
+  quoClaimed?: boolean
 }): Promise<{
-  ignored?: 'disabled' | 'line' | 'sender' | 'duplicate' | 'prefix'
+  ignored?: 'disabled' | 'line' | 'sender' | 'duplicate' | 'prefix' | 'auto-reply' | 'help-limit'
   reply?: string
   actor?: string
   pending?: PendingPrompt | null
@@ -677,6 +690,9 @@ export async function handleCommandMessage(input: {
   const toList = (Array.isArray(input.to) ? input.to : input.to ? [input.to] : []).map((value) => e164(value)).filter((value): value is string => Boolean(value))
   if (settings.line && toList.length && !toList.includes(settings.line)) return { ignored: 'line' }
   const now = input.now ?? new Date()
+  if ((input.source ?? 'sms') !== 'hub' && !input.quoClaimed) {
+    if (!(await claimQuoMessage(input.messageId, now.toISOString()))) return { ignored: 'duplicate' }
+  }
   const state = await loadCommandState()
   if (state.seen.includes(input.messageId)) return { ignored: 'duplicate' }
   state.seen = [input.messageId, ...state.seen].slice(0, 300)
@@ -684,6 +700,10 @@ export async function handleCommandMessage(input: {
   if (!actor) {
     await saveCommandState(state)
     return { ignored: 'sender' }
+  }
+  if (isAutoResponder(input.body)) {
+    await saveCommandState(state)
+    return { ignored: 'auto-reply' }
   }
   let text = input.body.trim()
   if (settings.prefix) {
@@ -697,6 +717,7 @@ export async function handleCommandMessage(input: {
   const dryRun = settings.dryRun
   const pending = latestPending(state, actor.phone, now)
   let result: RunResult | undefined
+  let helpLimited = false
   try {
     if (pending && (/^\d+$/.test(text) || /^(yes|y|no|n)$/i.test(text))) {
       result = await finishPending(actor, pending, text, effects, now, dryRun)
@@ -709,7 +730,8 @@ export async function handleCommandMessage(input: {
         console.log(`[command-mode] parse failed: ${detail}`)
         result = { reply: clip("Sorry, I couldn't process that", dryRun), status: 'error' }
       }
-      if (parsed) {
+      if (parsed?.intent === 'help' && !(await claimHelpReply(actor.phone, now))) helpLimited = true
+      if (parsed && !helpLimited) {
         result = await runCall(actor, parsed, effects, now, dryRun)
         if (parsed.intent === 'busy_until' && !dryRun && result.status === 'done') {
           const when = parseWhen(parsed.whenText ?? '', now, settings.timeZone)
@@ -720,6 +742,10 @@ export async function handleCommandMessage(input: {
   } catch (err) {
     const message = err instanceof Error && err.message ? err.message : 'Command failed'
     result = { reply: clip(message, dryRun), status: 'error' }
+  }
+  if (helpLimited) {
+    await saveCommandState(state)
+    return { ignored: 'help-limit', actor: actor.name }
   }
   if (!result) {
     result = { reply: clip("Sorry, I couldn't process that", dryRun), status: 'error' }
