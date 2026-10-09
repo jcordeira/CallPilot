@@ -1,6 +1,6 @@
-import { claimContractAlert, releaseContractAlert } from './contractAlertStore'
+import { claimContractAlert, contractAlertPhone, releaseContractAlert, rememberContractAlertPhone } from './contractAlertStore'
 import { env, isDemoMode } from './env'
-import { addNote, fubGetStrict } from './followupboss'
+import { addNote, fubGetStrict, logExternalText } from './followupboss'
 import { escapeHtml, normalizePhone, personLink, smsPersonLink } from './loaReminders'
 import { sendSmsIfConfigured } from './quo'
 
@@ -25,12 +25,37 @@ export type ContractNote = {
   mentionUserIds?: number[]
 }
 
+export type ContractSms = {
+  to: string
+  content: string
+  priority?: 'high' | 'normal'
+  truncate?: 'auto' | 'exempt'
+}
+
+export type ContractTextLog = {
+  personId: number
+  message: string
+  toNumber: string
+  fromNumber: string
+}
+
 export type ContractAlertDeps = {
   now?: Date
   loadDeal?: (id: number) => Promise<unknown>
   listDeals?: () => Promise<unknown[]>
-  sendSms?: (input: { to: string; content: string }) => Promise<{ id: string } | { skipped: 'not_configured' | 'budget' }>
+  loadPerson?: (id: number) => Promise<unknown>
+  sendSms?: (input: ContractSms) => Promise<{ id: string } | { skipped: 'not_configured' | 'budget' }>
   postNote?: (note: ContractNote) => Promise<void>
+  logText?: (input: ContractTextLog) => Promise<void>
+}
+
+export type ContractAlertResult = {
+  skipped?: ContractSkip
+  sent: number
+  noted: number
+  clientSent: number
+  clientNoted: number
+  dealId?: number
 }
 
 export type ContractSkip = 'disabled' | 'demo' | 'ignored' | 'not_buyer_contract' | 'stale' | 'duplicate'
@@ -56,6 +81,16 @@ export function contractAlertsEnabled(): boolean {
   if (!raw) return true
   return raw !== 'false' && raw !== '0' && raw !== 'off' && raw !== 'no'
 }
+
+/** On unless CONTRACT_CLIENT_TEXT_ENABLED is explicitly false. Unset stays on. */
+export function contractClientTextEnabled(): boolean {
+  const raw = env('CONTRACT_CLIENT_TEXT_ENABLED').trim().toLowerCase()
+  if (!raw) return true
+  return raw !== 'false' && raw !== '0' && raw !== 'off' && raw !== 'no'
+}
+
+const CLIENT_BLOCK_TAGS = ['dnc', 'do not text', 'bad phone', 'wrong number', 'opted out', 'opt out']
+const CLIENT_BLOCK_STAGES = ['trash', 'wrong number']
 
 function asRecord(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? (value as Record<string, unknown>) : null
@@ -131,6 +166,17 @@ function peopleOf(value: unknown): { id: number | null; name: string } {
   return { id: null, name: '' }
 }
 
+/** people[0] when that record has an id or a name. Otherwise the person linked on the deal. */
+function primaryPerson(record: Record<string, unknown>): { id: number | null; name: string } {
+  const listed = peopleOf(record.people)
+  if (listed.id || listed.name) return listed
+  const linked = asRecord(record.person)
+  return {
+    id: positiveId(record.personId) ?? (linked ? positiveId(linked.id) : null),
+    name: linked ? text(linked.name) : '',
+  }
+}
+
 function agentName(value: unknown): string {
   if (!Array.isArray(value)) return ''
   const names: string[] = []
@@ -146,7 +192,7 @@ export function parseDeal(source: unknown): ParsedDeal | null {
   const record = unwrapDeal(source)
   const id = positiveId(record?.id)
   if (!record || !id) return null
-  const person = peopleOf(record.people)
+  const person = primaryPerson(record)
   return {
     id,
     pipelineId: optionalId(record.pipelineId),
@@ -220,6 +266,102 @@ export function contractAlertMessage(input: {
   return parts.join(' ')
 }
 
+function normLabel(value: string): string {
+  return value.toLowerCase().replace(/[_-]+/g, ' ').replace(/\s+/g, ' ').trim()
+}
+
+function labelBlocked(value: string, phrases: string[]): boolean {
+  const norm = normLabel(value)
+  if (!norm) return false
+  return phrases.some((phrase) => norm === phrase || norm.includes(phrase))
+}
+
+function unwrapPerson(source: unknown): Record<string, unknown> | null {
+  const root = asRecord(source)
+  if (!root) return null
+  return asRecord(root.person) ?? root
+}
+
+function stageLabel(person: Record<string, unknown>): string {
+  if (typeof person.stage === 'string') return person.stage
+  const stage = asRecord(person.stage)
+  return text(stage?.name) || text(stage?.stage)
+}
+
+function tagsOf(person: Record<string, unknown>): string[] {
+  if (!Array.isArray(person.tags)) return []
+  const tags: string[] = []
+  for (const tag of person.tags) {
+    if (typeof tag === 'string') tags.push(tag)
+    else {
+      const record = asRecord(tag)
+      const name = record ? text(record.name) : ''
+      if (name) tags.push(name)
+    }
+  }
+  return tags
+}
+
+function personBlocked(person: Record<string, unknown>): boolean {
+  if (labelBlocked(stageLabel(person), CLIENT_BLOCK_STAGES)) return true
+  return tagsOf(person).some((tag) => labelBlocked(tag, CLIENT_BLOCK_TAGS))
+}
+
+function phoneRows(person: Record<string, unknown>): Record<string, unknown>[] {
+  if (!Array.isArray(person.phones)) return []
+  return person.phones.map((row) => asRecord(row)).filter((row): row is Record<string, unknown> => row != null)
+}
+
+function isMobile(row: Record<string, unknown>): boolean {
+  const type = normLabel(text(row.type) || text(row.phoneType))
+  return type === 'mobile' || type === 'cell' || type === 'cellular'
+}
+
+function isPrimaryPhone(row: Record<string, unknown>): boolean {
+  const flag = row.isPrimary ?? row.primary
+  return flag === true || flag === 1 || flag === '1'
+}
+
+function usableUsPhone(row: Record<string, unknown>): string | null {
+  const status = normLabel(text(row.status))
+  if (status && /invalid|bad|wrong|disconnected|opt/.test(status)) return null
+  const phone = normalizePhone(text(row.normalized) || text(row.value) || text(row.number))
+  if (!phone || !/^\+1\d{10}$/.test(phone)) return null
+  return phone
+}
+
+/** Primary mobile, otherwise the first mobile. Untyped numbers are treated as mobile. US E.164 only. */
+export function leadMobilePhone(source: unknown): string | null {
+  const person = unwrapPerson(source)
+  if (!person) return null
+  const rows = phoneRows(person)
+  const typed = rows.some((row) => text(row.type) || text(row.phoneType))
+  const candidates = typed ? rows.filter(isMobile) : rows
+  const ordered = [...candidates.filter(isPrimaryPhone), ...candidates.filter((row) => !isPrimaryPhone(row))]
+  for (const row of ordered) {
+    const phone = usableUsPhone(row)
+    if (phone) return phone
+  }
+  return null
+}
+
+export function contractClientFirstName(source: unknown, fallbackName = ''): string {
+  const person = unwrapPerson(source)
+  const name = text(person?.firstName) || text(person?.name) || fallbackName.trim()
+  return name.split(/\s+/).find(Boolean) ?? ''
+}
+
+/** Approved client copy. Only the first name is filled in. ASCII apostrophes and the hyphen stay GSM-7. */
+export function contractClientMessage(firstName: string): string {
+  const token = firstName.trim().split(/\s+/).find(Boolean) ?? ''
+  const greeting = token ? `Hi ${token},` : 'Hi there,'
+  return `${greeting} this is Team Cordeira at Cliffco Mortgage Bankers. We've received your contract of sale - congratulations! Joe Cordeira, Frank Cordeira and Debra Rose will reach out shortly with next steps. This number sends alerts only and can't receive replies.`
+}
+
+export function contractClientNote(phone: string): string {
+  return `LoanPilot texted contract-received alert to ${phone}`
+}
+
 function noteBody(mention: { userId: number; name: string }, lines: string[]): string {
   const items = lines.map((line) => `<li>${escapeHtml(line)}</li>`).join('')
   return `<p><span data-user-id="${mention.userId}">${escapeHtml(mention.name)}</span> LoanPilot: Contract is in.</p><ul>${items}</ul>`
@@ -232,6 +374,14 @@ function resourceIds(payload: Record<string, unknown>): number[] {
 
 async function defaultLoadDeal(id: number): Promise<unknown> {
   return fubGetStrict(`/deals/${id}`)
+}
+
+async function defaultLoadPerson(id: number): Promise<unknown> {
+  return fubGetStrict(`/people/${id}`)
+}
+
+function idle(skipped: ContractSkip, dealId?: number): ContractAlertResult {
+  return { skipped, sent: 0, noted: 0, clientSent: 0, clientNoted: 0, dealId }
 }
 
 function dealsOf(payload: unknown): unknown[] {
@@ -254,17 +404,117 @@ async function defaultListDeals(): Promise<unknown[]> {
   return found
 }
 
-export async function notifyBuyerContract(
-  source: unknown,
-  deps: ContractAlertDeps = {},
-): Promise<{ skipped?: ContractSkip; sent: number; noted: number; dealId?: number }> {
-  const deal = parseDeal(source)
-  if (!deal) return { skipped: 'ignored', sent: 0, noted: 0 }
-  if (!isBuyerContract(deal)) return { skipped: 'not_buyer_contract', sent: 0, noted: 0, dealId: deal.id }
-  const now = deps.now ?? new Date()
-  if (!deal.enteredStageAt || !entryIsRecent(deal.enteredStageAt, now)) {
-    return { skipped: 'stale', sent: 0, noted: 0, dealId: deal.id }
+async function logClientDelivery(
+  deal: ParsedDeal,
+  token: string,
+  at: string,
+  phone: string,
+  message: string | null,
+  load: (id: number) => Promise<unknown>,
+  postNote: (note: ContractNote) => Promise<void>,
+  logText: (input: ContractTextLog) => Promise<void>,
+): Promise<number> {
+  const personId = deal.personId
+  if (!personId) return 0
+  const noteKey = `client-note/${deal.id}/${token}`
+  if (!(await claimContractAlert(noteKey, at))) return 0
+  try {
+    await postNote({
+      personId,
+      subject: 'LoanPilot — Buyer Contract',
+      body: contractClientNote(phone),
+      isHtml: false,
+    })
+  } catch (err) {
+    await releaseContractAlert(noteKey)
+    const reason = err instanceof Error && err.message ? err.message : 'note failed'
+    console.log(`[contract-alert] deal ${deal.id} client note failed: ${reason.slice(0, 200)}`)
+    return 0
   }
+  let body = message
+  if (!body) {
+    try {
+      body = contractClientMessage(contractClientFirstName(await load(personId), deal.personName))
+    } catch {
+      body = null
+    }
+  }
+  const fromNumber = normalizePhone(env('QUO_FROM_NUMBER')) ?? ''
+  if (body && fromNumber) {
+    try {
+      await logText({ personId, message: body, toNumber: phone, fromNumber })
+    } catch (err) {
+      const reason = err instanceof Error && err.message ? err.message : 'text log failed'
+      console.log(`[contract-alert] deal ${deal.id} client text log failed: ${reason.slice(0, 200)}`)
+    }
+  }
+  return 1
+}
+
+/** Text the primary person once per entry. Budget and 402 release the claim so the 24h sweep can retry. */
+async function notifyContractClient(
+  deal: ParsedDeal,
+  token: string,
+  at: string,
+  deps: ContractAlertDeps,
+  send: (input: ContractSms) => Promise<{ id: string } | { skipped: 'not_configured' | 'budget' }>,
+  postNote: (note: ContractNote) => Promise<void>,
+): Promise<{ clientSent: number; clientNoted: number }> {
+  if (!contractClientTextEnabled() || !deal.personId) return { clientSent: 0, clientNoted: 0 }
+  const load = deps.loadPerson ?? defaultLoadPerson
+  const logText = deps.logText ?? logExternalText
+  const smsKey = `client-sms/${deal.id}/${token}`
+  const writeLog = (phone: string, message: string | null) => logClientDelivery(deal, token, at, phone, message, load, postNote, logText)
+
+  if (await claimContractAlert(smsKey, at)) {
+    let person: unknown
+    try {
+      person = await load(deal.personId)
+    } catch (err) {
+      await releaseContractAlert(smsKey)
+      const reason = err instanceof Error && err.message ? err.message : 'person load failed'
+      console.log(`[contract-alert] deal ${deal.id} client person load failed: ${reason.slice(0, 200)}`)
+      return { clientSent: 0, clientNoted: 0 }
+    }
+    const record = unwrapPerson(person)
+    if (!record || personBlocked(record)) {
+      console.log(`[contract-alert] deal ${deal.id} client sms skipped, ${record ? 'blocked' : 'no_person'}`)
+      return { clientSent: 0, clientNoted: 0 }
+    }
+    const phone = leadMobilePhone(person)
+    if (!phone) {
+      console.log(`[contract-alert] deal ${deal.id} client sms skipped, no_phone`)
+      return { clientSent: 0, clientNoted: 0 }
+    }
+    const message = contractClientMessage(contractClientFirstName(person, deal.personName))
+    try {
+      const result = await send({ to: phone, content: message, priority: 'high', truncate: 'exempt' })
+      if ('skipped' in result) {
+        await releaseContractAlert(smsKey)
+        console.log(`[contract-alert] deal ${deal.id} client sms skipped, ${result.skipped}`)
+        return { clientSent: 0, clientNoted: 0 }
+      }
+    } catch (err) {
+      await releaseContractAlert(smsKey)
+      const reason = err instanceof Error && err.message ? err.message : 'sms failed'
+      console.log(`[contract-alert] deal ${deal.id} client sms failed: ${reason.slice(0, 200)}`)
+      return { clientSent: 0, clientNoted: 0 }
+    }
+    await rememberContractAlertPhone(smsKey, phone)
+    return { clientSent: 1, clientNoted: await writeLog(phone, message) }
+  }
+
+  const phone = await contractAlertPhone(smsKey)
+  if (!phone) return { clientSent: 0, clientNoted: 0 }
+  return { clientSent: 0, clientNoted: await writeLog(phone, null) }
+}
+
+export async function notifyBuyerContract(source: unknown, deps: ContractAlertDeps = {}): Promise<ContractAlertResult> {
+  const deal = parseDeal(source)
+  if (!deal) return idle('ignored')
+  if (!isBuyerContract(deal)) return idle('not_buyer_contract', deal.id)
+  const now = deps.now ?? new Date()
+  if (!deal.enteredStageAt || !entryIsRecent(deal.enteredStageAt, now)) return idle('stale', deal.id)
 
   const leadName = deal.personName || deal.name
   const message = contractAlertMessage({
@@ -277,7 +527,13 @@ export async function notifyBuyerContract(
   })
   const token = entryToken(deal.enteredStageAt)
   const at = now.toISOString()
-  const send = deps.sendSms ?? ((input: { to: string; content: string }) => sendSmsIfConfigured({ ...input, priority: 'high', truncateStyle: 'fub' }))
+  const send = deps.sendSms ?? ((input: ContractSms) => sendSmsIfConfigured({
+    to: input.to,
+    content: input.content,
+    priority: input.priority ?? 'high',
+    truncate: input.truncate,
+    truncateStyle: input.truncate === 'exempt' ? undefined : 'fub',
+  }))
   const postNote = deps.postNote ?? (async (note: ContractNote) => {
     await addNote(note)
   })
@@ -334,53 +590,64 @@ export async function notifyBuyerContract(
     }
   }
 
-  if (sent > 0 || noted > 0) console.log(`[contract-alert] deal ${deal.id} person ${deal.personId ?? 0} sent=${sent} noted=${noted}`)
-  if (sent === 0 && noted === 0) return { skipped: 'duplicate', sent: 0, noted: 0, dealId: deal.id }
-  return { sent, noted, dealId: deal.id }
+  const client = await notifyContractClient(deal, token, at, deps, send, postNote)
+  if (sent > 0 || noted > 0 || client.clientSent > 0 || client.clientNoted > 0) {
+    console.log(`[contract-alert] deal ${deal.id} person ${deal.personId ?? 0} sent=${sent} noted=${noted} clientSent=${client.clientSent} clientNoted=${client.clientNoted}`)
+  }
+  if (sent === 0 && noted === 0 && client.clientSent === 0 && client.clientNoted === 0) {
+    return { skipped: 'duplicate', sent: 0, noted: 0, clientSent: 0, clientNoted: 0, dealId: deal.id }
+  }
+  return { sent, noted, clientSent: client.clientSent, clientNoted: client.clientNoted, dealId: deal.id }
 }
 
 /** Follow Up Boss dealsCreated and dealsUpdated. Resource ids are loaded with GET /v1/deals/:id. */
 export async function handleFubContractWebhook(
   payload: unknown,
   deps: ContractAlertDeps = {},
-): Promise<{ skipped?: ContractSkip; sent: number; noted: number; checked: number }> {
-  if (!contractAlertsEnabled()) return { skipped: 'disabled', sent: 0, noted: 0, checked: 0 }
+): Promise<{ skipped?: ContractSkip; sent: number; noted: number; clientSent: number; clientNoted: number; checked: number }> {
+  if (!contractAlertsEnabled()) return { skipped: 'disabled', sent: 0, noted: 0, clientSent: 0, clientNoted: 0, checked: 0 }
   if (!deps.loadDeal && (isDemoMode() || !env('FOLLOW_UP_BOSS_API_KEY').trim())) {
-    return { skipped: 'demo', sent: 0, noted: 0, checked: 0 }
+    return { skipped: 'demo', sent: 0, noted: 0, clientSent: 0, clientNoted: 0, checked: 0 }
   }
   const body = asRecord(payload)
-  if (!body) return { skipped: 'ignored', sent: 0, noted: 0, checked: 0 }
+  if (!body) return { skipped: 'ignored', sent: 0, noted: 0, clientSent: 0, clientNoted: 0, checked: 0 }
   const eventName = typeof body.event === 'string' ? body.event : ''
-  if (eventName && !/^deals(Created|Updated)$/i.test(eventName)) return { skipped: 'ignored', sent: 0, noted: 0, checked: 0 }
+  if (eventName && !/^deals(Created|Updated)$/i.test(eventName)) return { skipped: 'ignored', sent: 0, noted: 0, clientSent: 0, clientNoted: 0, checked: 0 }
   const ids = resourceIds(body)
   const load = deps.loadDeal ?? defaultLoadDeal
   let sent = 0
   let noted = 0
+  let clientSent = 0
+  let clientNoted = 0
   for (const id of ids) {
     try {
       const result = await notifyBuyerContract(await load(id), deps)
       sent += result.sent
       noted += result.noted
+      clientSent += result.clientSent
+      clientNoted += result.clientNoted
     } catch (err) {
       const reason = err instanceof Error && err.message ? err.message : 'deal load failed'
       console.log(`[contract-alert] deal ${id} load failed: ${reason.slice(0, 200)}`)
     }
   }
-  return { sent, noted, checked: ids.length }
+  return { sent, noted, clientSent, clientNoted, checked: ids.length }
 }
 
 /** Fallback for a Buyer Contract entry the webhook missed. Last 24 hours, Purchase pipeline only. */
 export async function runContractAlertSweep(
   deps: ContractAlertDeps = {},
-): Promise<{ skipped?: ContractSkip; sent: number; noted: number; checked: number }> {
-  if (!contractAlertsEnabled()) return { skipped: 'disabled', sent: 0, noted: 0, checked: 0 }
+): Promise<{ skipped?: ContractSkip; sent: number; noted: number; clientSent: number; clientNoted: number; checked: number }> {
+  if (!contractAlertsEnabled()) return { skipped: 'disabled', sent: 0, noted: 0, clientSent: 0, clientNoted: 0, checked: 0 }
   if (!deps.listDeals && (isDemoMode() || !env('FOLLOW_UP_BOSS_API_KEY').trim())) {
-    return { skipped: 'demo', sent: 0, noted: 0, checked: 0 }
+    return { skipped: 'demo', sent: 0, noted: 0, clientSent: 0, clientNoted: 0, checked: 0 }
   }
   const now = deps.now ?? new Date()
   const deals = await (deps.listDeals ?? defaultListDeals)()
   let sent = 0
   let noted = 0
+  let clientSent = 0
+  let clientNoted = 0
   let checked = 0
   for (const deal of deals) {
     const parsed = parseDeal(deal)
@@ -390,10 +657,12 @@ export async function runContractAlertSweep(
       const result = await notifyBuyerContract(deal, { ...deps, now })
       sent += result.sent
       noted += result.noted
+      clientSent += result.clientSent
+      clientNoted += result.clientNoted
     } catch (err) {
       const reason = err instanceof Error && err.message ? err.message : 'sweep failed'
       console.log(`[contract-alert] sweep item failed: ${reason.slice(0, 200)}`)
     }
   }
-  return { sent, noted, checked }
+  return { sent, noted, clientSent, clientNoted, checked }
 }
