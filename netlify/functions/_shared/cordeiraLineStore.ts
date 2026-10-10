@@ -8,7 +8,7 @@ export type PendingText = {
   inboundAt: string
   personId?: number
   personName?: string
-  /** Set after an alert goes out. The stretch stays open until someone replies. */
+  /** Set after the one alert for this stretch. The stretch stays open until a team reply. */
   alertedAt?: string
 }
 
@@ -155,6 +155,35 @@ export function reserveClaim(key: string, at: string): boolean {
 
 export function releaseClaim(key: string): void {
   claims.delete(key)
+}
+
+/**
+ * Remove a confirmed claim from memory and the blob. A blob error puts the key
+ * back so a sweep cannot treat the stretch as open. There is no TTL.
+ */
+export async function releaseStoredClaim(key: string): Promise<boolean> {
+  claims.delete(key)
+  const blob = store()
+  if (!blob) return true
+  try {
+    await blob.delete(key)
+    return true
+  } catch {
+    claims.set(key, 'held')
+    return false
+  }
+}
+
+/** True when the blob already has this claim. Null when the read fails (fail closed). */
+export async function storedClaimHeld(key: string): Promise<boolean | null> {
+  const blob = store()
+  if (!blob) return false
+  try {
+    const raw = await blob.get(key, { type: 'json', consistency: 'strong' })
+    return raw != null
+  } catch {
+    return null
+  }
 }
 
 export function claimHeld(key: string): boolean {

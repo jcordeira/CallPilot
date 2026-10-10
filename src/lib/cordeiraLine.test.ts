@@ -11,6 +11,16 @@ import {
 import { resetCordeiraStateForTests } from '../../netlify/functions/_shared/cordeiraLineStore'
 import { isGsm7 } from '../../netlify/functions/_shared/quo'
 
+const { getStoreMock } = vi.hoisted(() => ({
+  getStoreMock: vi.fn((_input?: unknown): unknown => {
+    throw new Error('The environment has not been configured to use Netlify Blobs')
+  }),
+}))
+
+vi.mock('@netlify/blobs', () => ({
+  getStore: (input: unknown) => getStoreMock(input),
+}))
+
 const line = '+15163094960'
 const sales = '+15163869773'
 const client = '+15165550100'
@@ -125,6 +135,10 @@ function call(input: {
 
 beforeEach(() => {
   resetCordeiraStateForTests()
+  getStoreMock.mockReset()
+  getStoreMock.mockImplementation(() => {
+    throw new Error('The environment has not been configured to use Netlify Blobs')
+  })
   envOn()
 })
 
@@ -437,31 +451,103 @@ describe('Cordeira line alerts', () => {
     expect(quoBodies[0]?.content).toContain('Missed call Ada Buyer')
   })
 
-  it('alerts once per lead for an unanswered stretch, then again after 4 hours', async () => {
+  it('sends one text alert per unanswered stretch, including 4h, 8h, and 24h later, then one more after a reply', async () => {
     const fx = deps()
-    await ingestFubText(text({ id: 14, at: t0, incoming: true, contact: client, personId: 99, name: 'Ada Buyer' }), {
-      ...fx,
-      now: t0,
-    })
-    await ingestFubText(text({ id: 15, at: plus(1), incoming: true, contact: otherClient, personId: 99, name: 'Ada Buyer' }), {
-      ...fx,
-      now: plus(1),
-    })
+    const inbound = { incoming: true as const, contact: client, personId: 99, name: 'Ada Buyer' }
+    await ingestFubText(text({ id: 14, at: t0, ...inbound }), { ...fx, now: t0 })
+    await ingestFubText(text({ id: 15, at: plus(2), ...inbound }), { ...fx, now: plus(2) })
+    await ingestFubText(text({ id: 16, at: plus(4), ...inbound }), { ...fx, now: plus(4) })
     const due = await runCordeiraLineAlerts({ ...fx, now: plus(10) })
-    const soon = await runCordeiraLineAlerts({ ...fx, now: plus(11) })
     expect(due.sent).toBe(1)
-    expect(soon.sent).toBe(0)
+    expect(due.notes).toBe(1)
     expect(fx.sms).toHaveLength(1)
+    expect(fx.sms[0]?.to).toBe(frankie)
     expect(fx.sms[0]?.content).toBe(
       'Text unanswered Ada Buyer 10m thriving-faloodeh-857600.netlify.app/p/99',
     )
     expect(isGsm7(fx.sms[0]?.content ?? '')).toBe(true)
     expect(fx.notes).toHaveLength(1)
-    const again = await runCordeiraLineAlerts({ ...fx, now: plus(10 + 4 * 60) })
-    const quiet = await runCordeiraLineAlerts({ ...fx, now: plus(10 + 4 * 60 + 1) })
-    expect(again.sent).toBe(1)
-    expect(quiet.sent).toBe(0)
+    expect(fx.notes[0]?.body).toContain('thriving-faloodeh-857600.netlify.app/p/99')
+    expect(fx.notes[0]?.body).not.toContain('followupboss.com')
+
+    await ingestFubText(text({ id: 17, at: plus(24 * 60), ...inbound }), { ...fx, now: plus(24 * 60) })
+    for (const minutes of [10 + 4 * 60, 10 + 8 * 60, 10 + 24 * 60, 24 * 60 + 10]) {
+      const later = await runCordeiraLineAlerts({ ...fx, now: plus(minutes) })
+      expect(later.sent).toBe(0)
+      expect(later.notes).toBe(0)
+    }
+    expect(fx.sms).toHaveLength(1)
+    expect(fx.notes).toHaveLength(1)
+
+    await ingestFubText(
+      text({ id: 18, at: plus(24 * 60 + 20), incoming: false, contact: client, on: sales, personId: 99, name: 'Ada Buyer' }),
+      { ...fx, now: plus(24 * 60 + 20) },
+    )
+    const stillClosed = await runCordeiraLineAlerts({ ...fx, now: plus(24 * 60 + 4 * 60) })
+    expect(stillClosed.sent).toBe(0)
+    await ingestFubText(text({ id: 19, at: plus(24 * 60 + 30), ...inbound }), { ...fx, now: plus(24 * 60 + 30) })
+    const early = await runCordeiraLineAlerts({ ...fx, now: plus(24 * 60 + 39) })
+    const opened = await runCordeiraLineAlerts({ ...fx, now: plus(24 * 60 + 40) })
+    expect(early.sent).toBe(0)
+    expect(opened.sent).toBe(1)
+    expect(opened.notes).toBe(1)
     expect(fx.sms).toHaveLength(2)
+    expect(fx.notes).toHaveLength(2)
+    expect(fx.notes[1]?.body).toContain('thriving-faloodeh-857600.netlify.app/p/99')
+  })
+
+  it('does not re-alert a stretch after a restart when the blob claim is still held', async () => {
+    const rows = new Map<string, unknown>()
+    const writes: string[] = []
+    getStoreMock.mockImplementation((input?: unknown) => {
+      const name = typeof input === 'string' ? input : (input as { name?: string } | null)?.name
+      if (name !== 'loanpilot-cordeira-line') throw new Error('The environment has not been configured to use Netlify Blobs')
+      return {
+        async get(key: string) {
+          return rows.get(key) ?? null
+        },
+        async setJSON(key: string, value: unknown, opts?: { onlyIfNew?: boolean }) {
+          if (opts?.onlyIfNew && rows.has(key)) return { modified: false }
+          if (key.startsWith('alert/')) writes.push(key)
+          rows.set(key, value)
+          return { modified: true }
+        },
+        async delete(key: string) {
+          rows.delete(key)
+        },
+      }
+    })
+    const fx = deps()
+    const inbound = { incoming: true as const, contact: client, personId: 99, name: 'Ada Buyer' }
+    await ingestFubText(text({ id: 14, at: t0, ...inbound }), { ...fx, now: t0 })
+    await runCordeiraLineAlerts({ ...fx, now: plus(10) })
+    expect(fx.sms).toHaveLength(1)
+    expect(fx.notes).toHaveLength(1)
+    expect(writes).toEqual(['alert/text-open/person:99'])
+    expect([...rows.keys()].some((key) => key.includes('/re/'))).toBe(false)
+
+    rows.delete('state')
+    resetCordeiraStateForTests()
+    await ingestFubText(text({ id: 14, at: t0, ...inbound }), { ...fx, now: plus(10 + 4 * 60) })
+    await ingestFubText(text({ id: 15, at: plus(2), ...inbound }), { ...fx, now: plus(10 + 4 * 60) })
+    const replay = await runCordeiraLineAlerts({ ...fx, now: plus(10 + 4 * 60) })
+    expect(replay.sent).toBe(0)
+    expect(replay.notes).toBe(0)
+    expect(fx.sms).toHaveLength(1)
+    expect(fx.notes).toHaveLength(1)
+    expect(writes).toEqual(['alert/text-open/person:99'])
+
+    await ingestFubText(
+      text({ id: 18, at: plus(10 + 4 * 60 + 5), incoming: false, contact: client, on: sales, personId: 99, name: 'Ada Buyer' }),
+      { ...fx, now: plus(10 + 4 * 60 + 5) },
+    )
+    expect(rows.has('alert/text-open/person:99')).toBe(false)
+    await ingestFubText(text({ id: 19, at: plus(10 + 8 * 60), ...inbound }), { ...fx, now: plus(10 + 8 * 60) })
+    const again = await runCordeiraLineAlerts({ ...fx, now: plus(10 + 8 * 60 + 10) })
+    expect(again.sent).toBe(1)
+    expect(again.notes).toBe(1)
+    expect(fx.sms).toHaveLength(2)
+    expect(writes.filter((key) => key === 'alert/text-open/person:99')).toHaveLength(2)
   })
 
   it('starts a new text stretch after a reply and does not re-alert a closed one', async () => {
