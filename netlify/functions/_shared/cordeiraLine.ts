@@ -11,7 +11,9 @@ import {
   hydrateCordeiraState,
   persistCordeiraState,
   releaseClaim,
+  releaseStoredClaim,
   reserveClaim,
+  storedClaimHeld,
   type PendingText,
   type QueuedCall,
 } from './cordeiraLineStore'
@@ -85,6 +87,11 @@ type DueItem = {
 function leadKey(item: { personId?: number; contact: string }): string {
   if (item.personId && item.personId > 0) return `person:${item.personId}`
   return item.contact
+}
+
+/** One claim per lead for the whole unanswered stretch. No time bucket and no TTL. */
+function textStretchKey(lead: string): string {
+  return `alert/text-open/${lead}`
 }
 
 type Recipient = { phone: string; userId?: number; name: string }
@@ -300,7 +307,7 @@ function pullDue(now: Date): DueItem[] {
   for (const [key, text] of Object.entries(state.pendingTexts)) {
     const inbound = Date.parse(text.inboundAt)
     const lead = leadKey(text)
-    if (!Number.isFinite(inbound) || now.getTime() - inbound > MAX_AGE_MS || answeredAfter(text)) {
+    if (!Number.isFinite(inbound) || answeredAfter(text)) {
       delete state.pendingTexts[key]
       continue
     }
@@ -308,21 +315,16 @@ function pullDue(now: Date): DueItem[] {
       delete state.pendingTexts[key]
       continue
     }
-    const alerted = text.alertedAt ? Date.parse(text.alertedAt) : NaN
-    let claimKey: string
-    if (text.alertedAt) {
-      if (!Number.isFinite(alerted) || now.getTime() - alerted < FOUR_H_MS) continue
-      claimKey = `alert/text-lead/${lead}/re/${Math.floor(now.getTime() / FOUR_H_MS)}`
-    } else {
-      if (inbound + waitMs > now.getTime()) continue
-      claimKey = `alert/text-lead/${lead}/${text.inboundAt}`
-    }
-    if (!reserveClaim(claimKey, now.toISOString())) {
+    // Alerted stretches stay until a team reply. The 24h age limit must not clear the claim and re-arm the lead.
+    if (text.alertedAt) continue
+    if (now.getTime() - inbound > MAX_AGE_MS) {
       delete state.pendingTexts[key]
       continue
     }
+    if (inbound + waitMs > now.getTime()) continue
+    const claimKey = textStretchKey(lead)
+    if (!reserveClaim(claimKey, now.toISOString())) continue
     seenTextLeads.add(lead)
-    delete state.pendingTexts[key]
     items.push({
       key: claimKey,
       kind: 'text',
@@ -466,9 +468,11 @@ function smsLine(text: string, personId?: number): string {
   return `${text} ${smsPersonLink(personId)}`
 }
 
-function noteLine(text: string, personId?: number): string {
+function noteLine(kind: 'call' | 'text', text: string, personId?: number): string {
   if (!personId) return text
-  return `${text} ${personLink(personId)}`
+  const link = kind === 'text' ? smsPersonLink(personId) : personLink(personId)
+  if (!link) return text
+  return `${text} ${link}`
 }
 
 function clip(text: string): string {
@@ -521,6 +525,37 @@ async function replySeen(item: DueItem, deps: CordeiraDeps): Promise<'reply' | '
   if (answeredAfter({ contact: item.contact, personId: item.personId, inboundAt: item.at })) return 'reply'
   const check = deps.laterActivity ?? defaultLaterActivity
   return check({ contact: item.contact, personId: item.personId, since: item.at })
+}
+
+function replyStampBefore(item: DueItem): boolean {
+  const state = getCordeiraState()
+  const inbound = Date.parse(item.at)
+  const stamps = [state.answeredAt[item.contact]]
+  if (item.personId) stamps.push(state.answeredAt[`person:${item.personId}`])
+  return stamps.some((stamp) => stamp != null && Number.isFinite(Date.parse(stamp)) && Date.parse(stamp) < inbound)
+}
+
+/** A team reply is the only thing that may clear the stretch claim, so the next inbound can alert once. */
+async function reopenTextStretch(item: DueItem, at: string): Promise<boolean> {
+  if (!replyStampBefore(item)) return true
+  if (!(await releaseStoredClaim(item.key))) return false
+  return reserveClaim(item.key, at)
+}
+
+/** Blob already holds the stretch: record it and do not send. A missing blob can retry. A read error stays closed. */
+async function settleFailedTextClaim(item: DueItem, at: string): Promise<void> {
+  const held = await storedClaimHeld(item.key)
+  if (held === true) {
+    rememberAlert(item, at)
+    return
+  }
+  if (held === false) releaseClaim(item.key)
+}
+
+async function closeTextStretch(event: CordeiraEvent): Promise<void> {
+  const keys = new Set<string>([textStretchKey(event.contact)])
+  if (event.personId) keys.add(textStretchKey(`person:${event.personId}`))
+  for (const key of keys) await releaseStoredClaim(key)
 }
 
 function personFrom(person: FubPerson | null): CordeiraPerson | null {
@@ -581,8 +616,12 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
   for (const item of due) {
     const reply = await replySeen(item, deps)
     if (reply === 'reply') {
-      await confirmClaim(item.key, now.toISOString())
-      if (item.leadClaim) await confirmClaim(item.leadClaim, now.toISOString())
+      rememberAnswer(item.contact, now.toISOString())
+      if (item.personId) rememberAnswer(`person:${item.personId}`, now.toISOString())
+      delete getCordeiraState().pendingTexts[item.lead]
+      releaseClaim(item.key)
+      if (item.leadClaim) releaseClaim(item.leadClaim)
+      if (item.kind === 'text') await closeTextStretch({ kind: 'text-out', id: item.id, contact: item.contact, at: item.at, personId: item.personId })
       continue
     }
     if (reply === 'unknown') {
@@ -605,7 +644,11 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
 
   const claimed: DueItem[] = []
   for (const item of ready) {
-    if (!(await confirmClaim(item.key, now.toISOString()))) continue
+    if (item.kind === 'text' && !(await reopenTextStretch(item, now.toISOString()))) continue
+    if (!(await confirmClaim(item.key, now.toISOString()))) {
+      if (item.kind === 'text') await settleFailedTextClaim(item, now.toISOString())
+      continue
+    }
     if (item.leadClaim && !(await confirmClaim(item.leadClaim, now.toISOString()))) continue
     rememberAlert(item, now.toISOString())
     claimed.push(item)
@@ -628,7 +671,7 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
   const noted = claimed.map((item) => {
     const person = people.get(item.contact)
     const who = person?.name.trim() || item.personName?.trim() || item.contact
-    return noteLine(sentence(item.kind, who), person?.id ?? item.personId)
+    return noteLine(item.kind, sentence(item.kind, who), person?.id ?? item.personId)
   })
   const lines: string[] = []
   for (const line of rendered) {
@@ -678,10 +721,25 @@ export async function runCordeiraLineAlerts(deps: CordeiraDeps & { hydrate?: boo
   return { sent, notes }
 }
 
+function stretchLeads(event: CordeiraEvent): string[] {
+  const leads = [event.contact]
+  if (event.personId) leads.push(`person:${event.personId}`)
+  return [...new Set(leads)]
+}
+
 export async function ingestCordeiraEvent(event: CordeiraEvent, deps: CordeiraDeps = {}) {
   if (!cordeiraAlertsEnabled()) return { sent: 0, notes: 0, skipped: 'disabled' as const }
   await hydrateCordeiraState()
+  const closing = event.kind === 'text-out' || event.kind === 'answered-call'
+  const state = getCordeiraState()
+  const closedLeads = closing
+    ? stretchLeads(event).filter((lead) => {
+        const pending = state.pendingTexts[lead]
+        return !pending || Date.parse(pending.inboundAt) <= Date.parse(event.at)
+      })
+    : []
   applyEvent(event)
+  for (const lead of closedLeads) await releaseStoredClaim(textStretchKey(lead))
   if (event.kind === 'missed-call') return runCordeiraLineAlerts({ ...deps, hydrate: false, now: deps.now })
   await persistCordeiraState()
   return { sent: 0, notes: 0 }
