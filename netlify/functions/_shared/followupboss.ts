@@ -301,13 +301,21 @@ export async function readFubTask(id: string): Promise<{ name?: string; descript
   }
 }
 
-export async function completeFubTask(id: string): Promise<void> {
+async function setFubTaskCompleted(id: string, isCompleted: boolean): Promise<void> {
   if (!id) throw new Error('Task id is required')
   if (isDemoMode()) return
   await fubFetch(`/tasks/${encodeURIComponent(id)}`, {
     method: 'PUT',
-    body: JSON.stringify({ isCompleted: 1 }),
+    body: JSON.stringify({ isCompleted }),
   })
+}
+
+export async function completeFubTask(id: string): Promise<void> {
+  await setFubTaskCompleted(id, true)
+}
+
+export async function reopenFubTask(id: string): Promise<void> {
+  await setFubTaskCompleted(id, false)
 }
 
 function resolveAssignee(input: { assignedUserId?: number; assignedTo?: string }): { name: string; userId?: number } {

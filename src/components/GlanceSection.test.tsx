@@ -77,7 +77,8 @@ function Lists({ board }: { board: GlanceBoard }) {
         needsTasks={board.needsTasks}
         error={null}
         loading={false}
-        onDone={(source, id) => setItems((prev) => prev.filter((item) => !(item.source === source && item.id === id)))}
+        onDone={(item) => setItems((prev) => prev.filter((row) => row.key !== item.key))}
+        onRestore={(item) => setItems((prev) => (prev.some((row) => row.key === item.key) ? prev : [item, ...prev]))}
       />
       <GlanceSection
         title="All tasks & appointments"
@@ -89,7 +90,8 @@ function Lists({ board }: { board: GlanceBoard }) {
         error={null}
         loading={false}
         todayKey="2026-10-19"
-        onDone={(source, id) => setItems((prev) => prev.filter((item) => !(item.source === source && item.id === id)))}
+        onDone={(item) => setItems((prev) => prev.filter((row) => row.key !== item.key))}
+        onRestore={(item) => setItems((prev) => (prev.some((row) => row.key === item.key) ? prev : [item, ...prev]))}
       />
     </>
   )
@@ -109,6 +111,7 @@ describe('Glance sections', () => {
         calls.push(`${init?.method ?? 'GET'} ${url}`)
         if (url.includes('/api/hub/glance-detail')) return json(detail)
         if (url.includes('/api/hub/glance-done')) return json({ done: true })
+        if (url.includes('/api/hub/glance-undo')) return json({ done: true })
         return new Response(JSON.stringify({ ok: false, error: 'missing' }), { status: 404 })
       }),
     )
@@ -134,6 +137,8 @@ describe('Glance sections', () => {
     expect(screen.getAllByText('Overdue').length).toBeGreaterThan(0)
     expect(screen.queryByText('Bring the folder')).not.toBeInTheDocument()
     expect(screen.queryByText('Pay stubs.')).not.toBeInTheDocument()
+    expect(screen.queryByRole('checkbox', { name: 'Complete Call Jordan' })).not.toBeInTheDocument()
+    expect(screen.getAllByRole('checkbox', { name: 'Complete Send checklist' }).length).toBeGreaterThan(0)
 
     await user.click(screen.getAllByRole('button', { name: /Call Jordan/ })[0])
     expect(await screen.findByText('Bring the folder')).toBeInTheDocument()
@@ -156,11 +161,84 @@ describe('Glance sections', () => {
     await user.click(screen.getByRole('button', { name: 'Tasks' }))
     await user.click(screen.getByRole('button', { name: 'FUB' }))
     expect(screen.queryByRole('button', { name: /Call Jordan/ })).not.toBeInTheDocument()
-    const taskButtons = screen.getAllByRole('button', { name: /Send checklist/ })
-    await user.click(taskButtons[0])
-    await user.click(screen.getAllByRole('button', { name: 'Mark done' })[0])
-    await user.click(screen.getByRole('button', { name: 'Confirm' }))
+    await user.click(screen.getAllByRole('checkbox', { name: 'Complete Send checklist' })[0])
+    expect(await screen.findByRole('button', { name: 'Undo' })).toBeInTheDocument()
     expect(calls.some((call) => call.startsWith('POST') && call.includes('/api/hub/glance-done'))).toBe(true)
     expect(await screen.findByText('Nothing due today.')).toBeInTheDocument()
+  })
+
+  it('shows the first 10 today items until Show all expands them', async () => {
+    const many = Array.from({ length: 12 }, (_, index) => ({
+      key: `fub:task:${index}`,
+      id: String(index),
+      kind: 'task' as const,
+      source: 'fub' as const,
+      title: `Task ${index}`,
+      whenLabel: 'Today',
+      dayKey: '2026-10-19',
+      at: `2026-10-19T${String(index).padStart(2, '0')}:00:00.000Z`,
+      overdue: index < 2,
+    }))
+    const user = userEvent.setup()
+    renderApp(
+      <GlanceSection
+        title="Today at a glance"
+        headingId="today-cap"
+        mode="today"
+        items={many}
+        warnings={[]}
+        needsTasks={false}
+        error={null}
+        loading={false}
+        onDone={() => undefined}
+        onRestore={() => undefined}
+      />,
+    )
+    expect(screen.getByText('Task 0')).toBeInTheDocument()
+    expect(screen.getByText('Task 9')).toBeInTheDocument()
+    expect(screen.queryByText('Task 10')).not.toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Show all (12)' }))
+    expect(screen.getByText('Task 11')).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Show less' }))
+    expect(screen.queryByText('Task 11')).not.toBeInTheDocument()
+  })
+
+  it('undoes a completed task and restores the row when the complete call fails', async () => {
+    const calls: string[] = []
+    vi.stubGlobal(
+      'fetch',
+      vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+        const url = String(input)
+        calls.push(`${init?.method ?? 'GET'} ${url}`)
+        if (url.includes('/api/hub/glance-undo')) return json({ done: true })
+        if (url.includes('/api/hub/glance-done') && calls.filter((call) => call.includes('glance-done')).length === 1) {
+          return json({ done: true })
+        }
+        return new Response(JSON.stringify({ ok: false, error: 'Google Tasks update failed' }), { status: 500 })
+      }),
+    )
+    const user = userEvent.setup()
+    renderApp(
+      <GlanceSection
+        title="Today at a glance"
+        headingId="today-undo"
+        mode="today"
+        items={items.filter((item) => item.kind === 'task' && item.overdue)}
+        warnings={[]}
+        needsTasks={false}
+        error={null}
+        loading={false}
+        onDone={() => undefined}
+        onRestore={() => undefined}
+      />,
+    )
+    await user.click(screen.getByRole('checkbox', { name: 'Complete Send checklist' }))
+    await user.click(await screen.findByRole('button', { name: 'Undo' }))
+    expect(calls.some((call) => call.includes('/api/hub/glance-undo'))).toBe(true)
+    expect(screen.getByRole('checkbox', { name: 'Complete Send checklist' })).toBeInTheDocument()
+
+    await user.click(screen.getByRole('checkbox', { name: 'Complete Send checklist' }))
+    expect(await screen.findByRole('alert')).toHaveTextContent('Google Tasks update failed')
+    expect(screen.getByRole('checkbox', { name: 'Complete Send checklist' })).toBeInTheDocument()
   })
 })

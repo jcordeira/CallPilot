@@ -168,6 +168,13 @@ export function completeGlanceTask(source: GlanceSource, id: string) {
   })
 }
 
+export function undoGlanceTask(source: GlanceSource, id: string) {
+  return hubRequest<{ done: true }>('glance-undo', {
+    method: 'POST',
+    body: JSON.stringify({ source, id }),
+  })
+}
+
 export type SmsUsageStatus = {
   date: string
   used: number

@@ -20,7 +20,7 @@ import {
   rescoreLeads,
   type CommandPanel,
   type GlanceBoard,
-  type GlanceSource,
+  type GlanceItem,
   type ReminderPanel,
   type CalendarGuestPreview,
   type CalendarGuestPanel,
@@ -386,16 +386,24 @@ export function HubPage() {
     }
   }
 
-  const dropGlanceItem = (source: GlanceSource, id: string) => {
+  const dropGlanceItem = (item: GlanceItem) => {
     setGlance((prev) =>
       prev
         ? {
             ...prev,
-            today: prev.today.filter((item) => !(item.source === source && item.id === id)),
-            all: prev.all.filter((item) => !(item.source === source && item.id === id)),
+            today: prev.today.filter((row) => row.key !== item.key),
+            all: prev.all.filter((row) => row.key !== item.key),
           }
         : prev,
     )
+  }
+
+  const restoreGlanceItem = (item: GlanceItem) => {
+    setGlance((prev) => {
+      if (!prev) return prev
+      const today = inToday(item, prev.todayKey) ? placeGlanceItem(prev.today, item, 'today') : prev.today.filter((row) => row.key !== item.key)
+      return { ...prev, today, all: placeGlanceItem(prev.all, item, 'all') }
+    })
   }
 
   const people: NamedPerson[] = leads
@@ -616,6 +624,7 @@ export function HubPage() {
         error={glanceError}
         loading={glanceLoading}
         onDone={dropGlanceItem}
+        onRestore={restoreGlanceItem}
       />
 
       <ul className="hub__stats">
@@ -1021,9 +1030,30 @@ export function HubPage() {
         loading={glanceLoading}
         todayKey={glance?.todayKey}
         onDone={dropGlanceItem}
+        onRestore={restoreGlanceItem}
       />
     </div>
   )
+}
+
+function inToday(item: GlanceItem, todayKey: string): boolean {
+  if (item.kind === 'appointment') return item.dayKey === todayKey
+  return item.overdue || item.dayKey === todayKey
+}
+
+function placeGlanceItem(items: GlanceItem[], item: GlanceItem, mode: 'today' | 'all'): GlanceItem[] {
+  const next = items.some((row) => row.key === item.key) ? items : [...items, item]
+  return [...next].sort((a, b) => {
+    if (mode === 'today') {
+      if (a.overdue !== b.overdue) return a.overdue ? -1 : 1
+    } else {
+      const aNone = a.dayKey === 'none' ? 1 : 0
+      const bNone = b.dayKey === 'none' ? 1 : 0
+      if (aNone !== bNone) return aNone - bNone
+      if (a.dayKey !== b.dayKey) return a.dayKey.localeCompare(b.dayKey)
+    }
+    return a.at.localeCompare(b.at) || a.title.localeCompare(b.title)
+  })
 }
 
 function TaskRow({ task, people }: { task: HubTask; people: NamedPerson[] }) {

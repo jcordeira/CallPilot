@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import * as calendar from '../../netlify/functions/_shared/calendar'
+import * as followupboss from '../../netlify/functions/_shared/followupboss'
 import {
   buildGlanceBoard,
   completeGlanceTask,
@@ -9,6 +10,7 @@ import {
   joeTaskAssigneeId,
   loadGlance,
   resetGlanceForTests,
+  undoGlanceTask,
 } from '../../netlify/functions/_shared/glance'
 import { clearGoogleTokens, getGoogleConnectionStatus, GOOGLE_SCOPES, saveGoogleTokens, tasksCanRead } from '../../netlify/functions/_shared/googleAuth'
 import type { HubCalendarEvent, HubTask } from '../../netlify/functions/_shared/hubTypes'
@@ -190,18 +192,34 @@ describe('glance loading', () => {
     expect(board.today[0]).toMatchObject({ personName: 'Alex Buyer', personId: 1001, overdue: true, source: 'fub' })
   })
 
-  it('caches the board for 60 seconds', async () => {
+  it('caches each source for 60 seconds and refetches only the one that changed', async () => {
     process.env.ASSISTANT_DEMO_MODE = 'true'
-    const spy = vi.spyOn(calendar, 'listGoogleTasks')
+    const tasks = vi.spyOn(calendar, 'listGoogleTasks')
+    const events = vi.spyOn(calendar, 'listEventsBetween')
+    const fub = vi.spyOn(followupboss, 'listOpenFubTasksForUser')
     vi.useFakeTimers({ toFake: ['Date'] })
     vi.setSystemTime(new Date('2026-10-19T15:00:00.000Z'))
     await getGlanceBoard()
     await getGlanceBoard()
-    expect(spy).toHaveBeenCalledTimes(1)
-    expect(spy).toHaveBeenCalledWith(100)
+    expect(tasks).toHaveBeenCalledTimes(1)
+    expect(tasks).toHaveBeenCalledWith(100)
+    expect(events).toHaveBeenCalledTimes(1)
+    expect(fub).toHaveBeenCalledTimes(1)
+    await completeGlanceTask({ source: 'google', id: 'gtask-demo-review' })
+    await getGlanceBoard()
+    expect(tasks).toHaveBeenCalledTimes(2)
+    expect(events).toHaveBeenCalledTimes(1)
+    expect(fub).toHaveBeenCalledTimes(1)
+    await undoGlanceTask({ source: 'google', id: 'gtask-demo-review' })
+    const restored = await getGlanceBoard()
+    expect(tasks).toHaveBeenCalledTimes(3)
+    expect(fub).toHaveBeenCalledTimes(1)
+    expect(restored.all.some((item) => item.id === 'gtask-demo-review')).toBe(true)
     vi.setSystemTime(new Date('2026-10-19T15:01:01.000Z'))
     await getGlanceBoard()
-    expect(spy).toHaveBeenCalledTimes(2)
+    expect(tasks).toHaveBeenCalledTimes(4)
+    expect(events).toHaveBeenCalledTimes(2)
+    expect(fub).toHaveBeenCalledTimes(2)
   })
 
   it('loads task notes and the Meet link only on the detail call', async () => {
@@ -275,7 +293,14 @@ describe('glance loading', () => {
     expect(google?.body).toContain('completed')
     const fub = calls.find((call) => call.url.includes('/v1/tasks/42'))
     expect(fub?.method).toBe('PUT')
-    expect(fub?.body).toContain('"isCompleted":1')
+    expect(fub?.body).toContain('"isCompleted":true')
+    await undoGlanceTask({ source: 'google', id: 'task-9' })
+    await undoGlanceTask({ source: 'fub', id: '42' })
+    const reopened = calls.filter((call) => call.url.includes('/tasks/task-9') && call.method === 'PATCH')
+    expect(reopened.at(-1)?.body).toContain('needsAction')
+    const fubUndo = calls.find((call) => call.url.includes('/v1/tasks/42') && call.body.includes('false'))
+    expect(fubUndo?.method).toBe('PUT')
+    expect(fubUndo?.body).toContain('"isCompleted":false')
   })
 
   it('hides a demo task after it is marked done', async () => {
@@ -285,6 +310,9 @@ describe('glance loading', () => {
     await completeGlanceTask({ source: 'google', id: 'gtask-demo-review' })
     const after = await getGlanceBoard(new Date('2026-10-19T15:00:00.000Z'))
     expect(after.all.some((item) => item.id === 'gtask-demo-review')).toBe(false)
+    await undoGlanceTask({ source: 'google', id: 'gtask-demo-review' })
+    const undone = await getGlanceBoard(new Date('2026-10-19T15:00:00.000Z'))
+    expect(undone.all.some((item) => item.id === 'gtask-demo-review')).toBe(true)
   })
 })
 

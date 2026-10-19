@@ -399,7 +399,7 @@ export async function getGoogleTask(id: string): Promise<HubTask | null> {
   return mapGTask((await res.json()) as GTask)
 }
 
-export async function completeGoogleTask(id: string): Promise<void> {
+async function patchGoogleTaskStatus(id: string, status: 'completed' | 'needsAction'): Promise<void> {
   const { accessToken: token } = await resolveGoogleAccessToken()
   if (!token) {
     if (!isDemoMode()) throw new Error('Google Tasks is not connected')
@@ -412,9 +412,17 @@ export async function completeGoogleTask(id: string): Promise<void> {
       Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
-    body: JSON.stringify({ status: 'completed' }),
+    body: JSON.stringify({ status }),
   })
-  if (!res.ok) throw new Error(await googleError(res, 'Google Tasks complete'))
+  if (!res.ok) throw new Error(await googleError(res, 'Google Tasks update'))
+}
+
+export async function completeGoogleTask(id: string): Promise<void> {
+  await patchGoogleTaskStatus(id, 'completed')
+}
+
+export async function reopenGoogleTask(id: string): Promise<void> {
+  await patchGoogleTaskStatus(id, 'needsAction')
 }
 
 export async function getGoogleEvent(id: string): Promise<HubCalendarEvent | null> {

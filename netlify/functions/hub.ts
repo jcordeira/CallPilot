@@ -1,6 +1,6 @@
 import type { Config, Context } from '@netlify/functions'
 import { calendarOk, createCalendar, patchCalendar, peopleQuery, readCalendar, removeCalendar } from './_shared/calendarApi'
-import { completeGlanceTask, getGlanceBoard, getGlanceDetail, type GlanceKind, type GlanceSource } from './_shared/glance'
+import { completeGlanceTask, getGlanceBoard, getGlanceDetail, undoGlanceTask, type GlanceKind, type GlanceSource } from './_shared/glance'
 import { createHubEvent, createHubTask, eventInputFromBody, getHubSummary, scoreHubLeads, taskInputFromBody } from './_shared/hub'
 import { requireHubSession } from './_shared/hubSession'
 import { listLeadHeat } from './_shared/leadHeat'
@@ -55,6 +55,14 @@ export default async (req: Request, context: Context) => {
       const id = typeof body.id === 'string' ? body.id.trim() : ''
       if ((source !== 'google' && source !== 'fub') || !id) return jsonFail('source and id are required', 400)
       return jsonOk(await completeGlanceTask({ source, id }))
+    }
+    if (action === 'glance-undo') {
+      if (req.method !== 'POST') return jsonFail('Method not allowed', 405)
+      const body = await readJson(req)
+      const source = body.source
+      const id = typeof body.id === 'string' ? body.id.trim() : ''
+      if ((source !== 'google' && source !== 'fub') || !id) return jsonFail('source and id are required', 400)
+      return jsonOk(await undoGlanceTask({ source, id }))
     }
     if (action === 'tasks') {
       if (req.method !== 'POST') return jsonFail('Method not allowed', 405)
