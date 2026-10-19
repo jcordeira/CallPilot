@@ -1,7 +1,7 @@
-import { completeGoogleTask, getGoogleEvent, getGoogleTask, listEventsBetween, listGoogleTasks } from './calendar'
+import { completeGoogleTask, getGoogleEvent, getGoogleTask, listEventsBetween, listGoogleTasks, reopenGoogleTask } from './calendar'
 import { addDays, zonedDate, zonedParts } from './commandTime'
 import { isDemoMode } from './env'
-import { completeFubTask, listOpenFubTasksForUser, listRecentNotes, readFubTask } from './followupboss'
+import { completeFubTask, listOpenFubTasksForUser, listRecentNotes, readFubTask, reopenFubTask } from './followupboss'
 import { getGoogleConnectionStatus } from './googleAuth'
 import type { HubCalendarEvent, HubTask } from './hubTypes'
 import { loanOfficer } from './team'
@@ -228,14 +228,53 @@ function addCivilDays(dayKey: string, days: number): string {
   return new Date(Date.UTC(year, month - 1, day + days)).toISOString().slice(0, 10)
 }
 
+type Slot<T> = { at: number; value: T }
+
+let boardCache: Slot<GlanceBoard> | null = null
+let googleTaskCache: Slot<HubTask[]> | null = null
+let fubTaskCache: Slot<HubTask[]> | null = null
+let eventCache: Slot<HubCalendarEvent[]> | null = null
+const completedKeys = new Set<string>()
+
+function fresh<T>(slot: Slot<T> | null, nowMs: number): slot is Slot<T> {
+  return slot != null && nowMs - slot.at < GLANCE_CACHE_MS
+}
+
+export function resetGlanceForTests(): void {
+  boardCache = null
+  googleTaskCache = null
+  fubTaskCache = null
+  eventCache = null
+  completedKeys.clear()
+}
+
+/** Drop the assembled board and one source so the next read refetches only that source. */
+export function bustGlanceSource(source: GlanceSource): void {
+  boardCache = null
+  if (source === 'google') googleTaskCache = null
+  else fubTaskCache = null
+}
+
 export async function loadGlance(now = new Date()): Promise<GlanceBoard> {
+  const nowMs = Date.now()
   const userId = joeTaskAssigneeId()
+  const googleNow = googleTaskCache
+  const fubNow = fubTaskCache
+  const eventsNow = eventCache
+  const googleCached = fresh(googleNow, nowMs)
+  const fubCached = fresh(fubNow, nowMs)
+  const eventsCached = fresh(eventsNow, nowMs)
   const [tasksResult, fubResult, eventsResult, googleResult] = await Promise.allSettled([
-    listGoogleTasks(100).then((result) => result.tasks),
-    listOpenFubTasksForUser(userId),
-    listEventsBetween(startOfEtDay(now), endOfGlanceWindow(now)).then((result) => result.events),
+    googleCached ? Promise.resolve(googleNow.value) : listGoogleTasks(100).then((result) => result.tasks),
+    fubCached ? Promise.resolve(fubNow.value) : listOpenFubTasksForUser(userId),
+    eventsCached
+      ? Promise.resolve(eventsNow.value)
+      : listEventsBetween(startOfEtDay(now), endOfGlanceWindow(now)).then((result) => result.events),
     getGoogleConnectionStatus(),
   ])
+  if (tasksResult.status === 'fulfilled' && !googleCached) googleTaskCache = { at: Date.now(), value: tasksResult.value }
+  if (fubResult.status === 'fulfilled' && !fubCached) fubTaskCache = { at: Date.now(), value: fubResult.value }
+  if (eventsResult.status === 'fulfilled' && !eventsCached) eventCache = { at: Date.now(), value: eventsResult.value }
   const warnings: string[] = []
   if (tasksResult.status === 'rejected' || eventsResult.status === 'rejected') warnings.push('Google unavailable')
   if (fubResult.status === 'rejected') warnings.push('Follow Up Boss unavailable')
@@ -249,18 +288,11 @@ export async function loadGlance(now = new Date()): Promise<GlanceBoard> {
   })
 }
 
-let cache: { at: number; board: GlanceBoard } | null = null
-const completedKeys = new Set<string>()
-
-export function resetGlanceForTests(): void {
-  cache = null
-  completedKeys.clear()
-}
-
 export async function getGlanceBoard(now = new Date()): Promise<GlanceBoard> {
-  if (cache && Date.now() - cache.at < GLANCE_CACHE_MS) return cache.board
+  const cached = boardCache
+  if (fresh(cached, Date.now())) return cached.value
   const board = await loadGlance(now)
-  cache = { at: Date.now(), board }
+  boardCache = { at: Date.now(), value: board }
   return board
 }
 
@@ -354,11 +386,26 @@ export async function getGlanceDetail(query: {
   }
 }
 
+function taskKey(source: GlanceSource, id: string): string {
+  return `${source}:${id.trim()}`
+}
+
 export async function completeGlanceTask(input: { source: GlanceSource; id: string }): Promise<{ done: true }> {
-  if (!input.id.trim()) throw new Error('Task id is required')
-  if (input.source === 'google') await completeGoogleTask(input.id)
-  else await completeFubTask(input.id)
-  completedKeys.add(`${input.source}:${input.id}`)
-  cache = null
+  const id = input.id.trim()
+  if (!id) throw new Error('Task id is required')
+  if (input.source === 'google') await completeGoogleTask(id)
+  else await completeFubTask(id)
+  completedKeys.add(taskKey(input.source, id))
+  bustGlanceSource(input.source)
+  return { done: true }
+}
+
+export async function undoGlanceTask(input: { source: GlanceSource; id: string }): Promise<{ done: true }> {
+  const id = input.id.trim()
+  if (!id) throw new Error('Task id is required')
+  if (input.source === 'google') await reopenGoogleTask(id)
+  else await reopenFubTask(id)
+  completedKeys.delete(taskKey(input.source, id))
+  bustGlanceSource(input.source)
   return { done: true }
 }

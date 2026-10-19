@@ -1,14 +1,18 @@
-import { useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { FubPersonLink } from './FubPersonLink'
 import {
   completeGlanceTask,
   fetchGlanceDetail,
   googleConnectUrl,
+  undoGlanceTask,
   type GlanceDetail,
   type GlanceItem,
-  type GlanceSource,
 } from '../lib/hubApi'
 import { dayLabel } from '../lib/time'
+
+const TODAY_LIMIT = 10
+const FADE_MS = 420
+const UNDO_MS = 5_000
 
 type KindFilter = 'all' | 'tasks' | 'appointments'
 type SourceFilter = 'all' | 'google' | 'fub'
@@ -33,6 +37,16 @@ function passes(item: GlanceItem, kind: KindFilter, source: SourceFilter): boole
   return true
 }
 
+type Flight = {
+  item: GlanceItem
+  removed: boolean
+  undo: boolean
+  undoSent: boolean
+  settled: 'pending' | 'done' | 'failed'
+  removeTimer: number
+  toastTimer: number
+}
+
 function dayHeading(dayKey: string, todayKey?: string): string {
   if (dayKey === 'none') return 'No due date'
   if (todayKey && dayKey === todayKey) return 'Today'
@@ -50,6 +64,7 @@ export function GlanceSection({
   loading,
   todayKey,
   onDone,
+  onRestore,
 }: {
   title: string
   headingId: string
@@ -60,22 +75,36 @@ export function GlanceSection({
   error: string | null
   loading: boolean
   todayKey?: string
-  onDone: (source: GlanceSource, id: string) => void
+  onDone: (item: GlanceItem) => void
+  onRestore: (item: GlanceItem) => void
 }) {
   const [kind, setKind] = useState<KindFilter>('all')
   const [source, setSource] = useState<SourceFilter>('all')
+  const [showAll, setShowAll] = useState(false)
   const [openKey, setOpenKey] = useState<string | null>(null)
   const [details, setDetails] = useState<Record<string, GlanceDetail>>({})
   const [detailError, setDetailError] = useState<Record<string, string>>({})
   const [loadingKey, setLoadingKey] = useState<string | null>(null)
-  const [confirmKey, setConfirmKey] = useState<string | null>(null)
-  const [doneError, setDoneError] = useState<string | null>(null)
-  const [busyKey, setBusyKey] = useState<string | null>(null)
   const [noteOpen, setNoteOpen] = useState<Record<string, boolean>>({})
   const [olderOpen, setOlderOpen] = useState<Record<string, boolean>>({})
+  const [leaving, setLeaving] = useState<Record<string, boolean>>({})
+  const [toasts, setToasts] = useState<GlanceItem[]>([])
+  const [actionError, setActionError] = useState<string | null>(null)
+  const flights = useRef(new Map<string, Flight>())
 
   const visible = mode === 'all' ? items.filter((item) => passes(item, kind, source)) : items
-  const groups = mode === 'all' ? groupItems(visible, todayKey) : [{ key: 'today', label: '', items: visible }]
+  const listed = mode === 'today' && !showAll ? visible.slice(0, TODAY_LIMIT) : visible
+  const groups = mode === 'all' ? groupItems(listed, todayKey) : [{ key: 'today', label: '', items: listed }]
+
+  useEffect(() => {
+    const active = flights.current
+    return () => {
+      for (const flight of active.values()) {
+        window.clearTimeout(flight.removeTimer)
+        window.clearTimeout(flight.toastTimer)
+      }
+    }
+  }, [])
 
   const toggle = (item: GlanceItem) => {
     if (openKey === item.key) {
@@ -83,8 +112,6 @@ export function GlanceSection({
       return
     }
     setOpenKey(item.key)
-    setConfirmKey(null)
-    setDoneError(null)
     if (details[item.key] || loadingKey === item.key) return
     setLoadingKey(item.key)
     void fetchGlanceDetail(item)
@@ -102,19 +129,78 @@ export function GlanceSection({
       .finally(() => setLoadingKey((current) => (current === item.key ? null : current)))
   }
 
-  const markDone = (item: GlanceItem) => {
-    setBusyKey(item.key)
-    setDoneError(null)
-    void completeGlanceTask(item.source, item.id)
-      .then(() => {
-        setOpenKey(null)
-        setConfirmKey(null)
-        onDone(item.source, item.id)
+  const failComplete = (item: GlanceItem, flight: Flight, message: string) => {
+    window.clearTimeout(flight.removeTimer)
+    window.clearTimeout(flight.toastTimer)
+    flights.current.delete(item.key)
+    setLeaving((prev) => {
+      const next = { ...prev }
+      delete next[item.key]
+      return next
+    })
+    setToasts((prev) => prev.filter((toast) => toast.key !== item.key))
+    if (flight.removed) onRestore(item)
+    setActionError(message)
+  }
+
+  const startComplete = (item: GlanceItem) => {
+    if (item.kind !== 'task' || flights.current.has(item.key)) return
+    const flight: Flight = { item, removed: false, undo: false, undoSent: false, settled: 'pending', removeTimer: 0, toastTimer: 0 }
+    flights.current.set(item.key, flight)
+    setActionError(null)
+    setLeaving((prev) => ({ ...prev, [item.key]: true }))
+    setToasts((prev) => [...prev.filter((toast) => toast.key !== item.key), item])
+    if (openKey === item.key) setOpenKey(null)
+    flight.removeTimer = window.setTimeout(() => {
+      flight.removed = true
+      onDone(item)
+    }, FADE_MS)
+    flight.toastTimer = window.setTimeout(() => {
+      setToasts((prev) => prev.filter((toast) => toast.key !== item.key))
+      if (flight.settled !== 'pending') flights.current.delete(item.key)
+    }, UNDO_MS)
+
+    void (async () => {
+      try {
+        await completeGlanceTask(item.source, item.id)
+      } catch (err: unknown) {
+        flight.settled = 'failed'
+        failComplete(item, flight, err instanceof Error ? err.message : 'Could not complete this task')
+        return
+      }
+      flight.settled = 'done'
+      if (!flight.undo || flight.undoSent) return
+      flight.undoSent = true
+      try {
+        await undoGlanceTask(item.source, item.id)
+      } catch (err: unknown) {
+        onDone(item)
+        setActionError(err instanceof Error ? err.message : 'Could not undo')
+      }
+    })()
+  }
+
+  const undo = (item: GlanceItem) => {
+    const flight = flights.current.get(item.key)
+    if (!flight || flight.settled === 'failed') return
+    flight.undo = true
+    window.clearTimeout(flight.removeTimer)
+    window.clearTimeout(flight.toastTimer)
+    setLeaving((prev) => {
+      const next = { ...prev }
+      delete next[item.key]
+      return next
+    })
+    setToasts((prev) => prev.filter((toast) => toast.key !== item.key))
+    if (flight.removed) onRestore(item)
+    if (flight.settled === 'done' && !flight.undoSent) {
+      flight.undoSent = true
+      void undoGlanceTask(item.source, item.id).catch((err: unknown) => {
+        onDone(item)
+        setActionError(err instanceof Error ? err.message : 'Could not undo')
       })
-      .catch((err: unknown) => {
-        setDoneError(err instanceof Error ? err.message : 'Could not mark the task done')
-      })
-      .finally(() => setBusyKey(null))
+      flights.current.delete(item.key)
+    }
   }
 
   return (
@@ -179,8 +265,18 @@ export function GlanceSection({
               const open = openKey === item.key
               const detail = details[item.key]
               return (
-                <li key={item.key} className="glance__item">
+                <li key={item.key} className={leaving[item.key] ? 'glance__item glance__item--leaving' : 'glance__item'}>
                   <div className="glance__line">
+                    {item.kind === 'task' ? (
+                      <label className="glance__check">
+                        <input
+                          type="checkbox"
+                          checked={leaving[item.key] === true}
+                          aria-label={`Complete ${item.title}`}
+                          onChange={() => startComplete(item)}
+                        />
+                      </label>
+                    ) : null}
                     <button
                       type="button"
                       className="glance__hit"
@@ -203,19 +299,10 @@ export function GlanceSection({
                       detail={detail}
                       loading={loadingKey === item.key && !detail}
                       error={detailError[item.key]}
-                      confirm={confirmKey === item.key}
-                      busy={busyKey === item.key}
-                      doneError={confirmKey === item.key ? doneError : null}
                       older={olderOpen[item.key] === true}
                       noteOpen={noteOpen}
                       onToggleNote={(id) => setNoteOpen((prev) => ({ ...prev, [id]: !prev[id] }))}
                       onOlder={() => setOlderOpen((prev) => ({ ...prev, [item.key]: true }))}
-                      onAsk={() => {
-                        setConfirmKey(item.key)
-                        setDoneError(null)
-                      }}
-                      onCancel={() => setConfirmKey(null)}
-                      onConfirm={() => markDone(item)}
                     />
                   ) : null}
                 </li>
@@ -224,6 +311,28 @@ export function GlanceSection({
           </ul>
         </div>
       ))}
+      {mode === 'today' && visible.length > TODAY_LIMIT ? (
+        <div className="glance__expand">
+          <button type="button" className="glance__more" aria-expanded={showAll} onClick={() => setShowAll((open) => !open)}>
+            {showAll ? 'Show less' : `Show all (${visible.length})`}
+          </button>
+        </div>
+      ) : null}
+      <div className="glance__toasts">
+        {toasts.map((toast) => (
+          <div key={toast.key} className="glance__toast" role="status">
+            <span>{toast.title} completed</span>
+            <button type="button" onClick={() => undo(toast)}>
+              Undo
+            </button>
+          </div>
+        ))}
+        {actionError ? (
+          <p className="glance__toast glance__toast--error" role="alert">
+            {actionError}
+          </p>
+        ) : null}
+      </div>
     </section>
   )
 }
@@ -243,31 +352,19 @@ function GlanceDetailPanel({
   detail,
   loading,
   error,
-  confirm,
-  busy,
-  doneError,
   older,
   noteOpen,
   onToggleNote,
   onOlder,
-  onAsk,
-  onCancel,
-  onConfirm,
 }: {
   item: GlanceItem
   detail?: GlanceDetail
   loading: boolean
   error?: string
-  confirm: boolean
-  busy: boolean
-  doneError: string | null
   older: boolean
   noteOpen: Record<string, boolean>
   onToggleNote: (id: string) => void
   onOlder: () => void
-  onAsk: () => void
-  onCancel: () => void
-  onConfirm: () => void
 }) {
   const notes = detail?.personNotes ?? []
   const shown = older ? notes : notes.slice(0, 2)
@@ -324,26 +421,6 @@ function GlanceDetailPanel({
       ) : null}
       {detail?.notesError ? <p className="hub__item-meta">{detail.notesError}</p> : null}
       {empty ? <p className="hub__item-meta">No extra details.</p> : null}
-      {item.kind === 'task' ? (
-        <div className="glance__done">
-          {confirm ? (
-            <div className="glance__confirm">
-              <span>Mark this task done?</span>
-              <button type="button" className="btn btn--primary" disabled={busy} onClick={onConfirm}>
-                Confirm
-              </button>
-              <button type="button" className="btn" disabled={busy} onClick={onCancel}>
-                Cancel
-              </button>
-            </div>
-          ) : (
-            <button type="button" className="btn" onClick={onAsk}>
-              Mark done
-            </button>
-          )}
-          {doneError ? <p className="hub__error glance__banner">{doneError}</p> : null}
-        </div>
-      ) : null}
     </div>
   )
 }

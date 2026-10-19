@@ -270,8 +270,62 @@ a.hub__item-title:hover { text-decoration: underline; }
   align-items: center;
   gap: 10px;
   min-height: 44px;
-  padding: 0 18px;
+  padding: 0 8px 0 4px;
 }
+.glance__check {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 44px;
+  width: 44px;
+  height: 44px;
+}
+.glance__check input {
+  width: 22px;
+  height: 22px;
+  margin: 0;
+}
+.glance__item--leaving {
+  opacity: 0;
+  transition: opacity 400ms ease;
+}
+.glance__item--leaving .glance__title { text-decoration: line-through; }
+.glance__expand { padding: 0 18px 12px; }
+.glance__toasts {
+  position: fixed;
+  z-index: 20;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  pointer-events: none;
+}
+.glance__toast {
+  pointer-events: auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--r-8);
+  background: var(--ink);
+  color: #fff;
+  font-size: 14px;
+}
+.glance__toast button {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 0;
+  background: transparent;
+  color: #fff;
+  font: inherit;
+  font-weight: 500;
+  text-decoration: underline;
+  cursor: pointer;
+}
+.glance__toast--error { background: #8c2f23; }
 .glance__hit {
   flex: 1 1 auto;
   display: flex;
