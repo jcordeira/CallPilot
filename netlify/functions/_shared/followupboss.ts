@@ -140,6 +140,7 @@ function fubTaskIsDone(value: unknown): boolean {
 type FubTaskRaw = {
   id: number
   name?: string
+  description?: string
   isCompleted?: boolean | number | string
   dueDate?: string
   personId?: number
@@ -167,19 +168,31 @@ function assignedLabel(task: FubTaskRaw): string | undefined {
   return undefined
 }
 
-async function fetchOpenTasksForUser(userId: number, now = new Date()): Promise<FubTaskRaw[]> {
-  const window = dueWindow(now)
-  const params = new URLSearchParams({
-    assignedUserId: String(userId),
-    // FUB stores 0/1. The string "false" is truthy in their PHP API, so send 0.
-    isCompleted: '0',
-    sort: 'dueDate',
-    limit: '100',
-    dueStart: window.dueStart,
-    dueEnd: window.dueEnd,
-  })
-  const data = (await fubFetch(`/tasks?${params}`)) as { tasks?: FubTaskRaw[] }
-  return data?.tasks ?? []
+async function fetchOpenTasksForUser(
+  userId: number,
+  now = new Date(),
+  window = dueWindow(now),
+  pages = 1,
+): Promise<FubTaskRaw[]> {
+  const all: FubTaskRaw[] = []
+  const pageCount = Math.min(5, Math.max(1, pages))
+  for (let page = 0; page < pageCount; page += 1) {
+    const params = new URLSearchParams({
+      assignedUserId: String(userId),
+      // FUB stores 0/1. The string "false" is truthy in their PHP API, so send 0.
+      isCompleted: '0',
+      sort: 'dueDate',
+      limit: '100',
+      offset: String(page * 100),
+      dueStart: window.dueStart,
+      dueEnd: window.dueEnd,
+    })
+    const data = (await fubFetch(`/tasks?${params}`)) as { tasks?: FubTaskRaw[] }
+    const tasks = data?.tasks ?? []
+    all.push(...tasks)
+    if (tasks.length < 100) break
+  }
+  return all
 }
 
 async function lookupPeopleNames(ids: number[]): Promise<Map<number, string>> {
@@ -205,27 +218,17 @@ async function fetchPeople(query: string): Promise<FubPerson[]> {
   return data?.people ?? []
 }
 
-export async function listOpenFubTasks(): Promise<HubTask[]> {
-  if (isDemoMode()) {
-    const seen = new Set<string>()
-    const extras = (await loadHubExtras()).fubTasks
-    return [...extras, ...demoFubTasks()].filter((task) => {
-      if (seen.has(task.id)) return false
-      seen.add(task.id)
-      return task.status !== 'completed'
-    })
-  }
+async function demoOpenFubTasks(): Promise<HubTask[]> {
+  const seen = new Set<string>()
+  const extras = (await loadHubExtras()).fubTasks
+  return [...extras, ...demoFubTasks()].filter((task) => {
+    if (seen.has(task.id)) return false
+    seen.add(task.id)
+    return task.status !== 'completed'
+  })
+}
 
-  const assigneeIds = followUpAssigneeIds()
-  if (!assigneeIds.length) return []
-
-  const settled = await Promise.allSettled(assigneeIds.map((id) => fetchOpenTasksForUser(id)))
-  const raw = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
-  if (!raw.length && settled.every((result) => result.status === 'rejected')) {
-    const failed = settled.find((result) => result.status === 'rejected')
-    if (failed?.status === 'rejected') throw failed.reason
-  }
-
+async function mapOpenFubTasks(raw: FubTaskRaw[]): Promise<HubTask[]> {
   const seen = new Set<number>()
   const open = raw.filter((task) => {
     if (task?.id == null || fubTaskIsDone(task.isCompleted) || seen.has(task.id)) return false
@@ -252,6 +255,59 @@ export async function listOpenFubTasks(): Promise<HubTask[]> {
       assignedTo: assignedLabel(task),
     }))
     .sort((a, b) => (a.due ?? '9999-99-99').localeCompare(b.due ?? '9999-99-99') || a.title.localeCompare(b.title))
+}
+
+export async function listOpenFubTasks(): Promise<HubTask[]> {
+  if (isDemoMode()) return demoOpenFubTasks()
+
+  const assigneeIds = followUpAssigneeIds()
+  if (!assigneeIds.length) return []
+
+  const settled = await Promise.allSettled(assigneeIds.map((id) => fetchOpenTasksForUser(id)))
+  const raw = settled.flatMap((result) => (result.status === 'fulfilled' ? result.value : []))
+  if (!raw.length && settled.every((result) => result.status === 'rejected')) {
+    const failed = settled.find((result) => result.status === 'rejected')
+    if (failed?.status === 'rejected') throw failed.reason
+  }
+  return mapOpenFubTasks(raw)
+}
+
+/** Open tasks for one assignee. Joe's hub glance uses user id 1. */
+export async function listOpenFubTasksForUser(userId: number): Promise<HubTask[]> {
+  if (!userId) return []
+  if (isDemoMode()) return demoOpenFubTasks()
+  const now = new Date()
+  const raw = await fetchOpenTasksForUser(
+    userId,
+    now,
+    {
+      dueStart: new Date(now.getTime() - 365 * 86_400_000).toISOString(),
+      dueEnd: new Date(now.getTime() + 365 * 86_400_000).toISOString(),
+    },
+    5,
+  )
+  return mapOpenFubTasks(raw.filter((task) => task.assignedUserId == null || task.assignedUserId === userId))
+}
+
+export async function readFubTask(id: string): Promise<{ name?: string; description?: string; personId?: number } | null> {
+  if (!id || isDemoMode()) return null
+  const data = (await fubFetch(`/tasks/${encodeURIComponent(id)}`)) as (FubTaskRaw & { task?: FubTaskRaw }) | null
+  const task = data?.task ?? data
+  if (!task || task.id == null) return null
+  return {
+    name: task.name,
+    description: task.description,
+    personId: task.personId,
+  }
+}
+
+export async function completeFubTask(id: string): Promise<void> {
+  if (!id) throw new Error('Task id is required')
+  if (isDemoMode()) return
+  await fubFetch(`/tasks/${encodeURIComponent(id)}`, {
+    method: 'PUT',
+    body: JSON.stringify({ isCompleted: 1 }),
+  })
 }
 
 function resolveAssignee(input: { assignedUserId?: number; assignedTo?: string }): { name: string; userId?: number } {

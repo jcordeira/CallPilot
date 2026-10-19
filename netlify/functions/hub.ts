@@ -1,5 +1,6 @@
 import type { Config, Context } from '@netlify/functions'
 import { calendarOk, createCalendar, patchCalendar, peopleQuery, readCalendar, removeCalendar } from './_shared/calendarApi'
+import { completeGlanceTask, getGlanceBoard, getGlanceDetail, type GlanceKind, type GlanceSource } from './_shared/glance'
 import { createHubEvent, createHubTask, eventInputFromBody, getHubSummary, scoreHubLeads, taskInputFromBody } from './_shared/hub'
 import { requireHubSession } from './_shared/hubSession'
 import { listLeadHeat } from './_shared/leadHeat'
@@ -26,6 +27,34 @@ export default async (req: Request, context: Context) => {
     if (action === 'summary') {
       if (req.method !== 'GET') return jsonFail('Method not allowed', 405)
       return jsonOk(await getHubSummary())
+    }
+    if (action === 'glance') {
+      if (req.method !== 'GET') return jsonFail('Method not allowed', 405)
+      return jsonOk(await getGlanceBoard())
+    }
+    if (action === 'glance-detail') {
+      if (req.method !== 'GET') return jsonFail('Method not allowed', 405)
+      const source = url.searchParams.get('source')
+      const kind = url.searchParams.get('kind')
+      const id = url.searchParams.get('id')?.trim() ?? ''
+      if ((source !== 'google' && source !== 'fub') || (kind !== 'task' && kind !== 'appointment') || !id) {
+        return jsonFail('source, kind, and id are required', 400)
+      }
+      const personRaw = Number(url.searchParams.get('personId') ?? '')
+      return jsonOk(await getGlanceDetail({
+        source: source as GlanceSource,
+        kind: kind as GlanceKind,
+        id,
+        personId: Number.isInteger(personRaw) && personRaw > 0 ? personRaw : undefined,
+      }))
+    }
+    if (action === 'glance-done') {
+      if (req.method !== 'POST') return jsonFail('Method not allowed', 405)
+      const body = await readJson(req)
+      const source = body.source
+      const id = typeof body.id === 'string' ? body.id.trim() : ''
+      if ((source !== 'google' && source !== 'fub') || !id) return jsonFail('source and id are required', 400)
+      return jsonOk(await completeGlanceTask({ source, id }))
     }
     if (action === 'tasks') {
       if (req.method !== 'POST') return jsonFail('Method not allowed', 405)
