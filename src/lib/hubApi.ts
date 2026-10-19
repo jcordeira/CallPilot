@@ -12,6 +12,7 @@ export type HubCalendarEvent = {
   allDay: boolean
   source: HubEventSource
   attendees?: CalendarAttendee[]
+  meetLink?: string
 }
 
 export type HubTask = {
@@ -50,6 +51,7 @@ export type GoogleConnection = {
   needsCalendarWrite?: boolean
   canWrite?: boolean
   needsGmailSend?: boolean
+  needsTasks?: boolean
   reconnect?: boolean
 }
 
@@ -102,6 +104,68 @@ async function hubRequest<T>(path: string, init?: RequestInit): Promise<T> {
 
 export function fetchHubSummary() {
   return hubRequest<HubSummary>('summary')
+}
+
+export type GlanceKind = 'task' | 'appointment'
+export type GlanceSource = 'google' | 'fub'
+
+export type GlanceItem = {
+  key: string
+  id: string
+  kind: GlanceKind
+  source: GlanceSource
+  title: string
+  whenLabel: string
+  dayKey: string
+  at: string
+  overdue: boolean
+  personId?: number
+  personName?: string
+}
+
+export type GlanceNote = {
+  id: string
+  headline: string
+  body?: string
+  created?: string
+  long: boolean
+}
+
+export type GlanceDetail = {
+  description?: string
+  notes?: string
+  location?: string
+  attendees?: { label: string }[]
+  meetLink?: string
+  htmlLink?: string
+  personNotes?: GlanceNote[]
+  notesError?: string
+}
+
+export type GlanceBoard = {
+  today: GlanceItem[]
+  all: GlanceItem[]
+  warnings: string[]
+  needsTasks: boolean
+  todayKey: string
+  generatedAt: string
+}
+
+export function fetchGlance() {
+  return hubRequest<GlanceBoard>('glance')
+}
+
+export function fetchGlanceDetail(item: Pick<GlanceItem, 'source' | 'kind' | 'id' | 'personId'>) {
+  const params = new URLSearchParams({ source: item.source, kind: item.kind, id: item.id })
+  if (item.personId) params.set('personId', String(item.personId))
+  return hubRequest<GlanceDetail>(`glance-detail?${params}`)
+}
+
+export function completeGlanceTask(source: GlanceSource, id: string) {
+  return hubRequest<{ done: true }>('glance-done', {
+    method: 'POST',
+    body: JSON.stringify({ source, id }),
+  })
 }
 
 export type SmsUsageStatus = {

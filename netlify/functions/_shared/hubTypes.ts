@@ -24,6 +24,7 @@ export type HubCalendarEvent = {
   allDay: boolean
   source: EventSource
   attendees?: CalendarAttendee[]
+  meetLink?: string
 }
 
 export type HubTask = {
@@ -75,6 +76,8 @@ export type GoogleConnection = {
   needsGmailSend?: boolean
   /** OAuth is connected but the stored scope cannot edit events or send a Gmail invite. */
   reconnect?: boolean
+  /** OAuth is connected, but the saved grant cannot read Google Tasks. */
+  needsTasks?: boolean
 }
 
 export type HubSummary = {

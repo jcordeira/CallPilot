@@ -5,6 +5,7 @@ import {
   createHubEvent,
   createHubTask,
   disconnectGoogle,
+  fetchGlance,
   fetchHubSummary,
   fetchSmsUsage,
   fetchLeadHeat,
@@ -18,6 +19,8 @@ import {
   previewWhatsappAutoreply,
   rescoreLeads,
   type CommandPanel,
+  type GlanceBoard,
+  type GlanceSource,
   type ReminderPanel,
   type CalendarGuestPreview,
   type CalendarGuestPanel,
@@ -28,6 +31,7 @@ import {
   type SmsUsageStatus,
   type ScoredLead,
 } from '../lib/hubApi'
+import { GlanceSection } from '../components/GlanceSection'
 import { FubPersonLink, TextWithPerson } from '../components/FubPersonLink'
 import { matchPersonInText, personIdForName, type NamedPerson } from '../lib/fubLink'
 import { dateToKey, dayLabel } from '../lib/time'
@@ -129,6 +133,9 @@ export function HubPage() {
   const formId = useId()
   const [searchParams, setSearchParams] = useSearchParams()
   const [summary, setSummary] = useState<HubSummary | null>(null)
+  const [glance, setGlance] = useState<GlanceBoard | null>(null)
+  const [glanceError, setGlanceError] = useState<string | null>(null)
+  const [glanceLoading, setGlanceLoading] = useState(true)
   const [smsUsage, setSmsUsage] = useState<SmsUsageStatus | null>(null)
   const [leads, setLeads] = useState<ScoredLead[]>([])
   const [reminders, setReminders] = useState<ReminderPanel | null>(null)
@@ -156,6 +163,7 @@ export function HubPage() {
 
   const load = useCallback(async () => {
     try {
+      setGlanceLoading(true)
       const [nextSummary, nextActivity, heat, reminderPanel, whatsappPanel, guestPanel, commandPanel, usage] = await Promise.all([
         fetchHubSummary(),
         fetchActivity(12),
@@ -165,6 +173,16 @@ export function HubPage() {
         fetchCalendarGuestPanel().catch(() => null),
         fetchCommandPanel().catch(() => null),
         fetchSmsUsage().catch(() => null),
+        fetchGlance()
+          .then((board) => {
+            setGlance(board)
+            setGlanceError(null)
+          })
+          .catch(() => {
+            setGlance(null)
+            setGlanceError('Could not load tasks and appointments.')
+          })
+          .finally(() => setGlanceLoading(false)),
       ])
       setSummary(nextSummary)
       setSmsUsage(usage)
@@ -366,6 +384,18 @@ export function HubPage() {
     } finally {
       setBusy(false)
     }
+  }
+
+  const dropGlanceItem = (source: GlanceSource, id: string) => {
+    setGlance((prev) =>
+      prev
+        ? {
+            ...prev,
+            today: prev.today.filter((item) => !(item.source === source && item.id === id)),
+            all: prev.all.filter((item) => !(item.source === source && item.id === id)),
+          }
+        : prev,
+    )
   }
 
   const people: NamedPerson[] = leads
@@ -575,6 +605,18 @@ export function HubPage() {
           </div>
         </form>
       )}
+
+      <GlanceSection
+        title="Today at a glance"
+        headingId="hub-today"
+        mode="today"
+        items={glance?.today ?? []}
+        warnings={glance?.warnings ?? []}
+        needsTasks={glance?.needsTasks === true || summary?.google?.needsTasks === true}
+        error={glanceError}
+        loading={glanceLoading}
+        onDone={dropGlanceItem}
+      />
 
       <ul className="hub__stats">
         <li className="card hub__stat">
@@ -967,6 +1009,19 @@ export function HubPage() {
           )}
         </section>
       </div>
+
+      <GlanceSection
+        title="All tasks & appointments"
+        headingId="hub-all"
+        mode="all"
+        items={glance?.all ?? []}
+        warnings={glance?.warnings ?? []}
+        needsTasks={false}
+        error={glanceError}
+        loading={glanceLoading}
+        todayKey={glance?.todayKey}
+        onDone={dropGlanceItem}
+      />
     </div>
   )
 }

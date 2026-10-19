@@ -114,6 +114,8 @@ type GCalEvent = {
   start?: { dateTime?: string; date?: string }
   end?: { dateTime?: string; date?: string }
   attendees?: CalendarAttendee[]
+  hangoutLink?: string
+  conferenceData?: { entryPoints?: { entryPointType?: string; uri?: string }[] }
 }
 
 export const CALENDAR_TIME_ZONE = 'America/New_York'
@@ -207,6 +209,13 @@ export function calendarWriteBody(input: {
   return body
 }
 
+function meetLinkOf(item: GCalEvent): string | undefined {
+  const hangout = item.hangoutLink?.trim()
+  if (hangout) return hangout
+  const video = item.conferenceData?.entryPoints?.find((point) => point.entryPointType === 'video' && point.uri?.trim())
+  return video?.uri?.trim() || undefined
+}
+
 function mapGCal(item: GCalEvent): HubCalendarEvent | null {
   if (!item.id || item.status === 'cancelled') return null
   const startRaw = item.start?.dateTime ?? item.start?.date
@@ -235,6 +244,7 @@ function mapGCal(item: GCalEvent): HubCalendarEvent | null {
     endIso,
     allDay,
     source: 'google',
+    meetLink: meetLinkOf(item),
   }
 }
 
@@ -302,7 +312,7 @@ export async function listUpcomingEvents(days = 7): Promise<{ events: HubCalenda
   return { events, demo: false }
 }
 
-export async function listGoogleTasks(): Promise<{ tasks: HubTask[]; demo: boolean }> {
+export async function listGoogleTasks(maxResults = 40): Promise<{ tasks: HubTask[]; demo: boolean }> {
   const { accessToken: token } = await resolveGoogleAccessToken()
   if (!token) {
     if (!isDemoMode()) return { tasks: [], demo: false }
@@ -320,7 +330,7 @@ export async function listGoogleTasks(): Promise<{ tasks: HubTask[]; demo: boole
   const params = new URLSearchParams({
     showCompleted: 'false',
     showHidden: 'false',
-    maxResults: '40',
+    maxResults: String(Math.min(100, Math.max(1, Math.floor(maxResults) || 40))),
   })
   const res = await fetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks?${params}`, {
     headers: { Authorization: `Bearer ${token}` },
@@ -371,6 +381,52 @@ export async function createGoogleTask(input: {
   const mapped = mapGTask((await res.json()) as GTask)
   if (!mapped) throw new Error('Google Tasks create returned no task')
   return mapped
+}
+
+export async function getGoogleTask(id: string): Promise<HubTask | null> {
+  const { accessToken: token } = await resolveGoogleAccessToken()
+  if (!token) {
+    if (!isDemoMode()) return null
+    const extras = await loadHubExtras()
+    return demoGoogleTasks().find((task) => task.id === id) ?? extras.tasks.find((task) => task.id === id) ?? null
+  }
+  const listId = encodeURIComponent(env('GOOGLE_TASKS_LIST_ID', '@default'))
+  const res = await fetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${encodeURIComponent(id)}`, {
+    headers: { Authorization: `Bearer ${token}` },
+  })
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(await googleError(res, 'Google Tasks get'))
+  return mapGTask((await res.json()) as GTask)
+}
+
+export async function completeGoogleTask(id: string): Promise<void> {
+  const { accessToken: token } = await resolveGoogleAccessToken()
+  if (!token) {
+    if (!isDemoMode()) throw new Error('Google Tasks is not connected')
+    return
+  }
+  const listId = encodeURIComponent(env('GOOGLE_TASKS_LIST_ID', '@default'))
+  const res = await fetch(`https://tasks.googleapis.com/tasks/v1/lists/${listId}/tasks/${encodeURIComponent(id)}`, {
+    method: 'PATCH',
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Content-Type': 'application/json',
+    },
+    body: JSON.stringify({ status: 'completed' }),
+  })
+  if (!res.ok) throw new Error(await googleError(res, 'Google Tasks complete'))
+}
+
+export async function getGoogleEvent(id: string): Promise<HubCalendarEvent | null> {
+  const { accessToken: token } = await resolveGoogleAccessToken()
+  if (!token) {
+    if (!isDemoMode()) return null
+    return demoUpcomingEvents(new Date(), 30).find((event) => event.id === id) ?? null
+  }
+  const res = await calendarFetch(`/events/${encodeURIComponent(id)}?conferenceDataVersion=1`)
+  if (res.status === 404) return null
+  if (!res.ok) throw new Error(await googleError(res, 'Calendar event'))
+  return mapGCal((await res.json()) as GCalEvent)
 }
 
 async function calendarFetch(pathAndQuery: string, init?: RequestInit): Promise<Response> {
