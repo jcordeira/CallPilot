@@ -44,6 +44,7 @@ export type GuestAttendee = {
   responseStatus?: string
   displayName?: string
   optional?: boolean
+  self?: boolean
   comment?: string
   additionalGuests?: number
   id?: string
