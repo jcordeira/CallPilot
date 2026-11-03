@@ -53,7 +53,9 @@ type LookupResult = { people: SourcePerson[]; failed: boolean }
 
 type Patch = (input: { event: AutoEvent; attendees: GuestAttendee[] }) => Promise<void>
 
-let memoryBackfillAt: string | undefined
+type SavedState = { backfillAt?: string; last?: AutoaddSummary }
+
+let memoryState: SavedState = {}
 
 function store() {
   try {
@@ -64,7 +66,7 @@ function store() {
 }
 
 export async function resetCalendarAttendeeAutoaddForTests(): Promise<void> {
-  memoryBackfillAt = undefined
+  memoryState = {}
   const blob = store()
   if (!blob) return
   try {
@@ -74,31 +76,35 @@ export async function resetCalendarAttendeeAutoaddForTests(): Promise<void> {
   }
 }
 
-async function backfillStamp(): Promise<string | undefined> {
+async function loadState(): Promise<SavedState> {
   const blob = store()
   if (blob) {
     try {
-      const raw = (await blob.get('state', { type: 'json' })) as { backfillAt?: string } | null
-      if (raw?.backfillAt) {
-        memoryBackfillAt = raw.backfillAt
-        return raw.backfillAt
+      const raw = (await blob.get('state', { type: 'json' })) as SavedState | null
+      if (raw && typeof raw === 'object') {
+        memoryState = raw
+        return raw
       }
     } catch {
       /* memory */
     }
   }
-  return memoryBackfillAt
+  return memoryState
 }
 
-async function markBackfill(at: string): Promise<void> {
-  memoryBackfillAt = at
+async function saveState(next: SavedState): Promise<void> {
+  memoryState = next
   const blob = store()
   if (!blob) return
   try {
-    await blob.setJSON('state', { backfillAt: at })
+    await blob.setJSON('state', next)
   } catch {
     /* memory */
   }
+}
+
+export async function readCalendarAttendeeAutoaddState(): Promise<SavedState> {
+  return loadState()
 }
 
 export function attendeeAutoaddEnabled(): boolean {
@@ -356,8 +362,8 @@ export async function runCalendarAttendeeAutoadd(options?: {
 
   const seen = new Set<string>()
   const matched = new Set<string>()
-  const priorBackfill = await backfillStamp()
-  summary.backfill = !priorBackfill
+  const prior = await loadState()
+  summary.backfill = !prior.backfillAt
   summary.scanned = events.length
 
   for (const event of events) {
@@ -414,7 +420,9 @@ export async function runCalendarAttendeeAutoadd(options?: {
 
   summary.sourcesSeen = [...seen].sort()
   summary.sourcesMatched = [...matched].sort()
-  if (summary.backfill && summary.errors.length === 0) await markBackfill(now.toISOString())
+  const nextState: SavedState = { ...prior, last: summary }
+  if (summary.backfill && summary.errors.length === 0 && !summary.skipped) nextState.backfillAt = now.toISOString()
+  await saveState(nextState)
   console.log(`[calendar-attendee] ${JSON.stringify({
     trigger: options?.trigger ?? 'run',
     backfill: summary.backfill,
