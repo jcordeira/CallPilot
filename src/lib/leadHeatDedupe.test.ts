@@ -27,6 +27,7 @@ function liveEnv() {
   process.env.FUB_LO_USER_ID = '1'
   process.env.FUB_LOA_NAME = 'Frank Cordeira'
   process.env.FUB_LOA_USER_ID = '16'
+  process.env.NURTURE_FRANKIE_ENABLED = 'true'
 }
 
 function hotPerson(id = 4242) {
@@ -56,6 +57,7 @@ beforeEach(async () => {
 afterEach(async () => {
   delete process.env.FOLLOW_UP_BOSS_API_KEY
   delete process.env.LEAD_HEAT_WRITES_ENABLED
+  delete process.env.NURTURE_FRANKIE_ENABLED
   process.env.ASSISTANT_DEMO_MODE = 'true'
   resetHubExtrasForTests()
   resetScoreStoreForTests()

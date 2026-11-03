@@ -71,6 +71,7 @@ function clearReminderEnv() {
     'FUB_LOA_PHONE',
     'QUO_API_KEY',
     'QUO_FROM_NUMBER',
+    'NURTURE_FRANKIE_ENABLED',
   ]) {
     delete process.env[key]
   }
@@ -132,6 +133,7 @@ afterEach(async () => {
 
 describe('reminder seats and routing', () => {
   it('keeps hot calls on Joseph and warm texts on the primary LOA', () => {
+    process.env.NURTURE_FRANKIE_ENABLED = 'true'
     const hot = followUpPlan(
       scoreLead({
         stage: 'Lead',
