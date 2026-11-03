@@ -80,13 +80,19 @@ function planFor(teammate: Teammate, taskType: FollowUpPlan['taskType'], dueOffs
   }
 }
 
-/** Hot → Joseph today. Warm/Cool → Frank. Cold and excluded → no task. */
+/** Warm texts and cool nurture tasks for Frankie. Off until NURTURE_FRANKIE_ENABLED=true. */
+export function nurtureFrankieEnabled(): boolean {
+  return env('NURTURE_FRANKIE_ENABLED', 'false').trim().toLowerCase() === 'true'
+}
+
+/** Hot → Joseph today. Warm/Cool → Frank, only while nurture is on. Cold and excluded → no task. */
 export function followUpPlan(result: LeadScoreResult, personName: string, now = new Date()): FollowUpPlan | null {
   if (result.excluded || result.band === 'cold' || result.band === 'excluded') return null
   const name = personName.trim() || 'Lead'
   if (result.band === 'hot') {
     return planFor(loanOfficer(), 'Call', 0, `Call ${name} — hot again (${result.score})`, now)
   }
+  if (!nurtureFrankieEnabled()) return null
   if (result.band === 'warm') {
     return planFor(loanOfficerAssistant(), 'Text', 1, `Text ${name} — warm lead (${result.score})`, now)
   }

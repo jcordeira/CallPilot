@@ -2,7 +2,7 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { bandForScore, scoreLead } from '../../netlify/functions/_shared/leadScore'
 import { demoLeadBoard, handleFubWebhook, shouldRewriteScore } from '../../netlify/functions/_shared/leadHeat'
 import { shiftDateKey } from '../../netlify/functions/_shared/hubTypes'
-import { escalationPlan, followUpPlan, loanOfficer, loanOfficerAssistant } from '../../netlify/functions/_shared/team'
+import { escalationPlan, followUpPlan, loanOfficer, loanOfficerAssistant, nurtureFrankieEnabled } from '../../netlify/functions/_shared/team'
 
 const now = new Date('2026-09-25T15:00:00.000Z')
 
@@ -11,6 +11,7 @@ afterEach(() => {
   delete process.env.FUB_LOA_NAME
   delete process.env.FUB_LO_USER_ID
   delete process.env.FUB_LOA_USER_ID
+  delete process.env.NURTURE_FRANKIE_ENABLED
 })
 
 describe('scoreLead', () => {
@@ -137,6 +138,7 @@ describe('team routing', () => {
   })
 
   it('assigns hot calls to Joseph today and warm or cool follow-ups to Frank', () => {
+    process.env.NURTURE_FRANKIE_ENABLED = 'true'
     const hot = followUpPlan({ score: 92, band: 'hot', reasons: [], excluded: false }, 'Alex Buyer', now)
     const warm = followUpPlan({ score: 72, band: 'warm', reasons: [], excluded: false }, 'Jordan Hale', now)
     const cool = followUpPlan({ score: 42, band: 'cool', reasons: [], excluded: false }, 'Sam Rivera', now)
@@ -162,6 +164,16 @@ describe('team routing', () => {
     expect(cold).toBeNull()
   })
 
+  it('does not assign Frankie warm or nurture tasks unless the flag is on', () => {
+    expect(nurtureFrankieEnabled()).toBe(false)
+    const hot = followUpPlan({ score: 92, band: 'hot', reasons: [], excluded: false }, 'Alex Buyer', now)
+    const warm = followUpPlan({ score: 72, band: 'warm', reasons: [], excluded: false }, 'Jordan Hale', now)
+    const cool = followUpPlan({ score: 42, band: 'cool', reasons: [], excluded: false }, 'Sam Rivera', now)
+    expect(hot?.assigneeRole).toBe('lo')
+    expect(warm).toBeNull()
+    expect(cool).toBeNull()
+  })
+
   it('sends escalations to Joseph the same day', () => {
     expect(escalationPlan('Alex Buyer', now)).toMatchObject({
       assigneeName: 'Joseph Cordeira',
@@ -173,6 +185,7 @@ describe('team routing', () => {
 
 describe('demo lead board', () => {
   it('ranks sample leads for Joseph and Frank without a FUB key', () => {
+    process.env.NURTURE_FRANKIE_ENABLED = 'true'
     const leads = demoLeadBoard(now)
     expect(leads.every((lead) => lead.personId < 0)).toBe(true)
     expect(leads.map((lead) => [lead.name, lead.band, lead.score, lead.assignee])).toEqual([
@@ -185,6 +198,7 @@ describe('demo lead board', () => {
 
   it('routes a webhook hot lead to Joseph and keeps a warm lead with Frank', async () => {
     process.env.ASSISTANT_DEMO_MODE = 'true'
+    process.env.NURTURE_FRANKIE_ENABLED = 'true'
     const hot = await handleFubWebhook(
       {
         event: 'peopleUpdated',
