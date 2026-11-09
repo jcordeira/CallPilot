@@ -34,6 +34,7 @@ import {
 import { GlanceSection } from '../components/GlanceSection'
 import { FubPersonLink, TextWithPerson } from '../components/FubPersonLink'
 import { matchPersonInText, personIdForName, type NamedPerson } from '../lib/fubLink'
+import { nextQuarterHourEt, quarterHourOptions } from '../lib/quickTaskTime'
 import { dateToKey, dayLabel } from '../lib/time'
 import './HubPage.css'
 
@@ -153,7 +154,11 @@ export function HubPage() {
 
   const [title, setTitle] = useState('')
   const [notes, setNotes] = useState('')
-  const [due, setDue] = useState('')
+  const openingSlot = nextQuarterHourEt()
+  const [due, setDue] = useState(openingSlot.date)
+  const [taskTime, setTaskTime] = useState(openingSlot.time)
+  const [allDay, setAllDay] = useState(false)
+  const timeOptions = quarterHourOptions()
   const [source, setSource] = useState<'google' | 'fub' | 'both'>('google')
   const [personId, setPersonId] = useState('')
 
@@ -270,12 +275,17 @@ export function HubPage() {
         title: title.trim(),
         notes: notes.trim() || undefined,
         due: due || undefined,
+        time: allDay ? undefined : taskTime,
+        allDay,
         source,
         personId: parsedPerson,
       })
+      const fresh = nextQuarterHourEt()
       setTitle('')
       setNotes('')
-      setDue('')
+      setDue(fresh.date)
+      setTaskTime(fresh.time)
+      setAllDay(false)
       setPersonId('')
       setPanel(null)
       setNotice('Task added.')
@@ -544,6 +554,21 @@ export function HubPage() {
               <span className="field__label">Due</span>
               <input className="input" type="date" value={due} onChange={(e) => setDue(e.target.value)} />
             </label>
+            <label className="field">
+              <span className="field__label">Time</span>
+              <select className="select" value={taskTime} disabled={allDay} onChange={(e) => setTaskTime(e.target.value)}>
+                {timeOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="field hub__all-day">
+              <input type="checkbox" checked={allDay} onChange={(e) => setAllDay(e.target.checked)} />
+              <span>All day</span>
+            </label>
+            {allDay ? null : <p className="hub__form-help hub__duration">15 minutes</p>}
             <label className="field">
               <span className="field__label">Save to</span>
               <select className="select" value={source} onChange={(e) => setSource(e.target.value as typeof source)}>

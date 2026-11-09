@@ -200,6 +200,8 @@ export function createHubTask(input: {
   title: string
   notes?: string
   due?: string
+  time?: string
+  allDay?: boolean
   source?: 'google' | 'fub' | 'both'
   personId?: number
   personName?: string

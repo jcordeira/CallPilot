@@ -72,6 +72,14 @@
   gap: 8px;
   margin-top: 14px;
 }
+.hub__all-day {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 44px;
+}
+.hub__all-day input { width: 22px; height: 22px; }
+.hub__duration { margin: 0; align-self: end; }
 
 .hub__stats {
   display: grid;

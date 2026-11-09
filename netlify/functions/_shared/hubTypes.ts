@@ -104,6 +104,9 @@ export type HubTaskInput = {
   title: string
   notes?: string
   due?: string
+  /** 24-hour Eastern `HH:mm` on `due`. Absent or `allDay` keeps a date-only task. */
+  time?: string
+  allDay?: boolean
   source: 'google' | 'fub' | 'both'
   personId?: number
   personName?: string

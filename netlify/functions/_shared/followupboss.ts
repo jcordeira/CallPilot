@@ -143,6 +143,7 @@ type FubTaskRaw = {
   description?: string
   isCompleted?: boolean | number | string
   dueDate?: string
+  dueDateTime?: string
   personId?: number
   personName?: string
   assignedTo?: string
@@ -247,7 +248,7 @@ async function mapOpenFubTasks(raw: FubTaskRaw[]): Promise<HubTask[]> {
     .map((task) => ({
       id: String(task.id),
       title: task.name?.trim() || 'Follow up',
-      due: task.dueDate,
+      due: task.dueDateTime || task.dueDate,
       status: 'needsAction' as const,
       source: 'fub' as const,
       personName: (task.personId != null ? names.get(task.personId) : undefined) ?? task.personName?.trim() ?? undefined,
@@ -338,6 +339,7 @@ export async function createTask(input: {
   name: string
   type?: string
   dueDate?: string
+  dueDateTime?: string
   assignedUserId?: number
   assignedTo?: string
   personName?: string
@@ -351,7 +353,7 @@ export async function createTask(input: {
     await rememberFubTask({
       id: String(id),
       title: input.name,
-      due: input.dueDate,
+      due: input.dueDateTime || input.dueDate,
       status: 'needsAction',
       source: 'fub',
       personName: input.personName ?? 'Demo Lead',
@@ -366,6 +368,7 @@ export async function createTask(input: {
     type: input.type ?? 'Follow Up',
     dueDate: input.dueDate,
   }
+  if (input.dueDateTime) body.dueDateTime = input.dueDateTime
   if (assignee.userId) body.assignedUserId = assignee.userId
   else body.assignedTo = assignee.name
 
