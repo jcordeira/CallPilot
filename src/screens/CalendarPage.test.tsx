@@ -196,6 +196,58 @@ describe('Calendar page', () => {
     expect(created.endIso).toBe(`${nextDateKey(day)}T12:00:00.000Z`)
   })
 
+  it('opens quick-add on an empty 15-minute slot and saves a timed Google task', async () => {
+    let posted = ''
+    vi.stubGlobal('fetch', vi.fn(async (input: RequestInfo | URL, init?: RequestInit) => {
+      const url = String(input)
+      if (url.includes('/api/hub/calendar') && (init?.method ?? 'GET') === 'GET') {
+        return new Response(JSON.stringify(payload()), { status: 200 })
+      }
+      if (url.includes('/api/hub/tasks') && init?.method === 'POST') {
+        posted = String(init.body)
+        return new Response(JSON.stringify({ ok: true, data: { tasks: [] } }), { status: 200 })
+      }
+      if (url.includes('/api/hub/glance')) {
+        return new Response(JSON.stringify({
+          ok: true,
+          data: {
+            today: [],
+            all: [{
+              key: 'fub:task:9',
+              id: '9',
+              kind: 'task',
+              source: 'fub',
+              title: 'Text Alex',
+              whenLabel: '4:00 PM',
+              dayKey: '2026-10-02',
+              at: '2026-10-02T20:00:00.000Z',
+              overdue: false,
+            }],
+            warnings: [],
+            needsTasks: false,
+            todayKey: '2026-10-02',
+            generatedAt: '2026-10-02T18:00:00.000Z',
+          },
+        }), { status: 200 })
+      }
+      return new Response(JSON.stringify({ ok: false, error: 'missing' }), { status: 404 })
+    }))
+    const user = userEvent.setup()
+    renderApp(<CalendarPage />, { route: '/calendar' })
+    expect(await screen.findByRole('button', { name: 'Today 2:30 PM' })).toBeInTheDocument()
+    await user.click(screen.getByRole('button', { name: 'Add task Fri, Oct 2 3 PM' }))
+    const dialog = screen.getByRole('dialog', { name: 'Add task' })
+    expect(within(dialog).getByRole('checkbox', { name: 'All day' })).not.toBeChecked()
+    expect(within(dialog).getByText('15 minutes')).toBeInTheDocument()
+    expect((within(dialog).getByLabelText('Time') as HTMLSelectElement).value).toBe('15:00')
+    expect(within(dialog).queryByText(/You can still save it/)).not.toBeInTheDocument()
+    await user.type(within(dialog).getByLabelText('Title'), 'Rate check')
+    await user.click(within(dialog).getByRole('button', { name: 'Save task' }))
+    expect(JSON.parse(posted)).toMatchObject({ title: 'Rate check', due: '2026-10-02', time: '15:00', allDay: false, source: 'google' })
+    expect(await screen.findByText('Text Alex')).toBeInTheDocument()
+    expect(screen.getByRole('checkbox', { name: 'Complete Text Alex' })).toBeInTheDocument()
+  })
+
   it('asks to reconnect for Frankie invites when calendar write is already granted', async () => {
     const body = payload()
     body.data.google = {

@@ -3,6 +3,7 @@ import * as calendar from '../../netlify/functions/_shared/calendar'
 import * as followupboss from '../../netlify/functions/_shared/followupboss'
 import { createHubTask, etTaskStart, taskInputFromBody } from '../../netlify/functions/_shared/hub'
 import { buildGlanceBoard } from '../../netlify/functions/_shared/glance'
+import { nextOpenSlots } from './openSlots'
 import { nextQuarterHourEt } from './quickTaskTime'
 
 afterEach(() => {
@@ -31,6 +32,16 @@ describe('quick task time', () => {
       ['Call Alex', '2:15 PM'],
       ['Lock the rate', '2:15 PM'],
     ])
+  })
+})
+
+describe('open calendar slots', () => {
+  it('lists the next free 15-minute starts between 8 AM and 7 PM', () => {
+    const slots = nextOpenSlots(new Date('2026-10-02T18:07:00.000Z'), [
+      { startIso: '2026-10-02T18:00:00.000Z', endIso: '2026-10-02T18:30:00.000Z', allDay: false },
+    ])
+    expect(slots.slice(0, 3).map((slot) => slot.label)).toEqual(['Today 2:30 PM', 'Today 2:45 PM', 'Today 3 PM'])
+    expect(slots).toHaveLength(5)
   })
 })
 

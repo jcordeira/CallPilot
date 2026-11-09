@@ -3,6 +3,7 @@ import { zonedDate } from './commandTime'
 import { isDemoMode } from './env'
 import { getGoogleConnectionStatus, resolveGoogleAccessToken } from './googleAuth'
 import { createTask, listOpenFubTasks } from './followupboss'
+import { bustGlanceAfterWrite } from './glance'
 import { listLeadHeat, rescoreOpenLeads } from './leadHeat'
 import { purgeStoredDemoData } from './purgeDemo'
 import { followUpAssigneeIds, loanOfficer, loanOfficerAssistant } from './team'
@@ -180,6 +181,13 @@ export async function createHubTask(input: HubTaskInput): Promise<{ tasks: HubTa
       assignedTo: teammate.name,
     })
   }
+  const bust: Array<'google' | 'fub' | 'events'> = []
+  if (input.source === 'google' || input.source === 'both') {
+    bust.push('google')
+    if (startIso) bust.push('events')
+  }
+  if (input.source === 'fub' || input.source === 'both') bust.push('fub')
+  bustGlanceAfterWrite(bust)
   return { tasks }
 }
 
