@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { gmailCanRead, GOOGLE_SCOPES } from '../../netlify/functions/_shared/googleAuth'
 import { matchApplicant, onlineAppTagEnabled, parseOnlineApplication, runOnlineApplications, type GmailMessage } from '../../netlify/functions/_shared/onlineApp'
-import { loadOnlineAppState, resetOnlineAppStateForTests } from '../../netlify/functions/_shared/onlineAppStore'
+import { claimOnlineApp, loadOnlineAppState, resetOnlineAppStateForTests } from '../../netlify/functions/_shared/onlineAppStore'
 
 const zhengBody = `
 Dear Joseph Cordeira,
@@ -53,6 +53,40 @@ describe('online application parser', () => {
     expect(parsed.ok).toBe(true)
     if (!parsed.ok) return
     expect(parsed.application.email).toBe('ada.buyer@gmail.com')
+    expect(parsed.application.phone).toBe('+16315550199')
+  })
+
+  it('reads an Encompass application that has an email and no phone', () => {
+    const body = [
+      'Dear Joseph Cordeira,',
+      'A loan application has been submitted successfully.',
+      "Primary Borrower's Name: Zheng Zhuang",
+      "Primary Borrower's Email: zhengzhuang8@icloud.com",
+      'Property is Located in: Bayside NY 11361',
+    ].join('\n\r\n')
+    const parsed = parseOnlineApplication('New application submitted successfully for: Zheng Zhuang', body)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    expect(parsed.application).toMatchObject({
+      name: 'Zheng Zhuang',
+      firstName: 'Zheng',
+      lastName: 'Zhuang',
+      email: 'zhengzhuang8@icloud.com',
+      property: 'Bayside NY 11361',
+      city: 'Bayside',
+      state: 'NY',
+      code: '11361',
+    })
+    expect(parsed.application.phone).toBeUndefined()
+  })
+
+  it('reads a primary borrower phone when that label is present', () => {
+    const parsed = parseOnlineApplication(
+      'New application submitted successfully for: Ada Buyer',
+      "Dear Joseph Cordeira,\n\r\nPrimary Borrower's Name: Ada Buyer\n\r\nPrimary Borrower's Email: ada.buyer@gmail.com\n\r\nPrimary Borrower's Phone: (631) 555-0199",
+    )
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
     expect(parsed.application.phone).toBe('+16315550199')
   })
 
@@ -139,6 +173,66 @@ describe('online application matching', () => {
     expect(again.already).toBe(1)
     expect(again.created).toBe(0)
     expect(tags).toEqual([])
+  })
+
+  it('creates Zheng from the real email with no phone, and retries a stale done claim once', async () => {
+    process.env.ASSISTANT_DEMO_MODE = 'false'
+    process.env.FOLLOW_UP_BOSS_API_KEY = 'fub'
+    const now = new Date('2026-11-09T23:00:00.000Z')
+    const body = [
+      'Dear Joseph Cordeira,',
+      'A loan application has been submitted successfully.',
+      "Primary Borrower's Name: Zheng Zhuang",
+      "Primary Borrower's Email: zhengzhuang8@icloud.com",
+      'Property is Located in: Bayside NY 11361',
+    ].join('\n\r\n')
+    await claimOnlineApp('done/1a1c1487883ca99f')
+    const created: Array<{ email?: string; phone?: string; city?: string }> = []
+    const summary = await runOnlineApplications({
+      now,
+      list: async () => [{ id: '1a1c1487883ca99f', internalDate: now.getTime() - 3 * 3_600_000 }],
+      read: async (id) => message(id, 'New application submitted successfully for: Zheng Zhuang', body),
+      search: async () => [],
+      tag: async () => {},
+      create: async (application) => {
+        created.push({ email: application.email, phone: application.phone, city: application.city })
+        return 501
+      },
+    })
+    expect(summary.created).toBe(1)
+    expect(summary.zheng).toMatchObject({ action: 'created', personId: 501 })
+    expect(created).toEqual([{ email: 'zhengzhuang8@icloud.com', phone: undefined, city: 'Bayside' }])
+
+    const again = await runOnlineApplications({
+      now,
+      list: async () => [{ id: '1a1c1487883ca99f', internalDate: now.getTime() - 3 * 3_600_000 }],
+      read: async (id) => message(id, 'New application submitted successfully for: Zheng Zhuang', body),
+      search: async () => [{ id: 501, name: 'Zheng Zhuang' }],
+      tag: async () => {},
+      create: async () => 999,
+    })
+    expect(again.already).toBe(1)
+    expect(again.created).toBe(0)
+  })
+
+  it('releases the claim when several names match and nobody is created', async () => {
+    process.env.ASSISTANT_DEMO_MODE = 'false'
+    process.env.FOLLOW_UP_BOSS_API_KEY = 'fub'
+    const now = new Date('2026-11-09T23:00:00.000Z')
+    const run = () => runOnlineApplications({
+      now,
+      list: async () => [{ id: 'ada', internalDate: now.getTime() - 3_600_000 }],
+      read: async (id) => message(id, 'New application submitted successfully for: Ada Buyer', 'Dear Joseph Cordeira, A loan application was submitted. Contact ada.buyer@gmail.com or 631-555-0199.'),
+      search: async (query) => (query.startsWith('name=') ? [{ id: 1, name: 'Ada Buyer' }, { id: 2, name: 'Ada Buyer' }] : []),
+      tag: async () => {},
+      create: async () => 1,
+    })
+    const first = await run()
+    expect(first.created).toBe(0)
+    expect(first.ambiguous).toBe(1)
+    const second = await run()
+    expect(second.already).toBe(0)
+    expect(second.considered).toBe(1)
   })
 
   it('records a missing Gmail scope instead of dropping the run', async () => {
