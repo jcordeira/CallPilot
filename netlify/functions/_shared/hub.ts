@@ -150,6 +150,7 @@ export async function createHubTask(input: HubTaskInput): Promise<{ tasks: HubTa
         endIso,
         timeZone: CALENDAR_TIME_ZONE,
         sendUpdates: 'none',
+        quickTask: true,
       })
     }
   }

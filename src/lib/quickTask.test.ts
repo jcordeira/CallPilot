@@ -70,7 +70,14 @@ describe('createHubTask', () => {
       startIso: '2026-11-09T19:15:00.000Z',
       endIso: '2026-11-09T19:30:00.000Z',
       sendUpdates: 'none',
+      quickTask: true,
     })
+    expect(calendar.calendarWriteBody({
+      summary: 'Send the checklist',
+      startIso: '2026-11-09T19:15:00.000Z',
+      endIso: '2026-11-09T19:30:00.000Z',
+      quickTask: true,
+    }).extendedProperties).toEqual({ private: { loanpilotQuickTask: '1' } })
     expect(fub[0]).toMatchObject({ dueDate: '2026-11-09', dueDateTime: '2026-11-09T19:15:00.000Z' })
     expect(created.tasks.map((task) => task.due)).toEqual(['2026-11-09T19:15:00.000Z', '2026-11-09T19:15:00.000Z'])
 

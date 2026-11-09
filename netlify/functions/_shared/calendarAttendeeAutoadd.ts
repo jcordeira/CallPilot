@@ -21,6 +21,13 @@ const PINGTREE = 'pingtree dscr'
 export type AutoEvent = GuestEvent & {
   location?: string
   organizer?: { email?: string; self?: boolean }
+  /** extendedProperties.private.loanpilotQuickTask=1, or a Hub quick-add event not tagged yet. */
+  quickTask?: boolean
+}
+
+export function isQuickTaskEvent(event: { description?: string; quickTask?: boolean }): boolean {
+  if (event.quickTask) return true
+  return /^LoanPilot task \S+$/m.test(event.description ?? '')
 }
 
 export type SourcePerson = {
@@ -42,6 +49,7 @@ export type AutoaddSummary = {
   patched: number
   addedJoe: number
   addedFrankie: number
+  removedFrankie: number
   skippedByReason: Record<string, number>
   frankieByReason: Record<string, number>
   sourcesSeen: string[]
@@ -51,7 +59,7 @@ export type AutoaddSummary = {
 
 type LookupResult = { people: SourcePerson[]; failed: boolean }
 
-type Patch = (input: { event: AutoEvent; attendees: GuestAttendee[] }) => Promise<void>
+type Patch = (input: { event: AutoEvent; attendees: GuestAttendee[]; tagQuickTask?: boolean }) => Promise<void>
 
 type SavedState = { backfillAt?: string; last?: AutoaddSummary }
 
@@ -240,6 +248,7 @@ type Listed = {
   start?: { dateTime?: string; date?: string }
   end?: { dateTime?: string; date?: string }
   attendees?: GuestAttendee[]
+  extendedProperties?: { private?: Record<string, string> }
 }
 
 function mapListed(item: Listed): AutoEvent | null {
@@ -260,7 +269,14 @@ function mapListed(item: Listed): AutoEvent | null {
     htmlLink: item.htmlLink,
     organizer: item.organizer,
     attendees: item.attendees,
+    quickTask: item.extendedProperties?.private?.loanpilotQuickTask === '1',
   }
+}
+
+async function listForAutoadd(now: Date): Promise<AutoEvent[]> {
+  const start = new Date(now.getTime() - 2 * 86_400_000)
+  const events = await listUpcoming(start, windowDays() + 2)
+  return events.filter((event) => new Date(event.startIso).getTime() >= now.getTime() - 60_000 || isQuickTaskEvent(event))
 }
 
 async function listUpcoming(now: Date, days: number): Promise<AutoEvent[]> {
@@ -294,7 +310,7 @@ async function listUpcoming(now: Date, days: number): Promise<AutoEvent[]> {
   return events
 }
 
-async function defaultPatch(input: { event: AutoEvent; attendees: GuestAttendee[] }): Promise<void> {
+async function defaultPatch(input: { event: AutoEvent; attendees: GuestAttendee[]; tagQuickTask?: boolean }): Promise<void> {
   const { accessToken } = await resolveGoogleAccessToken()
   if (!accessToken) throw new Error('Google Calendar is not connected')
   const calendarId = encodeURIComponent(env('GOOGLE_CALENDAR_ID', 'primary'))
@@ -303,7 +319,10 @@ async function defaultPatch(input: { event: AutoEvent; attendees: GuestAttendee[
     {
       method: 'PATCH',
       headers: { Authorization: `Bearer ${accessToken}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({ attendees: input.attendees }),
+      body: JSON.stringify({
+        attendees: input.attendees,
+        ...(input.tagQuickTask ? { extendedProperties: { private: { loanpilotQuickTask: '1' } } } : {}),
+      }),
     },
   )
   if (!res.ok) throw new Error(`Calendar patch failed: ${res.status}`)
@@ -329,6 +348,7 @@ export async function runCalendarAttendeeAutoadd(options?: {
     patched: 0,
     addedJoe: 0,
     addedFrankie: 0,
+    removedFrankie: 0,
     skippedByReason: {},
     frankieByReason: {},
     sourcesSeen: [],
@@ -351,7 +371,7 @@ export async function runCalendarAttendeeAutoadd(options?: {
   const patch = options?.patch ?? defaultPatch
   let events: AutoEvent[]
   try {
-    events = options?.events ?? (await listUpcoming(now, windowDays()))
+    events = options?.events ?? (await listForAutoadd(now))
   } catch (err) {
     const message = err instanceof Error ? err.message : 'Calendar list failed'
     if (message.includes('not connected')) summary.skipped = 'no-calendar'
@@ -367,6 +387,34 @@ export async function runCalendarAttendeeAutoadd(options?: {
   summary.scanned = events.length
 
   for (const event of events) {
+    if (isQuickTaskEvent(event)) {
+      bump(summary.frankieByReason, 'quick task')
+      const hadFrankie = hasEmail(event, FRANKIE_ATTENDEE_EMAIL)
+      const needsJoe = !hasEmail(event, JOE_ATTENDEE_EMAIL)
+      const needsTag = event.quickTask !== true
+      if (!hadFrankie && !needsJoe && !needsTag) {
+        bump(summary.skippedByReason, 'already set')
+        continue
+      }
+      const kept: AutoEvent = {
+        ...event,
+        attendees: (event.attendees ?? []).filter((attendee) => attendee.email.trim().toLowerCase() !== FRANKIE_ATTENDEE_EMAIL),
+      }
+      const attendees = attendeesWithGuests(kept, needsJoe ? [JOE_ATTENDEE_EMAIL] : [])
+      try {
+        await patch({ event, attendees, tagQuickTask: true })
+        summary.patched += 1
+        if (needsJoe) summary.addedJoe += 1
+        if (hadFrankie) summary.removedFrankie += 1
+        console.log(`[calendar-attendee] quick-task ${event.id} joe=${needsJoe ? 'added' : 'kept'} frankie=${hadFrankie ? 'removed' : 'skipped'}`)
+      } catch (err) {
+        const message = err instanceof Error ? err.message : 'Calendar patch failed'
+        bump(summary.skippedByReason, 'patch failed')
+        if (!summary.errors.includes(message)) summary.errors.push(message)
+        console.log(`[calendar-attendee] skip ${event.id} patch failed`)
+      }
+      continue
+    }
     const skip = skipReason(event, joeEmails)
     if (skip) {
       bump(summary.skippedByReason, skip)
@@ -430,6 +478,7 @@ export async function runCalendarAttendeeAutoadd(options?: {
     patched: summary.patched,
     addedJoe: summary.addedJoe,
     addedFrankie: summary.addedFrankie,
+    removedFrankie: summary.removedFrankie,
     skippedByReason: summary.skippedByReason,
     frankieByReason: summary.frankieByReason,
     sourcesSeen: summary.sourcesSeen,

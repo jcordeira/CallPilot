@@ -183,6 +183,8 @@ export function calendarWriteBody(input: {
   timeZone?: string
   /** PATCH should clear the other Google start/end field when switching timed ↔ all-day. */
   patch?: boolean
+  /** Hub quick-add timed task. Attendee auto-add skips Frankie on these events. */
+  quickTask?: boolean
 }): Record<string, unknown> {
   const timeZone = input.timeZone || CALENDAR_TIME_ZONE
   const start = input.allDay
@@ -206,6 +208,7 @@ export function calendarWriteBody(input: {
       ...(attendee.optional ? { optional: true } : {}),
     }))
   }
+  if (input.quickTask) body.extendedProperties = { private: { loanpilotQuickTask: '1' } }
   return body
 }
 
@@ -485,6 +488,7 @@ export async function createCalendarEvent(input: {
   attendees?: string[]
   sendUpdates?: 'all' | 'externalOnly' | 'none'
   timeZone?: string
+  quickTask?: boolean
 }): Promise<{ id: string; htmlLink?: string }> {
   const { accessToken: token } = await resolveGoogleAccessToken()
   if (!token) {
@@ -520,6 +524,7 @@ export async function createCalendarEvent(input: {
         allDay: input.allDay === true,
         timeZone: input.timeZone ?? env('COMMAND_TIMEZONE', CALENDAR_TIME_ZONE),
         attendees: emails.length ? emails.map((email) => ({ email })) : undefined,
+        quickTask: input.quickTask,
       }),
     ),
   })
