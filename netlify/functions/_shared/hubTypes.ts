@@ -78,6 +78,8 @@ export type GoogleConnection = {
   reconnect?: boolean
   /** OAuth is connected, but the saved grant cannot read Google Tasks. */
   needsTasks?: boolean
+  /** OAuth is connected, but the saved grant cannot read Gmail. */
+  needsGmailRead?: boolean
 }
 
 export type HubSummary = {

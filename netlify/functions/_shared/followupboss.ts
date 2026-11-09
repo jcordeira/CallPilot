@@ -558,6 +558,56 @@ export async function assignPerson(personId: number, userId: number): Promise<vo
   })
 }
 
+export const ONLINE_APP_TAG = 'Online Application Submitted'
+
+/** Add one tag and keep the tags already on the person. */
+export async function addPersonTag(personId: number, tag: string): Promise<void> {
+  if (isDemoMode() || !personId) return
+  const person = await getPerson(personId)
+  const existing = person?.tags ?? []
+  if (existing.some((item) => item.toLowerCase() === tag.toLowerCase())) return
+  try {
+    await fubFetch(`/people/${personId}?mergeTags=true`, {
+      method: 'PUT',
+      body: JSON.stringify({ tags: [tag] }),
+    })
+  } catch {
+    await fubFetch(`/people/${personId}`, {
+      method: 'PUT',
+      body: JSON.stringify({ tags: [...existing, tag] }),
+    })
+  }
+}
+
+/** Create a person through the events API so Follow Up Boss runs lead flow. Does not text or email them. */
+export async function registerPerson(input: {
+  firstName: string
+  lastName?: string
+  email?: string
+  phone?: string
+  tag: string
+}): Promise<number | null> {
+  if (isDemoMode()) return -1
+  const person: Record<string, unknown> = {
+    firstName: input.firstName,
+    tags: [input.tag],
+  }
+  if (input.lastName) person.lastName = input.lastName
+  if (input.email) person.emails = [{ value: input.email }]
+  if (input.phone) person.phones = [{ value: input.phone }]
+  const data = (await fubFetch('/events', {
+    method: 'POST',
+    body: JSON.stringify({
+      source: 'Online Application',
+      system: env('FOLLOW_UP_BOSS_SYSTEM', 'LoanPilot'),
+      type: 'Registration',
+      message: 'Online application submitted',
+      person,
+    }),
+  })) as { personId?: number; person?: { id?: number } } | null
+  return data?.person?.id ?? data?.personId ?? null
+}
+
 export async function fubGet(path: string): Promise<unknown | null> {
   if (isDemoMode()) return null
   try {

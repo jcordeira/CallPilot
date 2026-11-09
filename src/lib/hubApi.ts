@@ -52,6 +52,7 @@ export type GoogleConnection = {
   canWrite?: boolean
   needsGmailSend?: boolean
   needsTasks?: boolean
+  needsGmailRead?: boolean
   reconnect?: boolean
 }
 
