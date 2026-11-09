@@ -169,6 +169,9 @@ export const GOOGLE_CALENDAR_WRITE_SCOPES = [
 /** Send-only. Used to email Frankie an .ics without notifying other guests. */
 export const GMAIL_SEND_SCOPE = 'https://www.googleapis.com/auth/gmail.send'
 
+/** Read application emails. Does not allow modifying or marking them read. */
+export const GMAIL_READONLY_SCOPE = 'https://www.googleapis.com/auth/gmail.readonly'
+
 export const GOOGLE_TASKS_SCOPE = 'https://www.googleapis.com/auth/tasks'
 
 export const GOOGLE_SCOPES = [
@@ -178,6 +181,7 @@ export const GOOGLE_SCOPES = [
   ...GOOGLE_CALENDAR_WRITE_SCOPES,
   GOOGLE_TASKS_SCOPE,
   GMAIL_SEND_SCOPE,
+  GMAIL_READONLY_SCOPE,
 ].join(' ')
 
 /** True when the granted scope string can patch events. Readonly grants return false. */
@@ -204,6 +208,19 @@ export function calendarCanReadFreeBusy(scope: string | undefined): boolean {
 export function gmailCanSend(scope: string | undefined): boolean {
   if (!scope) return false
   return scope.split(/\s+/).filter(Boolean).includes(GMAIL_SEND_SCOPE)
+}
+
+const GMAIL_READ_SCOPES = [
+  GMAIL_READONLY_SCOPE,
+  'https://www.googleapis.com/auth/gmail.modify',
+  'https://mail.google.com/',
+]
+
+/** True when the grant can read message bodies. Send-only is not enough. */
+export function gmailCanRead(scope: string | undefined): boolean {
+  if (!scope) return false
+  const granted = new Set(scope.split(/\s+/).filter(Boolean))
+  return GMAIL_READ_SCOPES.some((item) => granted.has(item))
 }
 
 /** True when the grant can list and complete Google Tasks. */
@@ -322,6 +339,8 @@ export async function getGoogleConnectionStatus(): Promise<{
   needsGmailSend: boolean
   /** OAuth is connected, but the saved grant cannot read Google Tasks. */
   needsTasks: boolean
+  /** OAuth is connected, but the saved grant cannot read Gmail. */
+  needsGmailRead: boolean
   canWrite: boolean
   reconnect: boolean
 }> {
@@ -331,6 +350,7 @@ export async function getGoogleConnectionStatus(): Promise<{
     const canWrite = calendarCanWriteEvents(stored.scope)
     const needsGmailSend = !gmailCanSend(stored.scope)
     const needsTasks = !tasksCanRead(stored.scope)
+    const needsGmailRead = !gmailCanRead(stored.scope)
     return {
       configured,
       connected: true,
@@ -343,7 +363,8 @@ export async function getGoogleConnectionStatus(): Promise<{
       needsCalendarWrite: !canWrite,
       needsGmailSend,
       needsTasks,
-      reconnect: !canWrite || needsGmailSend || needsTasks,
+      needsGmailRead,
+      reconnect: !canWrite || needsGmailSend || needsTasks || needsGmailRead,
     }
   }
   if (env('GOOGLE_CALENDAR_ACCESS_TOKEN') || env('GOOGLE_TASKS_ACCESS_TOKEN')) {
@@ -355,6 +376,7 @@ export async function getGoogleConnectionStatus(): Promise<{
       needsCalendarWrite: false,
       needsGmailSend: false,
       needsTasks: false,
+      needsGmailRead: false,
       reconnect: false,
     }
   }
@@ -366,6 +388,7 @@ export async function getGoogleConnectionStatus(): Promise<{
     needsCalendarWrite: false,
     needsGmailSend: false,
     needsTasks: false,
+    needsGmailRead: false,
     reconnect: false,
   }
 }

@@ -655,6 +655,11 @@ export function HubPage() {
             Google is connected without Calendar write access. Reconnect Google so LoanPilot can add guests to events.
           </p>
         )}
+        {summary?.google?.needsGmailRead && (
+          <p className="hub__error" role="status">
+            Reconnect Google so LoanPilot can read new online-application emails. It will not mark them read or change their labels.
+          </p>
+        )}
         {summary?.google?.needsGmailSend && !summary.google.needsCalendarWrite && (
           <p className="hub__error" role="status">
             Reconnect Google so Frankie gets a calendar invite. Clients are not emailed.

@@ -121,6 +121,7 @@ export async function getHubSummary(): Promise<HubSummary> {
       canWrite: google.canWrite,
       needsGmailSend: google.needsGmailSend,
       needsTasks: google.needsTasks,
+      needsGmailRead: google.needsGmailRead,
       reconnect: google.reconnect,
     },
     leads: heat.leads,
