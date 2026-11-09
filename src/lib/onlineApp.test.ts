@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { gmailCanRead, GOOGLE_SCOPES } from '../../netlify/functions/_shared/googleAuth'
 import { matchApplicant, onlineAppTagEnabled, parseOnlineApplication, runOnlineApplications, type GmailMessage } from '../../netlify/functions/_shared/onlineApp'
-import { resetOnlineAppStateForTests } from '../../netlify/functions/_shared/onlineAppStore'
+import { loadOnlineAppState, resetOnlineAppStateForTests } from '../../netlify/functions/_shared/onlineAppStore'
 
 const zhengBody = `
 Dear Joseph Cordeira,
@@ -126,7 +126,7 @@ describe('online application matching', () => {
     expect(created).toEqual(['Zheng Zhuang'])
     expect(summary.zheng).toMatchObject({ action: 'created', personId: 77 })
     expect(listed.some((query) => query.includes('newer_than:2d'))).toBe(true)
-    expect(listed.some((query) => !query.includes('newer_than'))).toBe(true)
+    expect(listed.some((query) => query.includes('older_than:2d'))).toBe(true)
 
     const again = await runOnlineApplications({
       now,
@@ -139,6 +139,20 @@ describe('online application matching', () => {
     expect(again.already).toBe(1)
     expect(again.created).toBe(0)
     expect(tags).toEqual([])
+  })
+
+  it('records a missing Gmail scope instead of dropping the run', async () => {
+    process.env.ASSISTANT_DEMO_MODE = 'false'
+    process.env.FOLLOW_UP_BOSS_API_KEY = 'fub'
+    const summary = await runOnlineApplications({
+      list: async () => {
+        throw new Error('Gmail read scope missing')
+      },
+    })
+    expect(summary.skipped).toBe('scope')
+    expect(summary.created).toBe(0)
+    const saved = await loadOnlineAppState()
+    expect((saved.last as { skipped?: string } | undefined)?.skipped).toBe('scope')
   })
 
   it('asks for gmail.readonly and leaves backfill off the schedule', () => {
