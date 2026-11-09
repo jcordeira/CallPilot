@@ -212,11 +212,11 @@ export async function runOnlineApplications(options?: {
   }
   if (!summary.enabled) {
     summary.skipped = 'disabled'
-    return summary
+    return finish(summary)
   }
   if (!options?.list && isDemoMode()) {
     summary.skipped = 'demo'
-    return summary
+    return finish(summary)
   }
   const list = options?.list ?? listGmail
   const read = options?.read ?? readGmail
@@ -227,9 +227,9 @@ export async function runOnlineApplications(options?: {
   const state = await loadOnlineAppState()
   try {
     if (!state.seeded && !backfill) {
-      const older = await list(ONLINE_APP_QUERY)
+      const older = await list(`${ONLINE_APP_QUERY} older_than:2d`)
       for (const message of older) {
-        if (now.getTime() - message.internalDate < TWO_DAYS_MS) continue
+        if (message.internalDate && now.getTime() - message.internalDate < TWO_DAYS_MS) continue
         if (await claimOnlineApp(`before/${message.id}`)) summary.seededOld += 1
       }
       await saveOnlineAppState({ ...state, seeded: true, enabledAt: now.toISOString() })
@@ -239,7 +239,7 @@ export async function runOnlineApplications(options?: {
     if (/scope missing|not connected/i.test(reason)) summary.skipped = 'scope'
     summary.failures.push(reason)
     console.log(`[online-app] ${reason}`)
-    return summary
+    return finish(summary)
   }
 
   let recent: { id: string; internalDate: number }[]
@@ -250,7 +250,7 @@ export async function runOnlineApplications(options?: {
     if (/scope missing|not connected/i.test(reason)) summary.skipped = 'scope'
     summary.failures.push(reason)
     console.log(`[online-app] ${reason}`)
-    return summary
+    return finish(summary)
   }
   for (const item of recent) {
     if (!backfill && now.getTime() - item.internalDate >= TWO_DAYS_MS) continue
@@ -309,9 +309,13 @@ export async function runOnlineApplications(options?: {
     }
   }
 
+  console.log(`[online-app] ${JSON.stringify({ ...summary, failures: summary.failures.slice(0, 5) })}`)
+  return finish(summary)
+}
+
+async function finish(summary: OnlineAppSummary): Promise<OnlineAppSummary> {
   const prior = await loadOnlineAppState()
   await saveOnlineAppState({ ...prior, last: summary })
-  console.log(`[online-app] ${JSON.stringify({ ...summary, failures: summary.failures.slice(0, 5) })}`)
   return summary
 }
 
@@ -336,10 +340,8 @@ async function listGmail(query: string): Promise<{ id: string; internalDate: num
     const params = new URLSearchParams({ q: query, maxResults: '50' })
     if (pageToken) params.set('pageToken', pageToken)
     const data = (await gmailFetch(`messages?${params}`)) as { messages?: { id: string }[]; nextPageToken?: string }
-    for (const message of data.messages ?? []) {
-      const meta = (await gmailFetch(`messages/${message.id}?format=minimal`)) as { id: string; internalDate?: string }
-      found.push({ id: meta.id, internalDate: Number(meta.internalDate ?? 0) })
-    }
+    const internalDate = query.includes('older_than') ? 0 : Date.now()
+    for (const message of data.messages ?? []) found.push({ id: message.id, internalDate })
     if (!data.nextPageToken) break
     pageToken = data.nextPageToken
   }
