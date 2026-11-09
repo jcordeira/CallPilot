@@ -23,7 +23,14 @@ export type ParsedApplication = {
   lastName?: string
   email?: string
   phone?: string
+  property?: string
+  city?: string
+  state?: string
+  code?: string
 }
+
+/** Claimed as done before a no-phone application could be created. Released once so the next run retries it. */
+const STALE_UNMATCHED_MESSAGE_IDS = ['1a1c1487883ca99f']
 
 export type ParseResult = { ok: true; application: ParsedApplication } | { ok: false; reason: string; skeleton: string }
 
@@ -71,27 +78,58 @@ function skeleton(text: string): string {
     .slice(0, 280)
 }
 
-/** Pull the applicant from the subject and body. Fails closed when the body does not yield one email and one phone. */
+function normalizeBody(value: string): string {
+  const lines = value.replace(/\r\n/g, '\n').replace(/\n\r/g, '\n').replace(/\r/g, '\n')
+  return decodeHtml(lines)
+}
+
+function lineValue(text: string, label: RegExp): string | undefined {
+  const match = text.match(new RegExp(`(?:^|\\n)\\s*(?:${label.source})\\s*[:\\-]\\s*([^\\n]+)`, 'i'))
+  const value = match?.[1]?.replace(/\s+/g, ' ').trim()
+  return value || undefined
+}
+
+function asEmail(value: string | undefined): string | undefined {
+  const email = value?.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]?.toLowerCase()
+  if (!email || IGNORED_EMAILS.has(email)) return undefined
+  return email
+}
+
+function asPhone(value: string | undefined): string | undefined {
+  if (!value) return undefined
+  const phone = digits(value)
+  if (phone.length === 10 && !IGNORED_PHONES.has(phone)) return phone
+  return undefined
+}
+
+function propertyParts(value: string | undefined): { property?: string; city?: string; state?: string; code?: string } {
+  if (!value) return {}
+  const match = value.match(/^(.*?)[, ]+([A-Za-z]{2})\s+(\d{5})(?:-\d{4})?$/)
+  if (!match?.[1] || !match[2] || !match[3]) return { property: value }
+  return { property: value, city: match[1].trim(), state: match[2].toUpperCase(), code: match[3] }
+}
+
+/** Pull the applicant from the subject and body. A name plus an email or a phone is enough. */
 export function parseOnlineApplication(subject: string, body: string): ParseResult {
-  const name = applicationNameFromSubject(subject)
-  if (!name) return { ok: false, reason: 'subject has no applicant name', skeleton: skeleton(subject) }
-  const text = decodeHtml(body)
+  const text = normalizeBody(body)
   if (!/dear joseph cordeira\b/i.test(text.slice(0, 800))) {
     return { ok: false, reason: 'body does not address Dear Joseph Cordeira', skeleton: skeleton(text) }
   }
-  const labeledEmail = text.match(/(?:e-?mail(?: address)?)\s*[:\-]\s*([A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,})/i)?.[1]
-  const labeledPhone = text.match(/(?:mobile|cell|phone|telephone)\s*(?:number)?\s*[:\-]\s*(\+?\d[\d\s().-]{7,}\d)/i)?.[1]
+  const borrowerName = lineValue(text, /Primary Borrower['’]s Name/)
+  const name = (borrowerName || applicationNameFromSubject(subject) || '').replace(/\s+/g, ' ').trim()
+  if (!name) return { ok: false, reason: 'subject has no applicant name', skeleton: skeleton(subject) }
+  const labeledEmail = asEmail(lineValue(text, /Primary Borrower['’]s E-?mail(?: Address)?/))
+    ?? asEmail(text.match(/(?:^|\n)\s*(?:e-?mail(?: address)?)\s*[:\-]\s*([^\n]+)/i)?.[1])
+  const labeledPhone = asPhone(lineValue(text, /Primary Borrower['’]s (?:Mobile|Cell|Phone|Telephone)(?: Number)?/))
+    ?? asPhone(text.match(/(?:^|\n)\s*(?:mobile|cell|phone|telephone)\s*(?:number)?\s*[:\-]\s*([^\n]+)/i)?.[1])
   const emails = [...text.matchAll(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/gi)]
     .map((match) => match[0].toLowerCase())
     .filter((email) => !IGNORED_EMAILS.has(email))
   const phones = [...text.matchAll(/(?:\+?1[\s.-]?)?(?:\(\d{3}\)|\d{3})[\s.-]\d{3}[\s.-]\d{4}|\+1\d{10}/g)]
     .map((match) => digits(match[0]))
     .filter((phone) => phone.length === 10 && !IGNORED_PHONES.has(phone))
-  const email = (labeledEmail?.toLowerCase() && !IGNORED_EMAILS.has(labeledEmail.toLowerCase()) ? labeledEmail.toLowerCase() : undefined)
-    ?? (emails.length === 1 ? emails[0] : undefined)
-  const labeledPhoneDigits = labeledPhone ? digits(labeledPhone) : ''
-  const phone = (labeledPhoneDigits.length === 10 && !IGNORED_PHONES.has(labeledPhoneDigits) ? labeledPhoneDigits : undefined)
-    ?? (phones.length === 1 ? phones[0] : undefined)
+  const email = labeledEmail ?? (emails.length === 1 ? emails[0] : undefined)
+  const phone = labeledPhone ?? (phones.length === 1 ? phones[0] : undefined)
   if (!labeledEmail && emails.length > 1) {
     return { ok: false, reason: `ambiguous emails (${emails.length})`, skeleton: skeleton(text) }
   }
@@ -101,7 +139,16 @@ export function parseOnlineApplication(subject: string, body: string): ParseResu
   if (!email && !phone) {
     return { ok: false, reason: `no single applicant email or phone (emails=${emails.length} phones=${phones.length})`, skeleton: skeleton(text) }
   }
-  return { ok: true, application: { name, ...splitName(name), email, phone: phone ? `+1${phone}` : undefined } }
+  return {
+    ok: true,
+    application: {
+      name,
+      ...splitName(name),
+      email,
+      phone: phone ? `+1${phone}` : undefined,
+      ...propertyParts(lineValue(text, /Property is Located in/)),
+    },
+  }
 }
 
 type Person = { id: number; name?: string; emails?: { value: string }[]; phones?: { value: string }[]; tags?: string[] }
@@ -222,7 +269,17 @@ export async function runOnlineApplications(options?: {
   const read = options?.read ?? readGmail
   const search = options?.search ?? defaultSearch
   const tag = options?.tag ?? ((personId: number) => addPersonTag(personId, ONLINE_APP_TAG))
-  const create = options?.create ?? ((application: ParsedApplication) => registerPerson({ ...splitName(application.name), email: application.email, phone: application.phone, tag: ONLINE_APP_TAG }))
+  const create = options?.create ?? ((application: ParsedApplication) => registerPerson({
+    firstName: application.firstName,
+    lastName: application.lastName,
+    email: application.email,
+    phone: application.phone,
+    tag: ONLINE_APP_TAG,
+    city: application.city,
+    state: application.state,
+    code: application.code,
+    property: application.property,
+  }))
 
   const state = await loadOnlineAppState()
   try {
@@ -240,6 +297,12 @@ export async function runOnlineApplications(options?: {
     summary.failures.push(reason)
     console.log(`[online-app] ${reason}`)
     return finish(summary)
+  }
+
+  if (!(await loadOnlineAppState()).releasedStaleClaims) {
+    for (const id of STALE_UNMATCHED_MESSAGE_IDS) await releaseOnlineApp(`done/${id}`)
+    const prior = await loadOnlineAppState()
+    await saveOnlineAppState({ ...prior, releasedStaleClaims: true })
   }
 
   let recent: { id: string; internalDate: number }[]
@@ -291,11 +354,18 @@ export async function runOnlineApplications(options?: {
         await tag(match.person.id)
         summary.tagged += 1
         action = 'tagged'
-      } else if (!match.ambiguous && parsed.application.email && parsed.application.phone) {
+      } else if (!match.ambiguous && (parsed.application.email || parsed.application.phone)) {
         personId = await create(parsed.application)
-        summary.created += 1
-        action = 'created'
+        if (!personId) {
+          await releaseOnlineApp(doneKey)
+          summary.failures.push('create returned no person id')
+          action = 'unmatched'
+        } else {
+          summary.created += 1
+          action = 'created'
+        }
       } else {
+        await releaseOnlineApp(doneKey)
         summary.failures.push(match.note)
         action = 'unmatched'
         console.log(`[online-app] unmatched ${item.id} ${match.note}`)

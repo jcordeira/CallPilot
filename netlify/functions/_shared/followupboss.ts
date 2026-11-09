@@ -586,6 +586,10 @@ export async function registerPerson(input: {
   email?: string
   phone?: string
   tag: string
+  city?: string
+  state?: string
+  code?: string
+  property?: string
 }): Promise<number | null> {
   if (isDemoMode()) return -1
   const person: Record<string, unknown> = {
@@ -595,13 +599,19 @@ export async function registerPerson(input: {
   if (input.lastName) person.lastName = input.lastName
   if (input.email) person.emails = [{ value: input.email }]
   if (input.phone) person.phones = [{ value: input.phone }]
+  if (input.city || input.state || input.code) {
+    person.addresses = [{ type: 'home', city: input.city, state: input.state, code: input.code, country: 'US' }]
+  }
+  const message = input.property
+    ? `Online application submitted. Property is located in ${input.property}.`
+    : 'Online application submitted'
   const data = (await fubFetch('/events', {
     method: 'POST',
     body: JSON.stringify({
       source: 'Online Application',
       system: env('FOLLOW_UP_BOSS_SYSTEM', 'LoanPilot'),
       type: 'Registration',
-      message: 'Online application submitted',
+      message,
       person,
     }),
   })) as { personId?: number; person?: { id?: number } } | null
