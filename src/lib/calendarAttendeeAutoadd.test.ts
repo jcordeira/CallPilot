@@ -29,6 +29,7 @@ function event(partial: Partial<AutoEvent> & { summary: string }): AutoEvent {
     status: partial.status,
     organizer: partial.organizer ?? { email: 'joseph@teamcordeira.com', self: true },
     attendees: partial.attendees ?? [{ email: 'client@example.com', responseStatus: 'accepted' }],
+    quickTask: partial.quickTask,
   }
 }
 
@@ -183,6 +184,56 @@ describe('calendar attendee auto-add', () => {
     expect(calls).toBe(1)
     delete process.env.CALENDAR_ATTENDEE_AUTOADD_ENABLED
     expect(attendeeAutoaddEnabled()).toBe(true)
+  })
+
+  it('adds Joe to a Hub quick-add event and removes only Frankie', async () => {
+    const patches: { emails: string[]; tag?: boolean }[] = []
+    let lookups = 0
+    const summary = await runCalendarAttendeeAutoadd({
+      events: [
+        event({
+          id: 'tagged',
+          summary: 'Send checklist',
+          quickTask: true,
+          attendees: [
+            { email: 'alex@example.com', responseStatus: 'accepted' },
+            { email: frankie, responseStatus: 'needsAction' },
+          ],
+        }),
+        event({
+          id: 'legacy',
+          summary: 'Call lender',
+          description: 'Bring the file\nLoanPilot task gt-9\n15 minutes',
+          attendees: [
+            { email: joe, responseStatus: 'accepted' },
+            { email: frankie, responseStatus: 'accepted' },
+            { email: 'alex@example.com', responseStatus: 'accepted' },
+          ],
+        }),
+        event({
+          id: 'done',
+          summary: 'Already clean',
+          quickTask: true,
+          attendees: [{ email: joe }, { email: 'alex@example.com' }],
+        }),
+      ],
+      lookup: async () => {
+        lookups += 1
+        return { people: [dscr], failed: false }
+      },
+      patch: async (input) => {
+        patches.push({ emails: input.attendees.map((attendee) => attendee.email), tag: input.tagQuickTask })
+      },
+    })
+    expect(lookups).toBe(0)
+    expect(patches).toEqual([
+      { emails: ['alex@example.com', joe], tag: true },
+      { emails: [joe, 'alex@example.com'], tag: true },
+    ])
+    expect(summary.addedJoe).toBe(1)
+    expect(summary.addedFrankie).toBe(0)
+    expect(summary.removedFrankie).toBe(2)
+    expect(summary.skippedByReason['already set']).toBe(1)
   })
 
   it('reads a client email or phone from the title, description, or location and ignores team addresses', () => {
