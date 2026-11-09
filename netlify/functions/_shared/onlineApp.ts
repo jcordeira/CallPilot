@@ -1,5 +1,5 @@
 import { env, isDemoMode } from './env'
-import { addPersonTag, fubGet, ONLINE_APP_TAG, registerPerson } from './followupboss'
+import { addPersonCollaborator, addPersonTag, fubGet, ONLINE_APP_TAG, registerPerson } from './followupboss'
 import { gmailCanRead, loadGoogleTokens, resolveGoogleAccessToken } from './googleAuth'
 import {
   claimOnlineApp,
@@ -31,6 +31,9 @@ export type ParsedApplication = {
 
 /** Claimed as done before a no-phone application could be created. Released once so the next run retries it. */
 const STALE_UNMATCHED_MESSAGE_IDS = ['1a1c1487883ca99f']
+/** Frankie Cordeira. Collaborator on people this job creates, and once on Zheng Zhuang. */
+const FRANKIE_FUB_USER_ID = 16
+const ZHENG_FUB_PERSON_ID = 12128
 
 export type ParseResult = { ok: true; application: ParsedApplication } | { ok: false; reason: string; skeleton: string }
 
@@ -229,8 +232,10 @@ export type OnlineAppSummary = {
   parseFailed: number
   already: number
   ambiguous: number
+  collaboratorFailed: number
   failures: string[]
   zheng?: { action: string; personId?: number | null; note?: string }
+  zhengCollaborator?: { ok: boolean; personId: number; userId: number; error?: string }
 }
 
 export async function runOnlineApplications(options?: {
@@ -241,6 +246,7 @@ export async function runOnlineApplications(options?: {
   search?: (query: string) => Promise<Person[]>
   tag?: (personId: number) => Promise<void>
   create?: (application: ParsedApplication) => Promise<number | null>
+  collaborate?: (personId: number) => Promise<void>
 }): Promise<OnlineAppSummary> {
   const now = options?.now ?? new Date()
   const backfill = options?.backfill === true
@@ -255,6 +261,7 @@ export async function runOnlineApplications(options?: {
     parseFailed: 0,
     already: 0,
     ambiguous: 0,
+    collaboratorFailed: 0,
     failures: [],
   }
   if (!summary.enabled) {
@@ -274,12 +281,15 @@ export async function runOnlineApplications(options?: {
     lastName: application.lastName,
     email: application.email,
     phone: application.phone,
-    tag: ONLINE_APP_TAG,
     city: application.city,
     state: application.state,
     code: application.code,
     property: application.property,
   }))
+  const collaborate = options?.collaborate
+    ?? (options?.list ? async () => {} : (personId: number) => addPersonCollaborator(personId, FRANKIE_FUB_USER_ID))
+
+  await ensureZhengCollaborator(summary, collaborate)
 
   const state = await loadOnlineAppState()
   try {
@@ -363,6 +373,17 @@ export async function runOnlineApplications(options?: {
         } else {
           summary.created += 1
           action = 'created'
+          try {
+            await collaborate(personId)
+          } catch (err) {
+            summary.collaboratorFailed += 1
+            const reason = err instanceof Error ? err.message : 'collaborator update failed'
+            summary.failures.push(`person ${personId}: ${reason}`)
+            action = 'created-collaborator-failed'
+            console.log(`[online-app] collaborator failed ${personId} ${reason}`)
+          }
+          await tag(personId)
+          summary.tagged += 1
         }
       } else {
         await releaseOnlineApp(doneKey)
@@ -381,6 +402,33 @@ export async function runOnlineApplications(options?: {
 
   console.log(`[online-app] ${JSON.stringify({ ...summary, failures: summary.failures.slice(0, 5) })}`)
   return finish(summary)
+}
+
+async function ensureZhengCollaborator(
+  summary: OnlineAppSummary,
+  collaborate: (personId: number) => Promise<void>,
+): Promise<void> {
+  const state = await loadOnlineAppState()
+  if (state.zhengCollaborator?.ok) {
+    summary.zhengCollaborator = state.zhengCollaborator
+    return
+  }
+  try {
+    await collaborate(ZHENG_FUB_PERSON_ID)
+    const result = { ok: true, personId: ZHENG_FUB_PERSON_ID, userId: FRANKIE_FUB_USER_ID }
+    summary.zhengCollaborator = result
+    const prior = await loadOnlineAppState()
+    await saveOnlineAppState({ ...prior, zhengCollaborator: result })
+  } catch (err) {
+    const error = err instanceof Error ? err.message : 'collaborator update failed'
+    const result = { ok: false, personId: ZHENG_FUB_PERSON_ID, userId: FRANKIE_FUB_USER_ID, error }
+    summary.zhengCollaborator = result
+    summary.collaboratorFailed += 1
+    summary.failures.push(`Zheng ${ZHENG_FUB_PERSON_ID}: ${error}`)
+    const prior = await loadOnlineAppState()
+    await saveOnlineAppState({ ...prior, zhengCollaborator: result })
+    console.log(`[online-app] Zheng collaborator failed ${error}`)
+  }
 }
 
 async function finish(summary: OnlineAppSummary): Promise<OnlineAppSummary> {

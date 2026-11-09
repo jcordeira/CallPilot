@@ -579,13 +579,64 @@ export async function addPersonTag(personId: number, tag: string): Promise<void>
   }
 }
 
-/** Create a person through the events API so Follow Up Boss runs lead flow. Does not text or email them. */
+/** Person id from a POST /events body. The events API returns the person, with id at the top level. */
+export function createdPersonId(data: unknown): number | null {
+  if (!data || typeof data !== 'object') return null
+  const body = data as { id?: unknown; personId?: unknown; person?: { id?: unknown } }
+  const raw = body.person?.id ?? body.personId ?? body.id
+  const id = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : Number.NaN
+  return Number.isInteger(id) && id > 0 ? id : null
+}
+
+export function collaboratorUserIds(collaborators: unknown): number[] {
+  if (!Array.isArray(collaborators)) return []
+  const ids: number[] = []
+  for (const item of collaborators) {
+    const raw = typeof item === 'number' ? item : item && typeof item === 'object' ? (item as { id?: unknown }).id : undefined
+    const id = typeof raw === 'number' ? raw : typeof raw === 'string' && /^\d+$/.test(raw) ? Number(raw) : Number.NaN
+    if (Number.isInteger(id) && id > 0) ids.push(id)
+  }
+  return ids
+}
+
+/** Keep every current collaborator and add one user. PUT replaces the whole list. */
+export function withCollaborator(existing: unknown, userId: number, assignedUserId?: number): number[] {
+  const ids = new Set(collaboratorUserIds(existing))
+  if (assignedUserId && assignedUserId > 0) ids.add(assignedUserId)
+  if (userId > 0) ids.add(userId)
+  return [...ids]
+}
+
+/**
+ * Add a collaborator with PUT /people/{id} and the documented collaborators array.
+ * Does not send assignedTo. Throws when a follow-up read does not list the user.
+ */
+export async function addPersonCollaborator(personId: number, userId: number): Promise<void> {
+  if (!personId || !userId) throw new Error('collaborator update missing person or user')
+  if (isDemoMode()) return
+  const current = (await fubFetch(`/people/${personId}`)) as {
+    id?: number
+    assignedUserId?: number
+    collaborators?: unknown
+    person?: { id?: number; assignedUserId?: number; collaborators?: unknown }
+  }
+  const person = current.person ?? current
+  const ids = withCollaborator(person.collaborators, userId, person.assignedUserId)
+  await fubFetch(`/people/${personId}`, {
+    method: 'PUT',
+    body: JSON.stringify({ collaborators: ids }),
+  })
+  const after = (await fubFetch(`/people/${personId}`)) as { collaborators?: unknown; person?: { collaborators?: unknown } }
+  const verified = collaboratorUserIds((after.person ?? after).collaborators)
+  if (!verified.includes(userId)) throw new Error(`collaborator ${userId} missing on person ${personId}`)
+}
+
+/** Create a person through the events API so Follow Up Boss runs lead flow. Does not text, email, or tag them. */
 export async function registerPerson(input: {
   firstName: string
   lastName?: string
   email?: string
   phone?: string
-  tag: string
   city?: string
   state?: string
   code?: string
@@ -594,7 +645,6 @@ export async function registerPerson(input: {
   if (isDemoMode()) return -1
   const person: Record<string, unknown> = {
     firstName: input.firstName,
-    tags: [input.tag],
   }
   if (input.lastName) person.lastName = input.lastName
   if (input.email) person.emails = [{ value: input.email }]
@@ -605,7 +655,7 @@ export async function registerPerson(input: {
   const message = input.property
     ? `Online application submitted. Property is located in ${input.property}.`
     : 'Online application submitted'
-  const data = (await fubFetch('/events', {
+  const data = await fubFetch('/events', {
     method: 'POST',
     body: JSON.stringify({
       source: 'Online Application',
@@ -614,8 +664,8 @@ export async function registerPerson(input: {
       message,
       person,
     }),
-  })) as { personId?: number; person?: { id?: number } } | null
-  return data?.person?.id ?? data?.personId ?? null
+  })
+  return createdPersonId(data)
 }
 
 export async function fubGet(path: string): Promise<unknown | null> {

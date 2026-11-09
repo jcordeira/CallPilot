@@ -1,5 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { gmailCanRead, GOOGLE_SCOPES } from '../../netlify/functions/_shared/googleAuth'
+import { createdPersonId, withCollaborator } from '../../netlify/functions/_shared/followupboss'
 import { matchApplicant, onlineAppTagEnabled, parseOnlineApplication, runOnlineApplications, type GmailMessage } from '../../netlify/functions/_shared/onlineApp'
 import { claimOnlineApp, loadOnlineAppState, resetOnlineAppStateForTests } from '../../netlify/functions/_shared/onlineAppStore'
 
@@ -156,7 +157,7 @@ describe('online application matching', () => {
     })
     expect(summary.seededOld).toBe(1)
     expect(summary.created).toBe(1)
-    expect(summary.tagged).toBe(0)
+    expect(summary.tagged).toBe(1)
     expect(created).toEqual(['Zheng Zhuang'])
     expect(summary.zheng).toMatchObject({ action: 'created', personId: 77 })
     expect(listed.some((query) => query.includes('newer_than:2d'))).toBe(true)
@@ -172,7 +173,7 @@ describe('online application matching', () => {
     })
     expect(again.already).toBe(1)
     expect(again.created).toBe(0)
-    expect(tags).toEqual([])
+    expect(tags).toEqual([77])
   })
 
   it('creates Zheng from the real email with no phone, and retries a stale done claim once', async () => {
@@ -233,6 +234,76 @@ describe('online application matching', () => {
     const second = await run()
     expect(second.already).toBe(0)
     expect(second.considered).toBe(1)
+  })
+
+  it('reads the created person id and keeps existing collaborators', () => {
+    expect(createdPersonId({ id: 12128, name: 'Zheng Zhuang' })).toBe(12128)
+    expect(createdPersonId({ person: { id: 9 } })).toBe(9)
+    expect(createdPersonId({ personId: '44' })).toBe(44)
+    expect(createdPersonId(null)).toBeNull()
+    expect(withCollaborator([{ id: 1, name: 'Joseph Cordeira', assigned: true }], 16, 1)).toEqual([1, 16])
+    expect(withCollaborator([1, 16], 16)).toEqual([1, 16])
+  })
+
+  it('creates the person, adds Frankie, then applies the tag', async () => {
+    process.env.ASSISTANT_DEMO_MODE = 'false'
+    process.env.FOLLOW_UP_BOSS_API_KEY = 'fub'
+    const now = new Date('2026-11-09T23:00:00.000Z')
+    const steps: string[] = []
+    const summary = await runOnlineApplications({
+      now,
+      list: async () => [{ id: 'new', internalDate: now.getTime() - 3_600_000 }],
+      read: async (id) => message(id, 'New application submitted successfully for: Ada Buyer', 'Dear Joseph Cordeira, A loan application was submitted. Contact ada.buyer@gmail.com or 631-555-0199.'),
+      search: async () => [],
+      create: async () => {
+        steps.push('create')
+        return 55
+      },
+      collaborate: async (personId) => { steps.push(`collaborate:${personId}`) },
+      tag: async (personId) => { steps.push(`tag:${personId}`) },
+    })
+    expect(steps).toEqual(['collaborate:12128', 'create', 'collaborate:55', 'tag:55'])
+    expect(summary.created).toBe(1)
+    expect(summary.tagged).toBe(1)
+    expect(summary.zhengCollaborator).toMatchObject({ ok: true, personId: 12128, userId: 16 })
+  })
+
+  it('tags a new person when the collaborator update fails, and only tags an existing match', async () => {
+    process.env.ASSISTANT_DEMO_MODE = 'false'
+    process.env.FOLLOW_UP_BOSS_API_KEY = 'fub'
+    const now = new Date('2026-11-09T23:00:00.000Z')
+    const tagged: number[] = []
+    const failed = await runOnlineApplications({
+      now,
+      list: async () => [{ id: 'new', internalDate: now.getTime() - 3_600_000 }],
+      read: async (id) => message(id, 'New application submitted successfully for: Ada Buyer', 'Dear Joseph Cordeira, A loan application was submitted. Contact ada.buyer@gmail.com or 631-555-0199.'),
+      search: async () => [],
+      create: async () => 55,
+      collaborate: async (personId) => {
+        if (personId !== 12128) throw new Error('collaborator put failed')
+      },
+      tag: async (personId) => { tagged.push(personId) },
+    })
+    expect(tagged).toEqual([55])
+    expect(failed.collaboratorFailed).toBe(1)
+    expect(failed.created).toBe(1)
+    expect(failed.failures.some((failure) => failure.includes('collaborator put failed'))).toBe(true)
+
+    resetOnlineAppStateForTests()
+    const collaborated: number[] = []
+    const matched = await runOnlineApplications({
+      now,
+      list: async () => [{ id: 'ada', internalDate: now.getTime() - 3_600_000 }],
+      read: async (id) => message(id, 'New application submitted successfully for: Ada Buyer', 'Dear Joseph Cordeira, A loan application was submitted. Contact ada.buyer@gmail.com or 631-555-0199.'),
+      search: async () => [{ id: 9, name: 'Ada Buyer', emails: [{ value: 'ada.buyer@gmail.com' }] }],
+      create: async () => 1,
+      collaborate: async (personId) => { collaborated.push(personId) },
+      tag: async (personId) => { tagged.push(personId) },
+    })
+    expect(collaborated).toEqual([12128])
+    expect(matched.tagged).toBe(1)
+    expect(matched.created).toBe(0)
+    expect(tagged).toEqual([55, 9])
   })
 
   it('records a missing Gmail scope instead of dropping the run', async () => {
