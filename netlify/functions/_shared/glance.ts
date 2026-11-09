@@ -255,6 +255,14 @@ export function bustGlanceSource(source: GlanceSource): void {
   else fubTaskCache = null
 }
 
+/** Drop the board and every cache a task write just changed. */
+export function bustGlanceAfterWrite(sources: Array<'google' | 'fub' | 'events'>): void {
+  boardCache = null
+  if (sources.includes('google')) googleTaskCache = null
+  if (sources.includes('fub')) fubTaskCache = null
+  if (sources.includes('events')) eventCache = null
+}
+
 export async function loadGlance(now = new Date()): Promise<GlanceBoard> {
   const nowMs = Date.now()
   const userId = joeTaskAssigneeId()

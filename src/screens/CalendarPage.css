@@ -143,8 +143,77 @@
   border-radius: 50%;
   background: #dc2626;
 }
+.cal__opens {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px;
+  margin: 0 0 12px;
+}
+.cal__opens-label {
+  font-size: 12px;
+  letter-spacing: 0.04em;
+  text-transform: uppercase;
+  color: var(--text-muted);
+}
+.cal__open, .cal__toast button {
+  min-height: 44px;
+  padding: 8px 12px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  font: inherit;
+  font-size: 13px;
+}
+.cal__slot {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  z-index: 0;
+  border: 0;
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0 4px;
+  text-align: left;
+}
+.cal__slot-plus { opacity: 0; font-size: 14px; line-height: 1; }
+.cal__slot:hover, .cal__slot:focus-visible { background: rgba(31, 77, 46, 0.08); }
+.cal__slot:hover .cal__slot-plus, .cal__slot:focus-visible .cal__slot-plus { opacity: 1; }
+.cal__task {
+  position: absolute;
+  left: 3px;
+  right: 3px;
+  z-index: 1;
+  overflow: hidden;
+  border-left: 2px solid #1e3a5f;
+  border-radius: var(--r-6);
+  background: #e7eef8;
+  padding: 2px 6px;
+  font-size: 12px;
+  line-height: 1.3;
+}
+.cal__task--fub { border-left-color: #1f4d2e; background: #e8f0ea; }
+.cal__task--pending { opacity: 0.7; }
+.cal__task-check { width: 18px; height: 18px; margin-right: 4px; vertical-align: middle; }
+.cal__toast {
+  position: fixed;
+  z-index: 30;
+  left: 12px;
+  right: 12px;
+  bottom: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 12px 14px;
+  border-radius: var(--r-8);
+  background: var(--ink);
+  color: #fff;
+}
+.cal__toast button { color: #fff; background: transparent; border-color: transparent; text-decoration: underline; }
 .cal__event {
   position: absolute;
+  z-index: 1;
   left: 3px;
   right: 3px;
   overflow: hidden;

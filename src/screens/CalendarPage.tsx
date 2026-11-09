@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react'
 import { FubPersonLink } from '../components/FubPersonLink'
 import { Modal } from '../components/Modal'
+import { QuickAddTaskForm, type QuickAddValues } from '../components/QuickAddTaskForm'
 import { clientCallTitle, externalGuestEmails, TEAM_GUESTS } from '../lib/calendarGuests'
 import { matchPersonInText } from '../lib/fubLink'
 import {
@@ -22,16 +23,22 @@ import {
   zonedParts,
 } from '../lib/calendarTime'
 import {
+  completeGlanceTask,
   createHubCalendarEvent,
+  createHubTask,
   deleteHubCalendarEvent,
+  fetchGlance,
   fetchHubCalendar,
   googleConnectUrl,
   searchHubPeople,
+  undoGlanceTask,
   updateHubCalendarEvent,
   type CalendarPayload,
   type CalendarWrite,
+  type GlanceItem,
   type HubCalendarEvent,
 } from '../lib/hubApi'
+import { freeQuarters, nextOpenSlots } from '../lib/openSlots'
 import { useMediaQuery } from '../lib/useMediaQuery'
 import './CalendarPage.css'
 
@@ -197,6 +204,19 @@ function nextUp(events: HubCalendarEvent[], now: Date): string | null {
   return `Next: ${upcoming.summary} ${formatUntil(minutes)}`
 }
 
+function quickTaskId(description?: string): string | null {
+  return description?.match(/^LoanPilot task (\S+)$/m)?.[1] ?? null
+}
+
+function timedGlanceTask(item: GlanceItem): boolean {
+  return item.kind === 'task' && item.at.endsWith('Z')
+}
+
+function overlayTasks(tasks: GlanceItem[], events: HubCalendarEvent[]): GlanceItem[] {
+  const linked = new Set(events.map((event) => quickTaskId(event.description)).filter((id): id is string => Boolean(id)))
+  return tasks.filter((task) => timedGlanceTask(task) && !(task.source === 'google' && linked.has(task.id)))
+}
+
 function EventTitle({ event, leads }: { event: HubCalendarEvent; leads: { personId: number; name: string }[] }) {
   const match = matchPersonInText(event.summary, leads)
   if (!match) return <>{event.summary}</>
@@ -223,6 +243,11 @@ export function CalendarPage() {
   const [people, setPeople] = useState<{ id: number; name: string; email?: string }[]>([])
   const [busy, setBusy] = useState(false)
   const [now, setNow] = useState(() => new Date())
+  const [tasks, setTasks] = useState<GlanceItem[]>([])
+  const [quick, setQuick] = useState<{ date: string; time: string } | null>(null)
+  const [optimistic, setOptimistic] = useState<{ id: string; day: string; time: string; title: string }[]>([])
+  const [hiddenTasks, setHiddenTasks] = useState<Record<string, true>>({})
+  const [toast, setToast] = useState<{ source: 'google' | 'fub'; id: string; title: string; eventId?: string } | null>(null)
   const scrollRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -237,7 +262,12 @@ export function CalendarPage() {
   const span = useMemo(() => rangeFor(view, anchor), [view, anchor])
   const load = useCallback(async () => {
     try {
-      setData(await fetchHubCalendar(span.start, span.end))
+      const [calendar, board] = await Promise.all([
+        fetchHubCalendar(span.start, span.end),
+        fetchGlance().catch(() => null),
+      ])
+      setData(calendar)
+      setTasks(board?.all.filter(timedGlanceTask) ?? [])
       setError(null)
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not load the calendar')
@@ -300,6 +330,66 @@ export function CalendarPage() {
     }
   }
 
+  async function saveQuick(values: QuickAddValues) {
+    const tempId = `pending-${Date.now()}`
+    if (!values.allDay && values.time) {
+      setOptimistic((current) => [...current, { id: tempId, day: values.due, time: values.time!, title: values.title }])
+    }
+    setQuick(null)
+    setBusy(true)
+    try {
+      await createHubTask(values)
+      await load()
+      setError(null)
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not add the task')
+      throw err
+    } finally {
+      setOptimistic((current) => current.filter((item) => item.id !== tempId))
+      setBusy(false)
+    }
+  }
+
+  const toastTimer = useRef<number | null>(null)
+  async function markTask(source: 'google' | 'fub', id: string, title: string, eventId?: string) {
+    setHiddenTasks((current) => ({ ...current, [`${source}:${id}`]: true }))
+    try {
+      await completeGlanceTask(source, id)
+      if (toastTimer.current) window.clearTimeout(toastTimer.current)
+      setToast({ source, id, title, eventId })
+      toastTimer.current = window.setTimeout(() => {
+        setToast(null)
+        if (eventId) void deleteHubCalendarEvent(eventId, 'none').catch(() => undefined).finally(() => load())
+        else void load()
+      }, 5000)
+    } catch (err) {
+      setHiddenTasks((current) => {
+        const next = { ...current }
+        delete next[`${source}:${id}`]
+        return next
+      })
+      setError(err instanceof Error ? err.message : 'Could not complete this task')
+    }
+  }
+
+  async function undoMark() {
+    if (!toast) return
+    if (toastTimer.current) window.clearTimeout(toastTimer.current)
+    const current = toast
+    setToast(null)
+    setHiddenTasks((prev) => {
+      const next = { ...prev }
+      delete next[`${current.source}:${current.id}`]
+      return next
+    })
+    try {
+      await undoGlanceTask(current.source, current.id)
+      await load()
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not undo')
+    }
+  }
+
   function askOrSave(next: Draft) {
     if (!next.summary.trim()) {
       setError('Add a title.')
@@ -314,7 +404,7 @@ export function CalendarPage() {
   }
 
   function onDrag(item: HubCalendarEvent, event: ReactPointerEvent<HTMLDivElement>) {
-    if (item.allDay) {
+    if (narrow || item.allDay) {
       setDraft(draftFromEvent(item))
       return
     }
@@ -414,6 +504,19 @@ export function CalendarPage() {
       )}
       {data?.demo && <p className="cal__note">Sample calendar until Google is connected. Changes stay in this browser session.</p>}
       {error && <p className="cal__error">{error}</p>}
+      {view !== 'agenda' && (
+        <div className="cal__opens" aria-label="Next open slots">
+          <span className="cal__opens-label">Next open slots</span>
+          {nextOpenSlots(now, [
+            ...events,
+            ...overlayTasks(tasks, events).map((task) => ({ startIso: task.at, endIso: new Date(new Date(task.at).getTime() + 15 * 60_000).toISOString(), allDay: false })),
+          ]).map((slot) => (
+            <button key={`${slot.date}-${slot.time}`} type="button" className="cal__open" onClick={() => setQuick(slot)}>
+              {slot.label}
+            </button>
+          ))}
+        </div>
+      )}
       {view === 'agenda' ? (
         <ul className="cal__agenda">
           {events.length === 0 && <li className="cal__empty">Nothing in this range.</li>}
@@ -467,9 +570,26 @@ export function CalendarPage() {
               const key = dateKey(day)
               const isToday = key === todayKey
               const items = events.filter((event) => dateKey(new Date(event.startIso)) === key && !event.allDay)
+              const dayTasks = overlayTasks(tasks, events).filter((task) => dateKey(new Date(task.at)) === key && !hiddenTasks[`${task.source}:${task.id}`])
+              const pending = optimistic.filter((item) => item.day === key)
+              const occupied = [
+                ...items,
+                ...dayTasks.map((task) => ({ startIso: task.at, endIso: new Date(new Date(task.at).getTime() + 15 * 60_000).toISOString(), allDay: false })),
+              ]
               return (
                 <section key={key} className={isToday ? 'cal__col cal__col--today' : 'cal__col'} aria-label={formatDayLabel(day)} aria-current={isToday ? 'date' : undefined}>
-                  <div className="cal__col-body" style={{ height: (HOUR_END - HOUR_START) * HOUR_PX }}>
+                  <div
+                    className="cal__col-body"
+                    style={{ height: (HOUR_END - HOUR_START) * HOUR_PX }}
+                    onClick={(click) => {
+                      if ((click.target as HTMLElement).closest('.cal__event, .cal__task, .cal__slot, a, button, input')) return
+                      const rect = click.currentTarget.getBoundingClientRect()
+                      const total = Math.max(0, Math.min(24 * 60 - 15, Math.floor((click.clientY - rect.top) / HOUR_PX * 60 / 15) * 15))
+                      const hour = Math.floor(total / 60)
+                      const minute = total % 60
+                      setQuick({ date: key, time: `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}` })
+                    }}
+                  >
                     {showingToday && (
                       <div
                         className={isToday ? 'cal__now cal__now--today' : 'cal__now'}
@@ -477,21 +597,75 @@ export function CalendarPage() {
                         data-testid={isToday ? 'now-line' : undefined}
                       />
                     )}
+                    {freeQuarters(key, occupied, 8, 19).map((time) => {
+                      const [hour, minute] = time.split(':').map(Number)
+                      const top = (hour + minute / 60 - HOUR_START) * HOUR_PX
+                      const at = zonedDateTimeToUtc(Number(key.slice(0, 4)), Number(key.slice(5, 7)), Number(key.slice(8, 10)), hour, minute)
+                      return (
+                        <button
+                          key={time}
+                          type="button"
+                          className="cal__slot"
+                          style={{ top, height: HOUR_PX / 4 }}
+                          aria-label={`Add task ${formatDayLabel(at)} ${formatTimeLabel(at)}`}
+                          onClick={(click) => {
+                            click.stopPropagation()
+                            setQuick({ date: key, time })
+                          }}
+                        >
+                          <span className="cal__slot-plus" aria-hidden="true">+</span>
+                        </button>
+                      )
+                    })}
+                    {pending.map((item) => {
+                      const [hour, minute] = item.time.split(':').map(Number)
+                      return (
+                        <div key={item.id} className="cal__task cal__task--pending" style={{ top: (hour + minute / 60) * HOUR_PX, height: HOUR_PX / 4 }}>
+                          <span className="cal__event-time">{item.time}</span> {item.title}
+                        </div>
+                      )
+                    })}
+                    {dayTasks.map((task) => {
+                      const start = zonedParts(new Date(task.at))
+                      const top = (start.hour + start.minute / 60 - HOUR_START) * HOUR_PX
+                      return (
+                        <div key={task.key} className={task.source === 'fub' ? 'cal__task cal__task--fub' : 'cal__task'} style={{ top, height: HOUR_PX / 4 }}>
+                          <input
+                            type="checkbox"
+                            className="cal__task-check"
+                            aria-label={`Complete ${task.title}`}
+                            onChange={() => void markTask(task.source, task.id, task.title)}
+                          />
+                          <span className="cal__event-time">{formatTimeLabel(new Date(task.at))}</span> {task.title}
+                        </div>
+                      )
+                    })}
                     {items.map((event) => {
                       const start = zonedParts(new Date(event.startIso))
                       const end = zonedParts(new Date(event.endIso))
                       const top = (start.hour + start.minute / 60 - HOUR_START) * HOUR_PX
                       const height = Math.max(28, (end.hour + end.minute / 60 - (start.hour + start.minute / 60)) * HOUR_PX)
+                      const linked = quickTaskId(event.description)
+                      const hidden = linked ? hiddenTasks[`google:${linked}`] : false
+                      if (hidden) return null
                       return (
                         <div
                           key={event.id}
-                          className="cal__event"
+                          className={linked ? 'cal__event cal__task' : 'cal__event'}
                           style={{ top, height }}
                           onPointerDown={(pointer) => {
-                            if ((pointer.target as HTMLElement).closest('a')) return
+                            if ((pointer.target as HTMLElement).closest('a, button, input')) return
                             onDrag(event, pointer)
                           }}
                         >
+                          {linked ? (
+                            <input
+                              type="checkbox"
+                              className="cal__task-check"
+                              aria-label={`Complete ${event.summary}`}
+                              onChange={() => void markTask('google', linked, event.summary, event.id)}
+                            />
+                          ) : null}
                           <span className="cal__event-time">{formatTimeLabel(new Date(event.startIso))}</span>
                           {' '}
                           <EventTitle event={event} leads={leads} />
@@ -503,6 +677,26 @@ export function CalendarPage() {
               )
             })}
           </div>
+        </div>
+      )}
+
+      {quick && (
+        <Modal title="Add task" onClose={() => setQuick(null)}>
+          <QuickAddTaskForm
+            initialDue={quick.date}
+            initialTime={quick.time}
+            demo={data?.demo}
+            busy={busy}
+            events={events}
+            onCancel={() => setQuick(null)}
+            onSubmit={saveQuick}
+          />
+        </Modal>
+      )}
+      {toast && (
+        <div className="cal__toast" role="status">
+          <span>{toast.title} completed</span>
+          <button type="button" onClick={() => void undoMark()}>Undo</button>
         </div>
       )}
 

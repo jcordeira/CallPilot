@@ -34,7 +34,8 @@ import {
 import { GlanceSection } from '../components/GlanceSection'
 import { FubPersonLink, TextWithPerson } from '../components/FubPersonLink'
 import { matchPersonInText, personIdForName, type NamedPerson } from '../lib/fubLink'
-import { nextQuarterHourEt, quarterHourOptions } from '../lib/quickTaskTime'
+import { QuickAddTaskForm } from '../components/QuickAddTaskForm'
+import { nextQuarterHourEt } from '../lib/quickTaskTime'
 import { dateToKey, dayLabel } from '../lib/time'
 import './HubPage.css'
 
@@ -152,15 +153,7 @@ export function HubPage() {
   const [busy, setBusy] = useState(false)
   const [ready, setReady] = useState(false)
 
-  const [title, setTitle] = useState('')
-  const [notes, setNotes] = useState('')
-  const openingSlot = nextQuarterHourEt()
-  const [due, setDue] = useState(openingSlot.date)
-  const [taskTime, setTaskTime] = useState(openingSlot.time)
-  const [allDay, setAllDay] = useState(false)
-  const timeOptions = quarterHourOptions()
-  const [source, setSource] = useState<'google' | 'fub' | 'both'>('google')
-  const [personId, setPersonId] = useState('')
+  const quickSlot = nextQuarterHourEt()
 
   const [leadName, setLeadName] = useState('')
   const [slotNote, setSlotNote] = useState('')
@@ -259,34 +252,10 @@ export function HubPage() {
     }
   }
 
-  const onCreateTask = async () => {
-    if (!title.trim()) {
-      setError('Give the task a title.')
-      return
-    }
-    const parsedPerson = personId.trim() ? Number(personId) : undefined
-    if (parsedPerson != null && !Number.isFinite(parsedPerson)) {
-      setError('Person ID must be a number.')
-      return
-    }
+  const onCreateTask = async (values: Parameters<typeof createHubTask>[0]) => {
     setBusy(true)
     try {
-      await createHubTask({
-        title: title.trim(),
-        notes: notes.trim() || undefined,
-        due: due || undefined,
-        time: allDay ? undefined : taskTime,
-        allDay,
-        source,
-        personId: parsedPerson,
-      })
-      const fresh = nextQuarterHourEt()
-      setTitle('')
-      setNotes('')
-      setDue(fresh.date)
-      setTaskTime(fresh.time)
-      setAllDay(false)
-      setPersonId('')
+      await createHubTask(values)
       setPanel(null)
       setNotice('Task added.')
       await load()
@@ -294,6 +263,7 @@ export function HubPage() {
     } catch (e) {
       setNotice(null)
       setError(e instanceof Error ? e.message : 'Could not add the task')
+      throw e
     } finally {
       setBusy(false)
     }
@@ -533,72 +503,16 @@ export function HubPage() {
       ))}
 
       {panel === 'task' && (
-        <form
-          id={`${formId}-task`}
-          className="card hub__form"
-          onSubmit={(e) => {
-            e.preventDefault()
-            void onCreateTask()
-          }}
-        >
-          <div className="hub__form-grid">
-            <label className="field field--wide">
-              <span className="field__label">Title</span>
-              <input className="input" value={title} onChange={(e) => setTitle(e.target.value)} placeholder="Send the pre-approval checklist" />
-            </label>
-            <label className="field field--wide">
-              <span className="field__label">Notes</span>
-              <textarea className="input hub__textarea" rows={2} value={notes} onChange={(e) => setNotes(e.target.value)} />
-            </label>
-            <label className="field">
-              <span className="field__label">Due</span>
-              <input className="input" type="date" value={due} onChange={(e) => setDue(e.target.value)} />
-            </label>
-            <label className="field">
-              <span className="field__label">Time</span>
-              <select className="select" value={taskTime} disabled={allDay} onChange={(e) => setTaskTime(e.target.value)}>
-                {timeOptions.map((option) => (
-                  <option key={option.value} value={option.value}>
-                    {option.label}
-                  </option>
-                ))}
-              </select>
-            </label>
-            <label className="field hub__all-day">
-              <input type="checkbox" checked={allDay} onChange={(e) => setAllDay(e.target.checked)} />
-              <span>All day</span>
-            </label>
-            {allDay ? null : <p className="hub__form-help hub__duration">15 minutes</p>}
-            <label className="field">
-              <span className="field__label">Save to</span>
-              <select className="select" value={source} onChange={(e) => setSource(e.target.value as typeof source)}>
-                <option value="google">Google Tasks</option>
-                <option value="fub">Follow Up Boss</option>
-                <option value="both">Google and Follow Up Boss</option>
-              </select>
-            </label>
-            {(source === 'fub' || source === 'both') && (
-              <label className="field field--wide">
-                <span className="field__label">Follow Up Boss person ID</span>
-                <input
-                  className="input"
-                  inputMode="numeric"
-                  value={personId}
-                  onChange={(e) => setPersonId(e.target.value)}
-                  placeholder={summary?.stats.demo ? 'Optional in demo mode' : 'Required — Follow Up Boss person ID'}
-                />
-              </label>
-            )}
-          </div>
-          <div className="hub__form-actions">
-            <button type="submit" className="btn btn--primary" disabled={busy}>
-              Save task
-            </button>
-            <button type="button" className="btn" onClick={() => setPanel(null)}>
-              Cancel
-            </button>
-          </div>
-        </form>
+        <div className="card">
+          <QuickAddTaskForm
+            initialDue={quickSlot.date}
+            initialTime={quickSlot.time}
+            demo={summary?.stats.demo}
+            busy={busy}
+            onCancel={() => setPanel(null)}
+            onSubmit={onCreateTask}
+          />
+        </div>
       )}
 
       {panel === 'slot' && (
