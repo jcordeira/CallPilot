@@ -61,7 +61,15 @@ export async function releaseOnlineApp(key: string): Promise<void> {
   }
 }
 
-type Saved = { seeded?: boolean; enabledAt?: string; last?: unknown; releasedStaleClaims?: boolean }
+export type ZhengCollaboratorResult = { ok: boolean; personId: number; userId: number; error?: string }
+
+type Saved = {
+  seeded?: boolean
+  enabledAt?: string
+  last?: unknown
+  releasedStaleClaims?: boolean
+  zhengCollaborator?: ZhengCollaboratorResult
+}
 
 let memoryState: Saved = {}
 
