@@ -272,14 +272,30 @@ function toGoogleDue(due?: string): string | undefined {
   return parsed.toISOString()
 }
 
+const TASK_TIME_LINE = /^LoanPilot time: (\d{4}-\d{2}-\d{2}T[0-9:.+-]+Z)\s*$/m
+
+/** Google Tasks only stores a due date. The clock time rides in this notes line so the Hub can show it. */
+export function withGoogleTaskTime(notes: string | undefined, dueAt?: string): string | undefined {
+  const body = (notes ?? '').replace(TASK_TIME_LINE, '').replace(/^\n+/, '').trim()
+  if (!dueAt) return body || undefined
+  return [`LoanPilot time: ${dueAt}`, body].filter(Boolean).join('\n')
+}
+
+export function readGoogleTaskTime(notes?: string): { notes?: string; dueAt?: string } {
+  const match = notes?.match(TASK_TIME_LINE)
+  const body = (notes ?? '').replace(TASK_TIME_LINE, '').replace(/^\n+/, '').trim()
+  return { notes: body || undefined, dueAt: match?.[1] }
+}
+
 function mapGTask(item: GTask): HubTask | null {
   if (!item.id) return null
   const status = item.status === 'completed' ? 'completed' : 'needsAction'
+  const timed = readGoogleTaskTime(item.notes)
   return {
     id: item.id,
     title: item.title?.trim() || '(Untitled)',
-    notes: item.notes,
-    due: dueKey(item.due),
+    notes: timed.notes,
+    due: timed.dueAt ?? dueKey(item.due),
     status,
     source: 'google',
   }
@@ -347,16 +363,19 @@ export async function createGoogleTask(input: {
   title: string
   notes?: string
   due?: string
+  /** Clock time the Tasks API cannot store. Kept in notes and returned as `due`. */
+  dueAt?: string
 }): Promise<HubTask> {
   const { accessToken: token } = await resolveGoogleAccessToken()
-  const due = dueKey(input.due)
+  const due = dueKey(input.due ?? input.dueAt)
+  const notes = withGoogleTaskTime(input.notes, input.dueAt)
   if (!token) {
     if (!isDemoMode()) throw new Error('Google Tasks is not connected')
     const task: HubTask = {
       id: nextDemoId('gtask-demo'),
       title: input.title,
-      notes: input.notes,
-      due,
+      notes: readGoogleTaskTime(notes).notes,
+      due: input.dueAt ?? due,
       status: 'needsAction',
       source: 'demo',
     }
@@ -373,8 +392,8 @@ export async function createGoogleTask(input: {
     },
     body: JSON.stringify({
       title: input.title,
-      notes: input.notes,
-      due: toGoogleDue(input.due),
+      notes,
+      due: toGoogleDue(due),
     }),
   })
   if (!res.ok) throw new Error(await googleError(res, 'Google Tasks create'))

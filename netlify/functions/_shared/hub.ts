@@ -1,4 +1,5 @@
-import { createCalendarEvent, createGoogleTask, holdFollowUpSlot, listGoogleTasks, listUpcomingEvents } from './calendar'
+import { CALENDAR_TIME_ZONE, createCalendarEvent, createGoogleTask, holdFollowUpSlot, listGoogleTasks, listUpcomingEvents } from './calendar'
+import { zonedDate } from './commandTime'
 import { isDemoMode } from './env'
 import { getGoogleConnectionStatus, resolveGoogleAccessToken } from './googleAuth'
 import { createTask, listOpenFubTasks } from './followupboss'
@@ -29,14 +30,29 @@ export function taskInputFromBody(body: Record<string, unknown>): HubTaskInput {
   if (due && !/^\d{4}-\d{2}-\d{2}$/.test(due) && Number.isNaN(new Date(due).getTime())) {
     throw new ApiError(400, 'due must be a date')
   }
+  const time = optionalString(body, 'time')
+  if (time && !/^([01]\d|2[0-3]):(00|15|30|45)$/.test(time)) {
+    throw new ApiError(400, 'time must be a 15-minute Eastern time')
+  }
   return {
     title,
     notes: optionalString(body, 'notes')?.trim(),
     due,
+    time,
+    allDay: body.allDay === true,
     source,
     personId: optionalNumber(body, 'personId'),
     personName: optionalString(body, 'personName')?.trim(),
   }
+}
+
+const TASK_MINUTES = 15
+
+/** Wall-clock Eastern date and `HH:mm` as a UTC instant. */
+export function etTaskStart(dateKey: string, time: string): string {
+  const [year, month, day] = dateKey.slice(0, 10).split('-').map(Number)
+  const [hour, minute] = time.split(':').map(Number)
+  return zonedDate({ year, month, day, hour, minute }, CALENDAR_TIME_ZONE).toISOString()
 }
 
 export function eventInputFromBody(body: Record<string, unknown>): HubEventInput {
@@ -118,9 +134,24 @@ export async function getHubSummary(): Promise<HubSummary> {
 }
 
 export async function createHubTask(input: HubTaskInput): Promise<{ tasks: HubTask[] }> {
+  const dateKey = input.due?.slice(0, 10)
+  const timed = input.allDay !== true && Boolean(dateKey && input.time)
+  const startIso = timed && dateKey && input.time ? etTaskStart(dateKey, input.time) : undefined
+  const endIso = startIso ? new Date(new Date(startIso).getTime() + TASK_MINUTES * 60_000).toISOString() : undefined
   const tasks: HubTask[] = []
   if (input.source === 'google' || input.source === 'both') {
-    tasks.push(await createGoogleTask({ title: input.title, notes: input.notes, due: input.due }))
+    const task = await createGoogleTask({ title: input.title, notes: input.notes, due: dateKey, dueAt: startIso })
+    tasks.push(task)
+    if (startIso && endIso) {
+      await createCalendarEvent({
+        summary: input.title,
+        description: [input.notes, `LoanPilot task ${task.id}`, '15 minutes'].filter(Boolean).join('\n'),
+        startIso,
+        endIso,
+        timeZone: CALENDAR_TIME_ZONE,
+        sendUpdates: 'none',
+      })
+    }
   }
   if (input.source === 'fub' || input.source === 'both') {
     const personId = input.personId ?? (isDemoMode() ? -1001 : undefined)
@@ -130,7 +161,8 @@ export async function createHubTask(input: HubTaskInput): Promise<{ tasks: HubTa
       personId,
       name: input.title,
       type: /\bcall\b|appointment/i.test(input.title) ? 'Call' : 'Follow Up',
-      dueDate: input.due?.slice(0, 10),
+      dueDate: dateKey,
+      dueDateTime: startIso,
       assignedTo: teammate.name,
       assignedUserId: teammate.userId,
       personName: input.personName ?? (isDemoMode() ? 'Demo Lead' : undefined),
@@ -139,7 +171,7 @@ export async function createHubTask(input: HubTaskInput): Promise<{ tasks: HubTa
       id: String(created.id),
       title: input.title,
       notes: input.notes,
-      due: input.due?.slice(0, 10),
+      due: startIso ?? dateKey,
       status: 'needsAction',
       source: 'fub',
       personName: input.personName ?? (isDemoMode() ? 'Demo Lead' : undefined),
