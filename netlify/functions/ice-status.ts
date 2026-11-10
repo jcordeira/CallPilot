@@ -1,0 +1,12 @@
+import type { Config } from '@netlify/functions'
+import { runIceStatus } from './_shared/iceStatus'
+
+/** Every 10 minutes. Notes collaborators and advances Purchase stages for new Cliffco ICE mail. */
+export default async () => {
+  const result = await runIceStatus()
+  return Response.json(result)
+}
+
+export const config: Config = {
+  schedule: '*/10 * * * *',
+}

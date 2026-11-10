@@ -82,6 +82,16 @@ export type GoogleConnection = {
   needsGmailRead?: boolean
 }
 
+export type IceReviewItem = {
+  id: string
+  at: string
+  borrower: string
+  loan: string
+  event: string
+  reason: string
+  candidates: { id: number; name: string }[]
+}
+
 export type HubSummary = {
   events: HubCalendarEvent[]
   tasks: HubTask[]
@@ -90,6 +100,7 @@ export type HubSummary = {
   warnings: string[]
   google: GoogleConnection
   leads: ScoredLead[]
+  iceReviews?: IceReviewItem[]
 }
 
 export type HubEventInput = {
