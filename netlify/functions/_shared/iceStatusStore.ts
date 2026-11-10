@@ -5,6 +5,7 @@ const memoryClaims = new Set<string>()
 let memoryLoans: Record<string, number> = {}
 let memoryReviews: IceReview[] = []
 let memoryLast: unknown
+let memoryFlags: { releasedParseClaims?: boolean } = {}
 
 export type IceReview = {
   id: string
@@ -29,6 +30,31 @@ export function resetIceStatusForTests(): void {
   memoryLoans = {}
   memoryReviews = []
   memoryLast = undefined
+  memoryFlags = {}
+}
+
+export async function loadIceFlags(): Promise<{ releasedParseClaims?: boolean }> {
+  const blob = store()
+  if (blob) {
+    try {
+      const raw = (await blob.get('flags', { type: 'json' })) as { releasedParseClaims?: boolean } | null
+      if (raw && typeof raw === 'object') memoryFlags = raw
+    } catch {
+      /* memory */
+    }
+  }
+  return memoryFlags
+}
+
+export async function saveIceFlags(next: { releasedParseClaims?: boolean }): Promise<void> {
+  memoryFlags = next
+  const blob = store()
+  if (!blob) return
+  try {
+    await blob.setJSON('flags', next)
+  } catch {
+    /* memory */
+  }
 }
 
 export async function claimIce(key: string): Promise<boolean> {

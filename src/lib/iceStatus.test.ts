@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { classifyIceEvent, forwardStage, ICE_CUTOFF_MS, matchIceBorrower, parseIceStatus, runIceStatus } from '../../netlify/functions/_shared/iceStatus'
-import { resetIceStatusForTests } from '../../netlify/functions/_shared/iceStatusStore'
+import { classifyIceEvent, forwardStage, iceMessageText, ICE_CUTOFF_MS, matchIceBorrower, parseIceStatus, runIceStatus } from '../../netlify/functions/_shared/iceStatus'
+import { claimIce, resetIceStatusForTests } from '../../netlify/functions/_shared/iceStatusStore'
 
 const cutoff = ICE_CUTOFF_MS + 60_000
 
@@ -48,7 +48,9 @@ describe('ICE status parser', () => {
   it('maps commitment, clear to close, and funded forward only', () => {
     const stages = [{ id: 10 }, { id: 24 }, { id: 25 }, { id: 129 }]
     expect(classifyIceEvent('Commitment Letter').stageId).toBe(24)
-    expect(classifyIceEvent('UW Approved').stageId).toBe(24)
+    expect(classifyIceEvent('UW Approved')).toMatchObject({ type: 'commitment-letter', stageId: 24 })
+    expect(classifyIceEvent('Docs Out')).toMatchObject({ type: 'docs-out', action: 'note' })
+    expect(classifyIceEvent('Suspended').type).toBe('suspended')
     expect(classifyIceEvent('Funded').stageId).toBe(129)
     expect(forwardStage(10, 24, stages)).toBe('move')
     expect(forwardStage(25, 24, stages)).toBe('hold')
@@ -175,6 +177,107 @@ describe('ICE status run', () => {
     expect(summary.stageMoved).toBe(0)
     expect(summary.needsReview).toBe(0)
     expect(moves).toEqual([])
+  })
+})
+
+describe('nested ICE forwards', () => {
+  it('reads the loan and Appraisal Scheduled from the nested message, not the wrapper', () => {
+    const encode = (value: string) => Buffer.from(value).toString('base64url')
+    const text = iceMessageText({
+      mimeType: 'multipart/mixed',
+      headers: [
+        { name: 'From', value: 'jcordeira@cliffcomortgage.com' },
+        { name: 'Subject', value: 'Fwd: Appraisal Scheduled' },
+      ],
+      parts: [
+        { mimeType: 'text/plain', body: { data: encode('---------- Forwarded message ---------\n') } },
+        {
+          mimeType: 'message/rfc822',
+          headers: [
+            { name: 'From', value: 'noreply-MortgageTech@ice.com' },
+            { name: 'Subject', value: 'Appraisal Scheduled' },
+          ],
+          parts: [
+            {
+              mimeType: 'text/html',
+              body: { data: encode('<p>Borrower(s): Rivera, Remy</p><p>Loan #: 1102609 CMB 58041</p>') },
+            },
+          ],
+        },
+      ],
+    })
+    const parsed = parseIceStatus('Fwd: Appraisal Scheduled', text)
+    expect(parsed.ok).toBe(true)
+    if (!parsed.ok) return
+    expect(parsed.ice).toMatchObject({ borrower: 'Remy Rivera', loan: '1102609CMB58041' })
+    expect(classifyIceEvent(parsed.ice.eventText).type).toBe('appraisal-scheduled')
+  })
+
+  it('notes Remy for UW Approved and leaves Conditional Approval where it is', async () => {
+    process.env.ASSISTANT_DEMO_MODE = 'false'
+    process.env.FOLLOW_UP_BOSS_API_KEY = 'fub'
+    const moves: number[] = []
+    const summary = await runIceStatus({
+      list: async () => [{ id: 'remy', internalDate: cutoff }],
+      read: async () => ({
+        subject: 'Fwd: UW Approved',
+        body: 'From: noreply-MortgageTech@ice.com\nSubject: UW Approved\nBorrower(s): Remy Rivera\nLoan Number: 1102609CMB58099',
+      }),
+      search: async () => [{ id: 77, name: 'Remy Rivera' }],
+      collaborators: async () => [{ id: 16, name: 'Frankie Cordeira' }],
+      note: async () => {},
+      deals: async () => [{ id: 8, pipelineId: 1, stageId: 24, status: 'Active' }],
+      stages: async () => [{ id: 24, orderWeight: 1 }, { id: 25, orderWeight: 2 }, { id: 129, orderWeight: 3 }],
+      move: async (_deal, stageId) => { moves.push(stageId) },
+      remember: async () => {},
+    })
+    expect(summary.posted).toBe(1)
+    expect(summary.notes[0]).toMatchObject({ personId: 77, name: 'Remy Rivera', event: 'Commitment letter', loan: '1102609CMB58099' })
+    expect(summary.stageMoved).toBe(0)
+    expect(summary.needsReview).toBe(0)
+    expect(moves).toEqual([])
+  })
+
+  it('does not claim a message that failed to parse, and releases a stale claim before the ANL dedupe', async () => {
+    process.env.ASSISTANT_DEMO_MODE = 'false'
+    process.env.FOLLOW_UP_BOSS_API_KEY = 'fub'
+    const readFail = async () => ({ subject: 'Fwd: mystery', body: 'From: noreply-MortgageTech@ice.com\nHello only' })
+    const deps = {
+      list: async () => [{ id: 'bad', internalDate: cutoff }],
+      read: readFail,
+      search: async () => [],
+      collaborators: async () => [],
+      note: async () => {},
+      deals: async () => [],
+      stages: async () => [],
+      move: async () => {},
+      remember: async () => {},
+    }
+    const first = await runIceStatus(deps)
+    expect(first.parseFailed).toBe(1)
+    expect(first.parseFailures[0]).toMatchObject({ subject: 'Fwd: mystery', reason: 'no CMB loan number' })
+    const second = await runIceStatus(deps)
+    expect(second.parseFailed).toBe(1)
+    expect(second.duplicates).toBe(0)
+
+    resetIceStatusForTests()
+    await claimIce('msg/anl')
+    await claimIce('event/1102609CMB01234/anl-sent')
+    const notes: string[] = []
+    const again = await runIceStatus({
+      list: async () => [{ id: 'anl', internalDate: cutoff }],
+      read: async () => ({ subject: 'Fwd: ANL Sent', body: iceBody({ borrower: 'Matthew Bent', event: 'ANL Sent' }) }),
+      search: async () => [{ id: 9594, name: 'Matthew Bent' }],
+      collaborators: async () => [],
+      note: async () => { notes.push('posted') },
+      deals: async () => [],
+      stages: async () => [],
+      move: async () => {},
+      remember: async () => {},
+    })
+    expect(again.posted).toBe(0)
+    expect(again.duplicates).toBe(1)
+    expect(notes).toEqual([])
   })
 })
 
