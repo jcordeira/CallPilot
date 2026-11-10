@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
-import { classifyIceEvent, forwardStage, iceMessageText, ICE_CUTOFF_MS, matchIceBorrower, parseIceStatus, runIceStatus } from '../../netlify/functions/_shared/iceStatus'
+import { classifyIceEvent, cliffcoNoteSubject, cliffcoSubjectFromIce, forwardStage, iceMessageText, ICE_CUTOFF_MS, matchIceBorrower, parseIceStatus, runIceStatus } from '../../netlify/functions/_shared/iceStatus'
 import { claimIce, resetIceStatusForTests } from '../../netlify/functions/_shared/iceStatusStore'
 
 const cutoff = ICE_CUTOFF_MS + 60_000
@@ -287,6 +287,44 @@ describe('nested ICE forwards', () => {
     expect(again.posted).toBe(0)
     expect(again.duplicates).toBe(1)
     expect(notes).toEqual([])
+  })
+})
+
+describe('Cliffco note headings', () => {
+  it('titles new notes Cliffco and retitles the six posted notes once', async () => {
+    process.env.ASSISTANT_DEMO_MODE = 'false'
+    process.env.FOLLOW_UP_BOSS_API_KEY = 'fub'
+    const rows = [9594, 11324, 11486, 10873, 10873, 10772].map((personId, index) => ({
+      personId,
+      noteId: index + 1,
+      subject: cliffcoNoteSubject('ANL sent'),
+    }))
+    let calls = 0
+    const subjects: string[] = []
+    const run = () => runIceStatus({
+      list: async () => [{ id: 'one', internalDate: cutoff }],
+      read: async () => ({ subject: 'Fwd', body: iceBody({ borrower: 'Ada Buyer', event: 'Appraisal Scheduled' }) }),
+      search: async () => [{ id: 9, name: 'Ada Buyer' }],
+      collaborators: async () => [],
+      note: async (input) => { subjects.push(input.subject) },
+      deals: async () => [],
+      stages: async () => [],
+      move: async () => {},
+      remember: async () => {},
+      retitle: async () => {
+        calls += 1
+        return rows
+      },
+    })
+    const first = await run()
+    expect(subjects).toEqual(['Cliffco loan update: Appraisal scheduled'])
+    expect(first.retitled).toHaveLength(6)
+    expect(calls).toBe(1)
+    expect(cliffcoSubjectFromIce('ICE Commitment letter')).toBe('Cliffco loan update: Commitment letter')
+    const second = await run()
+    expect(calls).toBe(1)
+    expect(second.retitled).toHaveLength(6)
+    expect(second.posted).toBe(0)
   })
 })
 

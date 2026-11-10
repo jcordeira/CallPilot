@@ -508,6 +508,24 @@ export async function listPersonNotes(personId: number, limit = 100): Promise<Fu
   return mapNotes(data?.notes)
 }
 
+/** Change a note's subject and send the existing body back. Does not delete the note. */
+export async function replaceNoteSubject(noteId: number, subject: string): Promise<void> {
+  if (!noteId || !subject.trim()) throw new Error('note subject update missing id')
+  if (isDemoMode()) return
+  const data = (await fubFetch(`/notes/${noteId}`)) as FubNote & { note?: FubNote }
+  const note = data.note ?? data
+  const body = note.body ?? ''
+  const mentionUserIds = [...new Set([...body.matchAll(/data-user-id="(\d+)"/g)].map((match) => Number(match[1])).filter((id) => id > 0))]
+  const payload: Record<string, unknown> = {
+    subject,
+    body,
+    isHtml: /data-user-id=|<[a-z]/i.test(body),
+  }
+  if (note.personId) payload.personId = note.personId
+  if (mentionUserIds.length) payload.mentions = { user: mentionUserIds }
+  await fubFetch(`/notes/${noteId}`, { method: 'PUT', body: JSON.stringify(payload) })
+}
+
 export async function getNote(id: number): Promise<FubNote | null> {
   if (isDemoMode() || !id) return null
   try {

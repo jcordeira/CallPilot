@@ -4,9 +4,11 @@ import {
   fubGet,
   listPersonCollaborators,
   listPersonDeals,
+  listPersonNotes,
   listPipelineStages,
   moveDealStage,
   rememberLoanNumber,
+  replaceNoteSubject,
   type FubDeal,
   type FubStage,
 } from './followupboss'
@@ -21,6 +23,7 @@ import {
   saveIceFlags,
   saveIceRun,
   saveLoanPerson,
+  type CliffcoRetitle,
   type IceReview,
 } from './iceStatusStore'
 
@@ -36,6 +39,33 @@ const IGNORED_EMAILS = new Set([
   'jcordeira@cliffcomortgage.com',
   'joseph@teamcordeira.com',
 ])
+
+export function cliffcoNoteSubject(label: string): string {
+  return `Cliffco loan update: ${label}`
+}
+
+export function cliffcoSubjectFromIce(subject: string): string | null {
+  const match = subject.match(/^ICE\s+(.+)$/i)
+  if (!match?.[1]) return null
+  return cliffcoNoteSubject(match[1].trim())
+}
+
+const POSTED_NOTE_PEOPLE = [9594, 11324, 11486, 10873, 10772]
+
+async function retitlePostedNotes(): Promise<CliffcoRetitle[]> {
+  const updated: CliffcoRetitle[] = []
+  for (const personId of POSTED_NOTE_PEOPLE) {
+    const notes = await listPersonNotes(personId, 40)
+    for (const note of notes) {
+      if (!note.id) continue
+      const next = cliffcoSubjectFromIce(note.subject ?? '')
+      if (!next) continue
+      await replaceNoteSubject(note.id, next)
+      updated.push({ personId, noteId: note.id, subject: next })
+    }
+  }
+  return updated
+}
 
 export function iceStatusEnabled(): boolean {
   const raw = env('ICE_STATUS_ENABLED', 'true').trim().toLowerCase()
@@ -292,6 +322,7 @@ export type IceRunSummary = {
   notes: { personId: number; name: string; event: string; loan: string }[]
   stages: { personId: number; dealId: number; fromStageId: number; toStageId: number; event: string }[]
   reviews: { borrower: string; loan: string; event: string; reason: string }[]
+  retitled: CliffcoRetitle[]
 }
 
 type GmailMessage = { id: string; payload?: GmailPart }
@@ -320,6 +351,7 @@ export async function runIceStatus(options?: {
   stages?: () => Promise<FubStage[]>
   move?: (dealId: number, stageId: number) => Promise<void>
   remember?: (personId: number, loan: string) => Promise<void>
+  retitle?: () => Promise<CliffcoRetitle[]>
 }): Promise<IceRunSummary> {
   const summary: IceRunSummary = {
     ok: true,
@@ -336,6 +368,7 @@ export async function runIceStatus(options?: {
     notes: [],
     stages: [],
     reviews: [],
+    retitled: [],
   }
   if (!summary.enabled) {
     summary.skippedRun = 'disabled'
@@ -362,6 +395,20 @@ export async function runIceStatus(options?: {
     await saveLoanPerson(loan, personId)
     await rememberLoanNumber(personId, loan)
   })
+
+  const headingFlags = await loadIceFlags()
+  if (headingFlags.cliffcoHeadings) {
+    summary.retitled = headingFlags.retitled ?? []
+  } else if (!options?.list || options.retitle) {
+    try {
+      const rows = options?.retitle ? await options.retitle() : await retitlePostedNotes()
+      summary.retitled = rows
+      if (rows.length >= 6) await saveIceFlags({ ...headingFlags, cliffcoHeadings: true, retitled: rows })
+      else summary.failures.push(`Cliffco headings updated ${rows.length} of 6`)
+    } catch (err) {
+      summary.failures.push(err instanceof Error ? err.message : 'note retitle failed')
+    }
+  }
 
   let messages: { id: string; internalDate: number }[]
   try {
@@ -434,7 +481,7 @@ export async function runIceStatus(options?: {
       await remember(person.id, parsed.ice.loan)
       const sentence = `${kind.label} for ${parsed.ice.borrower}, loan ${parsed.ice.loan}${parsed.ice.detail ? `. ${parsed.ice.detail}` : ''}.`
       const mentioned = mentionNote(sentence, await collaborators(person.id))
-      await note({ personId: person.id, subject: `ICE ${kind.label}`, body: mentioned.body, mentionUserIds: mentioned.mentionUserIds })
+      await note({ personId: person.id, subject: cliffcoNoteSubject(kind.label), body: mentioned.body, mentionUserIds: mentioned.mentionUserIds })
       summary.posted += 1
       summary.notes.push({ personId: person.id, name: parsed.ice.borrower, event: kind.label, loan: parsed.ice.loan })
     } catch (err) {

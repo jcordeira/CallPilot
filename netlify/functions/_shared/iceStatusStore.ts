@@ -5,7 +5,15 @@ const memoryClaims = new Set<string>()
 let memoryLoans: Record<string, number> = {}
 let memoryReviews: IceReview[] = []
 let memoryLast: unknown
-let memoryFlags: { releasedParseClaims?: boolean } = {}
+export type CliffcoRetitle = { personId: number; noteId: number; subject: string }
+
+export type IceFlags = {
+  releasedParseClaims?: boolean
+  cliffcoHeadings?: boolean
+  retitled?: CliffcoRetitle[]
+}
+
+let memoryFlags: IceFlags = {}
 
 export type IceReview = {
   id: string
@@ -33,11 +41,11 @@ export function resetIceStatusForTests(): void {
   memoryFlags = {}
 }
 
-export async function loadIceFlags(): Promise<{ releasedParseClaims?: boolean }> {
+export async function loadIceFlags(): Promise<IceFlags> {
   const blob = store()
   if (blob) {
     try {
-      const raw = (await blob.get('flags', { type: 'json' })) as { releasedParseClaims?: boolean } | null
+      const raw = (await blob.get('flags', { type: 'json' })) as IceFlags | null
       if (raw && typeof raw === 'object') memoryFlags = raw
     } catch {
       /* memory */
@@ -46,7 +54,7 @@ export async function loadIceFlags(): Promise<{ releasedParseClaims?: boolean }>
   return memoryFlags
 }
 
-export async function saveIceFlags(next: { releasedParseClaims?: boolean }): Promise<void> {
+export async function saveIceFlags(next: IceFlags): Promise<void> {
   memoryFlags = next
   const blob = store()
   if (!blob) return
