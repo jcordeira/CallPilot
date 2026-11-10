@@ -15,8 +15,10 @@ import {
   addIceReview,
   claimIce,
   listIceReviews,
+  loadIceFlags,
   loanPersonId,
   releaseIce,
+  saveIceFlags,
   saveIceRun,
   saveLoanPerson,
   type IceReview,
@@ -29,7 +31,6 @@ const PURCHASE_PIPELINE = 1
 const STAGE_CONDITIONAL = 24
 const STAGE_CLEAR = 25
 const STAGE_CLOSED = 129
-const LOAN_RE = /1102609CMB\d+/i
 const IGNORED_EMAILS = new Set([
   'noreply-mortgagetech@ice.com',
   'jcordeira@cliffcomortgage.com',
@@ -59,23 +60,29 @@ const SKIP_RULES: { type: string; pattern: RegExp }[] = [
 const NOTE_RULES: { type: string; label: string; pattern: RegExp; stageId?: number }[] = [
   { type: 'appraisal-scheduled', label: 'Appraisal scheduled', pattern: /appraisal scheduled/i },
   { type: 'anl-sent', label: 'ANL sent', pattern: /\banl sent\b/i },
-  { type: 'commitment-letter', label: 'Commitment letter', pattern: /commitment letter/i, stageId: STAGE_CONDITIONAL },
-  { type: 'uw-approved', label: 'UW approved', pattern: /\buw approved\b|underwriting approved/i, stageId: STAGE_CONDITIONAL },
+  { type: 'commitment-letter', label: 'Commitment letter', pattern: /commitment letter|\buw approved\b|underwriting approved/i, stageId: STAGE_CONDITIONAL },
   { type: 'clear-to-close', label: 'Clear to close', pattern: /clear to close/i, stageId: STAGE_CLEAR },
+  { type: 'docs-out', label: 'Docs out', pattern: /\bdocs out\b/i },
+  { type: 'suspended', label: 'Suspended', pattern: /\bsuspended\b/i },
   { type: 'funded', label: 'Funded', pattern: /\bfunded\b/i, stageId: STAGE_CLOSED },
   { type: 'closed', label: 'Closed', pattern: /\bclosed\b/i, stageId: STAGE_CLOSED },
 ]
 
-export function classifyIceEvent(text: string): IceEventKind {
+/** A named milestone or a skip rule. Other text returns null so a footer cannot invent an event. */
+export function knownIceEvent(text: string): IceEventKind | null {
   const value = text.replace(/\s+/g, ' ').trim()
-  if (!value) return { action: 'unknown', type: 'unknown', label: '' }
+  if (!value) return null
   for (const rule of SKIP_RULES) {
-    if (rule.pattern.test(value)) return { action: 'skip', type: rule.type, label: value }
+    if (rule.pattern.test(value)) return { action: 'skip', type: rule.type, label: value.slice(0, 80) }
   }
   for (const rule of NOTE_RULES) {
     if (rule.pattern.test(value)) return { action: 'note', type: rule.type, label: rule.label, stageId: rule.stageId }
   }
-  return { action: 'note', type: `status:${slug(value)}`, label: value.slice(0, 80) }
+  return null
+}
+
+export function classifyIceEvent(text: string): IceEventKind {
+  return knownIceEvent(text) ?? { action: 'note', type: `status:${slug(text)}`, label: text.replace(/\s+/g, ' ').trim().slice(0, 80) }
 }
 
 function slug(value: string): string {
@@ -127,19 +134,54 @@ export type ParsedIce = {
 
 export type ParseIceResult = { ok: true; ice: ParsedIce } | { ok: false; reason: string }
 
+function loanNumber(text: string): string | null {
+  const match = text.match(/1102609\s*CMB[-\s]*(\d+)/i)
+  return match?.[1] ? `1102609CMB${match[1]}` : null
+}
+
+function subjectLines(subject: string, text: string): string[] {
+  const nested = [...text.matchAll(/(?:^|\n)\s*subject\s*:\s*([^\n]+)/gi)].map((match) => match[1] ?? '')
+  return [subject, ...nested].map((line) => line.trim()).filter(Boolean)
+}
+
+function nameFromSubject(subject: string, loan: string): string | undefined {
+  let rest = subject.replace(/^(?:re|fwd?|fw)\s*:\s*/gi, ' ')
+  rest = rest.replace(/1102609\s*CMB[-\s]*\d+/gi, ' ')
+  for (const rule of [...NOTE_RULES, ...SKIP_RULES]) rest = rest.replace(rule.pattern, ' ')
+  rest = rest.replace(/[^A-Za-z,'\-\s]/g, ' ').replace(/\s+/g, ' ').trim()
+  if (!rest || rest.toLowerCase() === loan.toLowerCase()) return undefined
+  const words = rest.split(' ').filter(Boolean)
+  if (words.length < 2 || words.length > 5) return undefined
+  if (!words.every((word) => /^[A-Za-z][A-Za-z.'-]*,?$/.test(word))) return undefined
+  return displayName(rest)
+}
+
+function eventSource(subject: string, text: string): string {
+  const subjects = subjectLines(subject, text)
+  const subjectNote = subjects.find((line) => knownIceEvent(line)?.action === 'note')
+  if (subjectNote) return subjectNote
+  const labeled = lineValue(text, /current milestone|milestone|loan status|current status|status|event/)
+  if (labeled) return labeled
+  const subjectSkip = subjects.find((line) => knownIceEvent(line)?.action === 'skip')
+  if (subjectSkip) return subjectSkip
+  const notes = NOTE_RULES.filter((rule) => rule.pattern.test(text))
+  if (notes.length === 1) return notes[0]?.label ?? ''
+  const skips = SKIP_RULES.filter((rule) => rule.pattern.test(text))
+  if (notes.length === 0 && skips.length === 1) return skips[0]?.type.replace(/-/g, ' ') ?? ''
+  return ''
+}
+
 /** Pull a Cliffco CMB loan from a forwarded ICE message. Non-CMB mail is ignored. */
 export function parseIceStatus(subject: string, body: string): ParseIceResult {
   const text = decodeBody(`${subject}\n${body}`)
   if (!/noreply-mortgagetech@ice\.com/i.test(text)) return { ok: false, reason: 'not an ICE forward' }
-  const loan = text.match(LOAN_RE)?.[0]?.toUpperCase()
+  const loan = loanNumber(text)
   if (!loan) return { ok: false, reason: 'no CMB loan number' }
-  const labeledName = lineValue(text, /(?:primary\s+)?borrower(?:'s)?(?:\s+name)?|applicant(?:\s+name)?/)
-  const inlineName = text.match(new RegExp(`${loan}\\s+for\\s+([A-Z][A-Za-z.'-]+(?:\\s+[A-Z][A-Za-z.'-]+)+)`, 'i'))?.[1]
-  const borrower = displayName(labeledName || inlineName || '')
+  const labeledName = lineValue(text, /(?:primary\s+)?borrowers?(?:\(s\))?(?:'s)?(?:\s+name)?|applicant(?:\s+name)?/)
+  const inlineName = text.match(/CMB[-\s]*\d+\s+for\s+([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)+)/i)?.[1]
+  const borrower = displayName(labeledName || inlineName || nameFromSubject(subject, loan) || '')
   if (!borrower || borrower.length < 3) return { ok: false, reason: 'no borrower name' }
-  const labeledEvent = lineValue(text, /milestone|loan status|status|event/)
-  const known = NOTE_RULES.find((rule) => rule.pattern.test(text)) ?? SKIP_RULES.find((rule) => rule.pattern.test(text))
-  const eventText = labeledEvent || known?.type.replace(/-/g, ' ') || ''
+  const eventText = eventSource(subject, text)
   if (!eventText) return { ok: false, reason: 'no milestone' }
   const email = lineValue(text, /borrower(?:'s)?\s+e-?mail|e-?mail address|e-?mail/)?.match(/[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}/i)?.[0]?.toLowerCase()
   const detail = lineValue(text, /scheduled(?:\s+date|\s+for)?|closing date|fund(?:ing)? date|date/)
@@ -224,8 +266,9 @@ export type IceRunSummary = {
   needsReview: number
   duplicates: number
   skipped: number
-  ignored: number
+  parseFailed: number
   failures: string[]
+  parseFailures: { subject: string; reason: string }[]
   notes: { personId: number; name: string; event: string; loan: string }[]
   stages: { personId: number; dealId: number; fromStageId: number; toStageId: number; event: string }[]
   reviews: { borrower: string; loan: string; event: string; reason: string }[]
@@ -267,8 +310,9 @@ export async function runIceStatus(options?: {
     needsReview: 0,
     duplicates: 0,
     skipped: 0,
-    ignored: 0,
+    parseFailed: 0,
     failures: [],
+    parseFailures: [],
     notes: [],
     stages: [],
     reviews: [],
@@ -310,14 +354,19 @@ export async function runIceStatus(options?: {
     return summary
   }
 
+  const flags = await loadIceFlags()
+  if (!flags.releasedParseClaims) {
+    for (const item of messages) {
+      if (item.internalDate < ICE_CUTOFF_MS) continue
+      await releaseIce(`msg/${item.id}`)
+    }
+    await saveIceFlags({ ...flags, releasedParseClaims: true })
+  }
+
   let stageList: FubStage[] | null = null
   for (const item of messages) {
     if (item.internalDate < ICE_CUTOFF_MS) continue
     const messageKey = `msg/${item.id}`
-    if (!(await claimIce(messageKey))) {
-      summary.duplicates += 1
-      continue
-    }
     summary.considered += 1
     let subject = ''
     let body = ''
@@ -326,22 +375,23 @@ export async function runIceStatus(options?: {
       subject = message.subject
       body = message.body
     } catch (err) {
-      await releaseIce(messageKey)
       summary.failures.push(err instanceof Error ? err.message : 'gmail read failed')
       continue
     }
     const parsed = parseIceStatus(subject, body)
     if (!parsed.ok) {
-      summary.ignored += 1
+      summary.parseFailed += 1
+      if (summary.parseFailures.length < 40) summary.parseFailures.push({ subject: subject.slice(0, 180), reason: parsed.reason })
       continue
     }
     const kind = classifyIceEvent(parsed.ice.eventText)
-    if (kind.action === 'skip') {
-      summary.skipped += 1
+    if (kind.action !== 'note' || !kind.type) {
+      if (!(await claimIce(messageKey))) summary.duplicates += 1
+      else summary.skipped += 1
       continue
     }
-    if (kind.action !== 'note' || !kind.type) {
-      summary.skipped += 1
+    if (!(await claimIce(messageKey))) {
+      summary.duplicates += 1
       continue
     }
     const eventKey = `event/${parsed.ice.loan}/${kind.type}`
@@ -487,15 +537,22 @@ async function listGmail(query: string): Promise<{ id: string; internalDate: num
   return found
 }
 
-function partText(part: GmailPart | undefined): string {
+function headerValue(part: GmailPart, name: string): string {
+  return part.headers?.find((header) => header.name.toLowerCase() === name)?.value ?? ''
+}
+
+/** Plain text, HTML, and nested forward headers. The first plain part of a Gmail forward is often only the wrapper. */
+export function iceMessageText(part: GmailPart | undefined): string {
   if (!part) return ''
-  if (part.mimeType === 'text/plain' && part.body?.data) return decodeRaw(part.body.data)
-  for (const child of part.parts ?? []) {
-    const text = partText(child)
-    if (text) return text
-  }
-  if (part.mimeType === 'text/html' && part.body?.data) return decodeRaw(part.body.data)
-  return part.body?.data ? decodeRaw(part.body.data) : ''
+  const chunks: string[] = []
+  const from = headerValue(part, 'from')
+  const subject = headerValue(part, 'subject')
+  if (from) chunks.push(`From: ${from}`)
+  if (subject) chunks.push(`Subject: ${subject}`)
+  if ((part.mimeType === 'text/plain' || part.mimeType === 'text/html') && part.body?.data) chunks.push(decodeRaw(part.body.data))
+  else if (!part.mimeType && part.body?.data) chunks.push(decodeRaw(part.body.data))
+  for (const child of part.parts ?? []) chunks.push(iceMessageText(child))
+  return chunks.filter(Boolean).join('\n')
 }
 
 function decodeRaw(data: string): string {
@@ -507,5 +564,5 @@ async function readGmailText(id: string): Promise<{ subject: string; body: strin
   const message = (await gmailFetch(`messages/${id}?format=full`)) as GmailMessage
   const headers = message.payload?.headers ?? []
   const subject = headers.find((header) => header.name.toLowerCase() === 'subject')?.value ?? ''
-  return { subject, body: partText(message.payload) }
+  return { subject, body: iceMessageText(message.payload) }
 }
