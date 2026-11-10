@@ -29,7 +29,7 @@ describe('ICE status parser', () => {
   it('reads a forwarded CMB milestone and skips eConsent, docs, and non-CMB loans', () => {
     const parsed = parseIceStatus('Fwd: Milestone', iceBody({ borrower: 'Ada Buyer', event: 'Clear to Close', email: 'ada@buyer.com', detail: '11/20/2026' }))
     expect(parsed.ok).toBe(true)
-    if (!parsed.ok) return
+    if (!parsed.ok || !('ice' in parsed)) return
     expect(parsed.ice).toMatchObject({ borrower: 'Ada Buyer', loan: '1102609CMB01234', email: 'ada@buyer.com', detail: '11/20/2026' })
     expect(classifyIceEvent(parsed.ice.eventText)).toMatchObject({ action: 'note', type: 'clear-to-close', stageId: 25 })
 
@@ -40,9 +40,18 @@ describe('ICE status parser', () => {
     expect(classifyIceEvent('package not viewed').action).toBe('skip')
     expect(classifyIceEvent('Password Reset').action).toBe('skip')
     expect(parseIceStatus('Fwd', 'From: noreply-MortgageTech@ice.com\nLoan Number: 998877\nBorrower Name: Ada Buyer\nMilestone: Funded').ok).toBe(false)
+    const quinn = parseIceStatus('FW: Appraisal Scheduled -  Borr: Mann, Quinn - Loan #: 1102609CMB57993', 'From: noreply-MortgageTech@ice.com')
+    const amanda = parseIceStatus('FW: Appraisal Scheduled -  Borr: Barkan, Amanda - Loan #: 1102607CMB57220', 'From: noreply-MortgageTech@ice.com')
+    const kaur = parseIceStatus('FW: CMB - Commitment Letter for Loan #1102606CMB57004 - Kaur', 'From: noreply-MortgageTech@ice.com')
+    expect(quinn.ok && 'ice' in quinn && quinn.ice).toMatchObject({ borrower: 'Quinn Mann', loan: '1102609CMB57993' })
+    expect(amanda.ok && 'ice' in amanda && amanda.ice).toMatchObject({ borrower: 'Amanda Barkan', loan: '1102607CMB57220' })
+    expect(kaur.ok && 'ice' in kaur && kaur.ice).toMatchObject({ borrower: 'Kaur', loan: '1102606CMB57004' })
+    const remyNoise = parseIceStatus("FW: Nathanaelle Remy's loan: Electronic document package has not been viewed", '')
+    const quinnNoise = parseIceStatus("FW: Quinn Mann's Loan Document Successfully Retrieved", '')
+    expect(remyNoise.ok && 'noise' in remyNoise && remyNoise.noise).toBe(true)
+    expect(quinnNoise.ok && 'noise' in quinnNoise && quinnNoise.noise).toBe(true)
     const flipped = parseIceStatus('Fwd', 'From: noreply-MortgageTech@ice.com\nBorrower: Buyer, Ada\nLoan Number: 1102609CMB01234\nMilestone: Appraisal Scheduled')
-    expect(flipped.ok).toBe(true)
-    if (flipped.ok) expect(flipped.ice.borrower).toBe('Ada Buyer')
+    expect(flipped.ok && 'ice' in flipped && flipped.ice.borrower).toBe('Ada Buyer')
   })
 
   it('maps commitment, clear to close, and funded forward only', () => {
@@ -208,7 +217,7 @@ describe('nested ICE forwards', () => {
     })
     const parsed = parseIceStatus('Fwd: Appraisal Scheduled', text)
     expect(parsed.ok).toBe(true)
-    if (!parsed.ok) return
+    if (!parsed.ok || !('ice' in parsed)) return
     expect(parsed.ice).toMatchObject({ borrower: 'Remy Rivera', loan: '1102609CMB58041' })
     expect(classifyIceEvent(parsed.ice.eventText).type).toBe('appraisal-scheduled')
   })
