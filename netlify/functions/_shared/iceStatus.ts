@@ -59,6 +59,7 @@ const SKIP_RULES: { type: string; pattern: RegExp }[] = [
 
 const NOTE_RULES: { type: string; label: string; pattern: RegExp; stageId?: number }[] = [
   { type: 'appraisal-scheduled', label: 'Appraisal scheduled', pattern: /appraisal scheduled/i },
+  { type: 'disclosures-sent', label: 'Disclosures sent', pattern: /disclosures sent/i },
   { type: 'anl-sent', label: 'ANL sent', pattern: /\banl sent\b/i },
   { type: 'commitment-letter', label: 'Commitment letter', pattern: /commitment letter|\buw approved\b|underwriting approved/i, stageId: STAGE_CONDITIONAL },
   { type: 'clear-to-close', label: 'Clear to close', pattern: /clear to close/i, stageId: STAGE_CLEAR },
@@ -132,11 +133,25 @@ export type ParsedIce = {
   detail?: string
 }
 
-export type ParseIceResult = { ok: true; ice: ParsedIce } | { ok: false; reason: string }
+export type ParseIceResult =
+  | { ok: true; noise: true }
+  | { ok: true; ice: ParsedIce }
+  | { ok: false; reason: string }
 
 function loanNumber(text: string): string | null {
-  const match = text.match(/1102609\s*CMB[-\s]*(\d+)/i)
-  return match?.[1] ? `1102609CMB${match[1]}` : null
+  const match = text.match(/(\d{7})\s*CMB[-\s]*(\d+)/i)
+  return match?.[1] && match[2] ? `${match[1]}CMB${match[2]}`.toUpperCase() : null
+}
+
+/** Doc and eConsent forwards. The subject is enough; many of them never include a loan number. */
+function isNoise(text: string): boolean {
+  return /e-?consent|doc(?:ument)? request (?:has been )?viewed|package has not been viewed|document successfully retrieved|loan document received|password reset|efolder doc retrieved/i.test(text)
+}
+
+function borrName(text: string): string | undefined {
+  const match = text.match(/\bBorr(?:ower(?:\(s\))?)?\s*:\s*([A-Za-z][A-Za-z.'-]*)\s*,\s*([A-Za-z][A-Za-z.'-]+)/i)
+  if (!match?.[1] || !match[2]) return undefined
+  return `${match[2]} ${match[1]}`
 }
 
 function subjectLines(subject: string, text: string): string[] {
@@ -144,16 +159,17 @@ function subjectLines(subject: string, text: string): string[] {
   return [subject, ...nested].map((line) => line.trim()).filter(Boolean)
 }
 
-function nameFromSubject(subject: string, loan: string): string | undefined {
+function nameFromSubject(subject: string): string | undefined {
   let rest = subject.replace(/^(?:re|fwd?|fw)\s*:\s*/gi, ' ')
-  rest = rest.replace(/1102609\s*CMB[-\s]*\d+/gi, ' ')
+  rest = rest.replace(/\d{7}\s*CMB[-\s]*\d+/gi, ' ')
   for (const rule of [...NOTE_RULES, ...SKIP_RULES]) rest = rest.replace(rule.pattern, ' ')
-  rest = rest.replace(/[^A-Za-z,'\-\s]/g, ' ').replace(/\s+/g, ' ').trim()
-  if (!rest || rest.toLowerCase() === loan.toLowerCase()) return undefined
-  const words = rest.split(' ').filter(Boolean)
-  if (words.length < 2 || words.length > 5) return undefined
+  rest = rest.replace(/[^A-Za-z,'\s]/g, ' ').replace(/\s+/g, ' ').trim()
+  const stop = new Set(['borr', 'borrower', 'loan', 'cmb', 'for', 'fw', 'fwd', 're', 'the'])
+  const words = rest.split(' ').filter((word) => word && !stop.has(word.toLowerCase().replace(/,/g, '')))
+  if (words.length === 1 && /^[A-Z][a-zA-Z.'-]+$/.test(words[0] ?? '')) return words[0]
+  if (words.length < 2 || words.length > 4) return undefined
   if (!words.every((word) => /^[A-Za-z][A-Za-z.'-]*,?$/.test(word))) return undefined
-  return displayName(rest)
+  return displayName(words.join(' '))
 }
 
 function eventSource(subject: string, text: string): string {
@@ -174,12 +190,16 @@ function eventSource(subject: string, text: string): string {
 /** Pull a Cliffco CMB loan from a forwarded ICE message. Non-CMB mail is ignored. */
 export function parseIceStatus(subject: string, body: string): ParseIceResult {
   const text = decodeBody(`${subject}\n${body}`)
-  if (!/noreply-mortgagetech@ice\.com/i.test(text)) return { ok: false, reason: 'not an ICE forward' }
+  const subjectNote = knownIceEvent(subject)?.action === 'note'
+  if (!subjectNote && (isNoise(subject) || (isNoise(text) && !knownIceEvent(text)))) return { ok: true, noise: true }
+  if (!/noreply-mortgagetech@ice\.com/i.test(text) && !/\bFW:/i.test(subject) && !/\bFWD?:/i.test(subject)) {
+    return { ok: false, reason: 'not an ICE forward' }
+  }
   const loan = loanNumber(text)
   if (!loan) return { ok: false, reason: 'no CMB loan number' }
   const labeledName = lineValue(text, /(?:primary\s+)?borrowers?(?:\(s\))?(?:'s)?(?:\s+name)?|applicant(?:\s+name)?/)
   const inlineName = text.match(/CMB[-\s]*\d+\s+for\s+([A-Z][A-Za-z.'-]+(?:\s+[A-Z][A-Za-z.'-]+)+)/i)?.[1]
-  const borrower = displayName(labeledName || inlineName || nameFromSubject(subject, loan) || '')
+  const borrower = displayName(borrName(text) || labeledName || inlineName || nameFromSubject(subject) || '')
   if (!borrower || borrower.length < 3) return { ok: false, reason: 'no borrower name' }
   const eventText = eventSource(subject, text)
   if (!eventText) return { ok: false, reason: 'no milestone' }
@@ -379,6 +399,11 @@ export async function runIceStatus(options?: {
       continue
     }
     const parsed = parseIceStatus(subject, body)
+    if (parsed.ok && 'noise' in parsed) {
+      if (!(await claimIce(messageKey))) summary.duplicates += 1
+      else summary.skipped += 1
+      continue
+    }
     if (!parsed.ok) {
       summary.parseFailed += 1
       if (summary.parseFailures.length < 40) summary.parseFailures.push({ subject: subject.slice(0, 180), reason: parsed.reason })
