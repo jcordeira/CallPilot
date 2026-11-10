@@ -9,6 +9,7 @@ import { purgeStoredDemoData } from './purgeDemo'
 import { followUpAssigneeIds, loanOfficer, loanOfficerAssistant } from './team'
 import { ApiError, optionalNumber, optionalString } from './http'
 import type { HubCalendarEvent, HubEventInput, HubSummary, HubTask, HubTaskInput, ScoredLead } from './hubTypes'
+import { loadHubIceReviews } from './iceStatus'
 import { listActivity } from './store'
 
 function errorMessage(err: unknown, fallback: string): string {
@@ -107,6 +108,7 @@ export async function getHubSummary(): Promise<HubSummary> {
 
   const tasks = [...googleResult.tasks, ...fubTasks]
   const heat = await listLeadHeat().catch(() => ({ leads: [], demo: isDemoMode() }))
+  const iceReviews = await loadHubIceReviews()
   return {
     events: eventsResult.events,
     tasks,
@@ -125,6 +127,7 @@ export async function getHubSummary(): Promise<HubSummary> {
       reconnect: google.reconnect,
     },
     leads: heat.leads,
+    iceReviews,
     stats: {
       upcomingEvents: eventsResult.events.length,
       openTasks: tasks.filter((task) => task.status !== 'completed').length,

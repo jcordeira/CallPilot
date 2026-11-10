@@ -668,6 +668,58 @@ export async function registerPerson(input: {
   return createdPersonId(data)
 }
 
+export type FubCollaborator = { id: number; name: string }
+export type FubDeal = { id: number; pipelineId: number; stageId: number; status?: string; name?: string }
+export type FubStage = { id: number; name?: string; orderWeight?: number }
+
+/** Collaborators on a person, including the assigned user when Follow Up Boss lists them there. */
+export async function listPersonCollaborators(personId: number): Promise<FubCollaborator[]> {
+  if (isDemoMode() || !personId) return []
+  const data = (await fubFetch(`/people/${personId}`)) as {
+    collaborators?: unknown
+    person?: { collaborators?: unknown }
+  }
+  const list = (data.person ?? data).collaborators
+  if (!Array.isArray(list)) return []
+  return list.flatMap((item) => {
+    if (!item || typeof item !== 'object') return []
+    const row = item as { id?: unknown; name?: unknown }
+    const id = typeof row.id === 'number' ? row.id : Number.NaN
+    if (!Number.isInteger(id) || id <= 0) return []
+    const name = typeof row.name === 'string' && row.name.trim() ? row.name.trim() : `User ${id}`
+    return [{ id, name }]
+  })
+}
+
+/** Append `LoanPilot loan: <number>` to background once. Does not send assignedTo or tags. */
+export async function rememberLoanNumber(personId: number, loan: string): Promise<void> {
+  if (isDemoMode() || !personId || !loan) return
+  const data = (await fubFetch(`/people/${personId}`)) as { background?: string; person?: { background?: string } }
+  const background = (data.person ?? data).background ?? ''
+  if (background.includes(loan)) return
+  const line = `LoanPilot loan: ${loan}`
+  const next = background.trim() ? `${background.trim()}\n${line}` : line
+  await fubFetch(`/people/${personId}`, { method: 'PUT', body: JSON.stringify({ background: next }) })
+}
+
+export async function listPersonDeals(personId: number): Promise<FubDeal[]> {
+  if (isDemoMode() || !personId) return []
+  const data = (await fubFetch(`/deals?personId=${personId}&pipelineId=1&status=Active`)) as { deals?: FubDeal[] }
+  return data.deals ?? []
+}
+
+export async function listPipelineStages(pipelineId: number): Promise<FubStage[]> {
+  if (isDemoMode() || !pipelineId) return []
+  const data = (await fubFetch(`/pipelines/${pipelineId}`)) as { stages?: FubStage[]; pipeline?: { stages?: FubStage[] } }
+  return data.pipeline?.stages ?? data.stages ?? []
+}
+
+/** Move one deal to a stage. Sends stageId only. */
+export async function moveDealStage(dealId: number, stageId: number): Promise<void> {
+  if (isDemoMode() || !dealId || !stageId) return
+  await fubFetch(`/deals/${dealId}`, { method: 'PUT', body: JSON.stringify({ stageId }) })
+}
+
 export async function fubGet(path: string): Promise<unknown | null> {
   if (isDemoMode()) return null
   try {

@@ -83,6 +83,15 @@ export type HubSummary = {
   warnings: string[]
   google: GoogleConnection
   leads?: ScoredLead[]
+  iceReviews?: {
+    id: string
+    at: string
+    borrower: string
+    loan: string
+    event: string
+    reason: string
+    candidates: { id: number; name: string }[]
+  }[]
 }
 
 async function hubRequest<T>(path: string, init?: RequestInit): Promise<T> {

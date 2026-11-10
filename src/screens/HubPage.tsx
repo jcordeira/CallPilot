@@ -553,6 +553,29 @@ export function HubPage() {
         </form>
       )}
 
+      {(summary?.iceReviews?.length ?? 0) > 0 && (
+        <section className="card hub__card" aria-labelledby="hub-ice-review">
+          <div className="hub__card-head">
+            <h2 id="hub-ice-review">Needs review</h2>
+            <span className="mono hub__count">{summary?.iceReviews?.length}</span>
+          </div>
+          <p className="hub__form-help">Cliffco loan updates that were not written to Follow Up Boss.</p>
+          <ul className="hub__list">
+            {summary?.iceReviews?.map((item) => (
+              <li key={item.id} className="hub__row">
+                <div className="hub__item-title">
+                  {item.borrower} · {item.loan}
+                </div>
+                <div className="hub__item-meta">
+                  {item.event} — {item.reason}
+                  {item.candidates.length > 0 ? ` (${item.candidates.map((person) => person.name || person.id).join(', ')})` : ''}
+                </div>
+              </li>
+            ))}
+          </ul>
+        </section>
+      )}
+
       <GlanceSection
         title="Today at a glance"
         headingId="hub-today"
