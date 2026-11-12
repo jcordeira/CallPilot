@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it } from 'vitest'
 import { atMentionBody } from '../../netlify/functions/_shared/followupboss'
 import { classifyIceEvent, cliffcoNoteSubject, cliffcoSubjectFromIce, forwardStage, iceMessageText, ICE_CUTOFF_MS, matchIceBorrower, parseIceStatus, runIceStatus } from '../../netlify/functions/_shared/iceStatus'
-import { claimIce, resetIceStatusForTests } from '../../netlify/functions/_shared/iceStatusStore'
+import { claimIce, resetIceStatusForTests, saveIceFlags } from '../../netlify/functions/_shared/iceStatusStore'
 
 const cutoff = ICE_CUTOFF_MS + 60_000
 
@@ -385,6 +385,23 @@ describe('missed Cliffco loans', () => {
     expect(notes.slice(1).map((note) => note.personId)).toEqual([11935, 11935])
     expect(summary.reviews).toEqual([])
     expect(summary.needsReview).toBe(0)
+
+    resetIceStatusForTests()
+    await saveIceFlags({ releasedParseClaims: true })
+    await claimIce('msg/kandov-b')
+    const caughtUp = await runIceStatus({
+      list: async () => [{ id: 'kandov-b', internalDate: cutoff }],
+      read: async () => ({ subject: 'FW: Appraisal Scheduled -  Borr: Kandov, Ronald - Loan #: 1102610CM58418', body: 'From: noreply-MortgageTech@ice.com' }),
+      search: async () => [{ id: 11935, name: 'Ronald Kandov' }],
+      collaborators: async () => [{ id: 16, name: 'Frankie Cordeira' }],
+      note: async (input) => { notes.push(input) },
+      deals: async () => [],
+      stages: async () => [],
+      move: async () => {},
+      remember: async () => {},
+    })
+    expect(caughtUp.posted).toBe(1)
+    expect(caughtUp.notes[0]).toMatchObject({ personId: 11935, loan: '1102610CM58418', event: 'Appraisal scheduled' })
   })
 })
 
