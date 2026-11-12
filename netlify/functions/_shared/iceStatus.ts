@@ -491,7 +491,7 @@ export async function runIceStatus(options?: {
       if (caught.length >= 3) {
         const prior = await loadIceFlags()
         await saveIceFlags({ ...prior, missedNotes: true })
-      } else summary.failures.push(`catch-up posted ${caught.length} of 3`)
+      } else summary.failures.push(`catch-up posted ${caught.length} of 3 for ${caught.map((item) => item.loan).join(', ') || 'none'}`)
     } catch (err) {
       summary.failures.push(err instanceof Error ? err.message : 'catch-up failed')
     }
