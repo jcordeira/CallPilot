@@ -521,10 +521,7 @@ export async function runIceStatus(options?: {
       else summary.skipped += 1
       continue
     }
-    if (!(await claimIce(messageKey))) {
-      summary.duplicates += 1
-      continue
-    }
+    await claimIce(messageKey)
     const eventKey = `event/${parsed.ice.loan}/${kind.type}`
     if (!(await claimIce(eventKey))) {
       summary.duplicates += 1
