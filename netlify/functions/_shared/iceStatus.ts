@@ -85,13 +85,43 @@ async function retitlePostedNotes(): Promise<CliffcoRetitle[]> {
   return updated
 }
 
+async function existingLoanNote(personId: number, loan: string): Promise<{ id: number; body: string } | null> {
+  const notes = await listPersonNotes(personId, 30)
+  for (const note of notes) {
+    if (!note.id || !(note.subject ?? '').startsWith('Cliffco loan update')) continue
+    if ((note.body ?? '').includes(loan)) return { id: note.id, body: note.body ?? '' }
+    const full = await getNote(note.id)
+    if (full?.body?.includes(loan)) return { id: note.id, body: full.body }
+  }
+  return null
+}
+
+function mentionNames(body: string): string[] {
+  return [...body.matchAll(/<span\s+data-user-id="\d+">@?([^<]+)<\/span>/gi)].map((match) => (match[1] ?? '').replace(/^@/, '')).filter(Boolean)
+}
+
 async function postMissedNotes(): Promise<IceRunSummary['notes']> {
   const posted: IceRunSummary['notes'] = []
   let stageList: FubStage[] | null = null
   for (const item of MISSED_NOTES) {
+    const existing = await existingLoanNote(item.personId, item.loan)
+    if (existing) {
+      posted.push({
+        personId: item.personId,
+        name: item.name,
+        event: item.label,
+        loan: item.loan,
+        noteId: existing.id,
+        mentions: mentionNames(existing.body),
+      })
+      continue
+    }
     const eventKey = `event/${item.loan}/${item.type}`
     await releaseIce(eventKey)
-    if (!(await claimIce(eventKey))) continue
+    if (!(await claimIce(eventKey))) {
+      posted.push({ personId: item.personId, name: item.name, event: item.label, loan: item.loan, noteId: null, mentions: [] })
+      continue
+    }
     const collaborators = await listPersonCollaborators(item.personId)
     const sentence = `${item.label} for ${item.name}, loan ${item.loan}.`
     const mentioned = mentionNote(sentence, collaborators)
@@ -102,15 +132,14 @@ async function postMissedNotes(): Promise<IceRunSummary['notes']> {
       isHtml: mentioned.mentionUserIds.length > 0,
       mentionUserIds: mentioned.mentionUserIds,
     })
-    const row = {
+    posted.push({
       personId: item.personId,
       name: item.name,
       event: item.label,
       loan: item.loan,
       noteId: created.id ?? null,
       mentions: collaborators.filter((person) => person.id !== joeUserId()).map((person) => person.name),
-    }
-    posted.push(row)
+    })
     if (!item.stageId) continue
     try {
       if (!stageList) stageList = await listPipelineStages(PURCHASE_PIPELINE)
@@ -482,16 +511,13 @@ export async function runIceStatus(options?: {
     await rememberLoanNumber(personId, loan)
   })
 
-  const missedFlags = await loadIceFlags()
-  if (!missedFlags.missedNotes && !options?.list) {
+  if (!options?.list) {
     try {
       const caught = await postMissedNotes()
       summary.notes.push(...caught)
-      summary.posted += caught.length
-      if (caught.length >= 3) {
-        const prior = await loadIceFlags()
-        await saveIceFlags({ ...prior, missedNotes: true })
-      } else summary.failures.push(`catch-up posted ${caught.length} of 3 for ${caught.map((item) => item.loan).join(', ') || 'none'}`)
+      summary.posted += caught.filter((item) => item.noteId).length
+      const missing = caught.filter((item) => !item.noteId).map((item) => item.loan)
+      if (missing.length) summary.failures.push(`catch-up missing note ids for ${missing.join(', ')}`)
     } catch (err) {
       summary.failures.push(err instanceof Error ? err.message : 'catch-up failed')
     }
