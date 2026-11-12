@@ -55,6 +55,12 @@ export function cliffcoSubjectFromIce(subject: string): string | null {
 }
 
 const POSTED_NOTE_PEOPLE = [9594, 11324, 11486, 10873, 10772]
+const MISSED_NOTES: { personId: number; name: string; loan: string; type: string; label: string; stageId?: number }[] = [
+  { personId: 11104, name: 'Adedayo Adedeji', loan: '1102610CM58352', type: 'commitment-letter', label: 'Commitment letter', stageId: STAGE_CONDITIONAL },
+  { personId: 11935, name: 'Ronald Kandov', loan: '1102610CM58468', type: 'appraisal-scheduled', label: 'Appraisal scheduled' },
+  { personId: 11935, name: 'Ronald Kandov', loan: '1102610CM58418', type: 'appraisal-scheduled', label: 'Appraisal scheduled' },
+]
+
 const POSTED_NOTES: { personId: number; noteId: number }[] = [
   { personId: 9594, noteId: 36774 },
   { personId: 11324, noteId: 36775 },
@@ -77,6 +83,43 @@ async function retitlePostedNotes(): Promise<CliffcoRetitle[]> {
     }
   }
   return updated
+}
+
+async function postMissedNotes(): Promise<IceRunSummary['notes']> {
+  const posted: IceRunSummary['notes'] = []
+  let stageList: FubStage[] | null = null
+  for (const item of MISSED_NOTES) {
+    const eventKey = `event/${item.loan}/${item.type}`
+    await releaseIce(eventKey)
+    if (!(await claimIce(eventKey))) continue
+    const collaborators = await listPersonCollaborators(item.personId)
+    const sentence = `${item.label} for ${item.name}, loan ${item.loan}.`
+    const mentioned = mentionNote(sentence, collaborators)
+    const created = await addNote({
+      personId: item.personId,
+      subject: cliffcoNoteSubject(item.label),
+      body: mentioned.body,
+      isHtml: mentioned.mentionUserIds.length > 0,
+      mentionUserIds: mentioned.mentionUserIds,
+    })
+    const row = {
+      personId: item.personId,
+      name: item.name,
+      event: item.label,
+      loan: item.loan,
+      noteId: created.id ?? null,
+      mentions: collaborators.filter((person) => person.id !== joeUserId()).map((person) => person.name),
+    }
+    posted.push(row)
+    if (!item.stageId) continue
+    try {
+      if (!stageList) stageList = await listPipelineStages(PURCHASE_PIPELINE)
+      await advanceDeal(item.personId, item.stageId, stageList, listPersonDeals, moveDealStage)
+    } catch {
+      /* the note stands; a later run will not move backward */
+    }
+  }
+  return posted
 }
 
 async function addAtMentionsToPostedNotes(): Promise<MentionEdit[]> {
@@ -360,7 +403,7 @@ export type IceRunSummary = {
   parseFailed: number
   failures: string[]
   parseFailures: { subject: string; reason: string }[]
-  notes: { personId: number; name: string; event: string; loan: string }[]
+  notes: { personId: number; name: string; event: string; loan: string; noteId?: number | null; mentions?: string[] }[]
   stages: { personId: number; dealId: number; fromStageId: number; toStageId: number; event: string }[]
   reviews: { borrower: string; loan: string; event: string; reason: string }[]
   retitled: CliffcoRetitle[]
@@ -438,6 +481,21 @@ export async function runIceStatus(options?: {
     await saveLoanPerson(loan, personId)
     await rememberLoanNumber(personId, loan)
   })
+
+  const missedFlags = await loadIceFlags()
+  if (!missedFlags.missedNotes && !options?.list) {
+    try {
+      const caught = await postMissedNotes()
+      summary.notes.push(...caught)
+      summary.posted += caught.length
+      if (caught.length >= 3) {
+        const prior = await loadIceFlags()
+        await saveIceFlags({ ...prior, missedNotes: true })
+      } else summary.failures.push(`catch-up posted ${caught.length} of 3`)
+    } catch (err) {
+      summary.failures.push(err instanceof Error ? err.message : 'catch-up failed')
+    }
+  }
 
   const mentionFlags = await loadIceFlags()
   if (mentionFlags.mentionAts) {

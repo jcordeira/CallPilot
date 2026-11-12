@@ -15,6 +15,7 @@ export type IceFlags = {
   retitled?: CliffcoRetitle[]
   mentionAts?: boolean
   mentionEdits?: MentionEdit[]
+  missedNotes?: boolean
 }
 
 let memoryFlags: IceFlags = {}
