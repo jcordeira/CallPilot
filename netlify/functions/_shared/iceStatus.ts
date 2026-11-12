@@ -1,13 +1,16 @@
 import { env, isDemoMode } from './env'
 import {
   addNote,
+  atMentionBody,
   fubGet,
+  getNote,
   listPersonCollaborators,
   listPersonDeals,
   listPersonNotes,
   listPipelineStages,
   moveDealStage,
   rememberLoanNumber,
+  mentionSpan,
   replaceNoteSubject,
   type FubDeal,
   type FubStage,
@@ -25,6 +28,7 @@ import {
   saveLoanPerson,
   type CliffcoRetitle,
   type IceReview,
+  type MentionEdit,
 } from './iceStatusStore'
 
 /** 7:30 PM America/New_York on 2026-11-09. Mail older than this is ignored. */
@@ -51,6 +55,14 @@ export function cliffcoSubjectFromIce(subject: string): string | null {
 }
 
 const POSTED_NOTE_PEOPLE = [9594, 11324, 11486, 10873, 10772]
+const POSTED_NOTES: { personId: number; noteId: number }[] = [
+  { personId: 9594, noteId: 36774 },
+  { personId: 11324, noteId: 36775 },
+  { personId: 10873, noteId: 36777 },
+  { personId: 10772, noteId: 36778 },
+  { personId: 11486, noteId: 36779 },
+  { personId: 10873, noteId: 36780 },
+]
 
 async function retitlePostedNotes(): Promise<CliffcoRetitle[]> {
   const updated: CliffcoRetitle[] = []
@@ -63,6 +75,18 @@ async function retitlePostedNotes(): Promise<CliffcoRetitle[]> {
       await replaceNoteSubject(note.id, next)
       updated.push({ personId, noteId: note.id, subject: next })
     }
+  }
+  return updated
+}
+
+async function addAtMentionsToPostedNotes(): Promise<MentionEdit[]> {
+  const updated: MentionEdit[] = []
+  for (const item of POSTED_NOTES) {
+    const note = await getNote(item.noteId)
+    if (!note?.body) throw new Error(`note ${item.noteId} missing`)
+    const body = atMentionBody(note.body)
+    if (body !== note.body) await replaceNoteSubject(item.noteId, note.subject, body)
+    updated.push({ personId: item.personId, noteId: item.noteId, subject: note.subject ?? '' })
   }
   return updated
 }
@@ -169,8 +193,9 @@ export type ParseIceResult =
   | { ok: false; reason: string }
 
 function loanNumber(text: string): string | null {
-  const match = text.match(/(\d{7})\s*CMB[-\s]*(\d+)/i)
-  return match?.[1] && match[2] ? `${match[1]}CMB${match[2]}`.toUpperCase() : null
+  const match = text.match(/(\d{7})\s*(CM)(B)?[-\s]*(\d+)/i)
+  if (!match?.[1] || !match[2] || !match[4]) return null
+  return `${match[1]}${match[2].toUpperCase()}${match[3] ? 'B' : ''}${match[4]}`
 }
 
 /** Doc and eConsent forwards. The subject is enough; many of them never include a loan number. */
@@ -191,7 +216,7 @@ function subjectLines(subject: string, text: string): string[] {
 
 function nameFromSubject(subject: string): string | undefined {
   let rest = subject.replace(/^(?:re|fwd?|fw)\s*:\s*/gi, ' ')
-  rest = rest.replace(/\d{7}\s*CMB[-\s]*\d+/gi, ' ')
+  rest = rest.replace(/\d{7}\s*CMB?[-\s]*\d+/gi, ' ')
   for (const rule of [...NOTE_RULES, ...SKIP_RULES]) rest = rest.replace(rule.pattern, ' ')
   rest = rest.replace(/[^A-Za-z,'\s]/g, ' ').replace(/\s+/g, ' ').trim()
   const stop = new Set(['borr', 'borrower', 'loan', 'cmb', 'for', 'fw', 'fwd', 're', 'the'])
@@ -280,8 +305,24 @@ export async function matchIceBorrower(
     }
     if (people.length > 1) return { person: null, reason: `several email matches (${people.length})`, candidates }
   }
-  const named = (await deps.search(`name=${encodeURIComponent(ice.borrower)}`)).filter((person) => normName(person.name ?? '') === normName(ice.borrower))
+  const people = await deps.search(`name=${encodeURIComponent(ice.borrower)}`)
+  const named = people.filter((person) => normName(person.name ?? '') === normName(ice.borrower))
   if (named.length === 1 && named[0]) return { person: named[0], reason: 'exact name', candidates: [] }
+  if (ice.borrower.split(' ').length === 1) {
+    const last = normName(ice.borrower)
+    const byLast = people.filter((person) => {
+      const name = normName(person.name ?? '')
+      return name === last || name.endsWith(` ${last}`)
+    })
+    if (byLast.length === 1 && byLast[0]) return { person: byLast[0], reason: 'unique last name', candidates: [] }
+    if (byLast.length > 1) {
+      return {
+        person: null,
+        reason: `several last-name matches (${byLast.length})`,
+        candidates: byLast.map((person) => ({ id: person.id, name: person.name ?? '' })),
+      }
+    }
+  }
   if (named.length > 1) {
     return {
       person: null,
@@ -323,6 +364,7 @@ export type IceRunSummary = {
   stages: { personId: number; dealId: number; fromStageId: number; toStageId: number; event: string }[]
   reviews: { borrower: string; loan: string; event: string; reason: string }[]
   retitled: CliffcoRetitle[]
+  mentionEdits: MentionEdit[]
 }
 
 type GmailMessage = { id: string; payload?: GmailPart }
@@ -335,7 +377,7 @@ function joeUserId(): number {
 function mentionNote(text: string, collaborators: { id: number; name: string }[]): { body: string; mentionUserIds: number[] } {
   const mention = collaborators.filter((person) => person.id !== joeUserId())
   if (!mention.length) return { body: text, mentionUserIds: [] }
-  const spans = mention.map((person) => `<span data-user-id="${person.id}">${person.name.replace(/[&<>]/g, '')}</span>`).join(' ')
+  const spans = mention.map((person) => mentionSpan(person.id, person.name)).join(' ')
   return { body: `${spans} ${text}`, mentionUserIds: mention.map((person) => person.id) }
 }
 
@@ -369,6 +411,7 @@ export async function runIceStatus(options?: {
     stages: [],
     reviews: [],
     retitled: [],
+    mentionEdits: [],
   }
   if (!summary.enabled) {
     summary.skippedRun = 'disabled'
@@ -395,6 +438,22 @@ export async function runIceStatus(options?: {
     await saveLoanPerson(loan, personId)
     await rememberLoanNumber(personId, loan)
   })
+
+  const mentionFlags = await loadIceFlags()
+  if (mentionFlags.mentionAts) {
+    summary.mentionEdits = mentionFlags.mentionEdits ?? []
+  } else if (!options?.list) {
+    try {
+      const rows = await addAtMentionsToPostedNotes()
+      summary.mentionEdits = rows
+      if (rows.length >= 6) {
+        const prior = await loadIceFlags()
+        await saveIceFlags({ ...prior, mentionAts: true, mentionEdits: rows })
+      } else summary.failures.push(`@mentions updated ${rows.length} of 6`)
+    } catch (err) {
+      summary.failures.push(err instanceof Error ? err.message : 'mention edit failed')
+    }
+  }
 
   const headingFlags = await loadIceFlags()
   if (headingFlags.cliffcoHeadings) {
@@ -572,7 +631,7 @@ export async function loadHubIceReviews(): Promise<IceReview[]> {
 
 type GmailPart = { mimeType?: string; body?: { data?: string }; parts?: GmailPart[]; headers?: { name: string; value: string }[] }
 
-async function gmailFetch(path: string): Promise<unknown> {
+async function gmailFetch(path: string, attempt = 0): Promise<unknown> {
   const { accessToken } = await resolveGoogleAccessToken()
   if (!accessToken) throw new Error('Google is not connected')
   const res = await fetch(`https://gmail.googleapis.com/gmail/v1/users/me/${path}`, {
@@ -582,7 +641,11 @@ async function gmailFetch(path: string): Promise<unknown> {
     const stored = await loadGoogleTokens()
     if (stored?.scope && !gmailCanRead(stored.scope)) throw new Error('Gmail read scope missing')
   }
-  if (!res.ok) throw new Error(`Gmail list failed: ${res.status}`)
+  if ((res.status === 403 || res.status === 429) && attempt < 2) {
+    await new Promise((resolve) => setTimeout(resolve, 700 * (attempt + 1)))
+    return gmailFetch(path, attempt + 1)
+  }
+  if (!res.ok) throw new Error(`Gmail ${path.includes('messages/') ? 'read' : 'list'} failed: ${res.status}`)
   return res.json()
 }
 
@@ -595,13 +658,17 @@ async function listGmail(query: string): Promise<{ id: string; internalDate: num
     const data = (await gmailFetch(`messages?${params}`)) as { messages?: { id: string }[]; nextPageToken?: string }
     let older = false
     for (const message of data.messages ?? []) {
-      const meta = (await gmailFetch(`messages/${message.id}?format=minimal`)) as { id: string; internalDate?: string }
-      const internalDate = Number(meta.internalDate ?? 0)
-      if (internalDate < ICE_CUTOFF_MS) {
-        older = true
-        break
+      try {
+        const meta = (await gmailFetch(`messages/${message.id}?format=minimal`)) as { id: string; internalDate?: string }
+        const internalDate = Number(meta.internalDate ?? 0)
+        if (internalDate < ICE_CUTOFF_MS) {
+          older = true
+          break
+        }
+        found.push({ id: meta.id || message.id, internalDate })
+      } catch {
+        found.push({ id: message.id, internalDate: Date.now() })
       }
-      found.push({ id: meta.id, internalDate })
     }
     if (older || !data.nextPageToken) break
     pageToken = data.nextPageToken

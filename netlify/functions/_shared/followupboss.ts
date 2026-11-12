@@ -378,14 +378,22 @@ export async function createTask(input: {
   return { id: data.id }
 }
 
+/** Visible @ plus the user id span. Follow Up Boss emails the named teammate. Joe (user 1) is left without @. */
+export function mentionSpan(userId: number, name: string): string {
+  const safe = name.replace(/[&<>]/g, '')
+  const label = userId === 1 ? safe : `@${safe.replace(/^@/, '')}`
+  return `<span data-user-id="${userId}">${label}</span>`
+}
+
+/** Put @ before each collaborator name inside an existing span. Leaves the rest of the body alone. */
+export function atMentionBody(body: string): string {
+  return body.replace(/<span\s+data-user-id="(\d+)">(?!@)([^<]*)<\/span>/gi, (_match, id: string, name: string) => mentionSpan(Number(id), name))
+}
+
 /**
  * Post a note. Pass `mentionUserIds` to notify those FUB users.
- * Email fires only when all three travel together (verified against the FUB notes API,
- * which documents personId/subject/body/isHtml and does not document mentions):
- * - body HTML contains `<span data-user-id="N">Display Name</span>`
- * - isHtml: true
- * - mentions: { user: [N] }
- * Plain `@Name` does not email. `mentions.user` without the span adds a collaborator and does not email.
+ * The body should use mentionSpan so the visible text is @Name inside data-user-id.
+ * isHtml must be true, and mentions.user must list the same ids.
  */
 export async function addNote(input: {
   personId: number
@@ -508,18 +516,19 @@ export async function listPersonNotes(personId: number, limit = 100): Promise<Fu
   return mapNotes(data?.notes)
 }
 
-/** Change a note's subject and send the existing body back. Does not delete the note. */
-export async function replaceNoteSubject(noteId: number, subject: string): Promise<void> {
-  if (!noteId || !subject.trim()) throw new Error('note subject update missing id')
+/** Edit a note in place. Sends the current subject unless a new one is given, and never deletes it. */
+export async function replaceNoteSubject(noteId: number, subject?: string, body?: string): Promise<void> {
+  if (!noteId || (subject != null && !subject.trim())) throw new Error('note subject update missing id')
   if (isDemoMode()) return
   const data = (await fubFetch(`/notes/${noteId}`)) as FubNote & { note?: FubNote }
   const note = data.note ?? data
-  const body = note.body ?? ''
-  const mentionUserIds = [...new Set([...body.matchAll(/data-user-id="(\d+)"/g)].map((match) => Number(match[1])).filter((id) => id > 0))]
+  const nextBody = body ?? note.body ?? ''
+  const nextSubject = subject?.trim() || note.subject || ''
+  const mentionUserIds = [...new Set([...nextBody.matchAll(/data-user-id="(\d+)"/g)].map((match) => Number(match[1])).filter((id) => id > 0))]
   const payload: Record<string, unknown> = {
-    subject,
-    body,
-    isHtml: /data-user-id=|<[a-z]/i.test(body),
+    subject: nextSubject,
+    body: nextBody,
+    isHtml: /data-user-id=|<[a-z]/i.test(nextBody),
   }
   if (note.personId) payload.personId = note.personId
   if (mentionUserIds.length) payload.mentions = { user: mentionUserIds }

@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it } from 'vitest'
+import { atMentionBody } from '../../netlify/functions/_shared/followupboss'
 import { classifyIceEvent, cliffcoNoteSubject, cliffcoSubjectFromIce, forwardStage, iceMessageText, ICE_CUTOFF_MS, matchIceBorrower, parseIceStatus, runIceStatus } from '../../netlify/functions/_shared/iceStatus'
 import { claimIce, resetIceStatusForTests } from '../../netlify/functions/_shared/iceStatusStore'
 
@@ -46,6 +47,13 @@ describe('ICE status parser', () => {
     expect(quinn.ok && 'ice' in quinn && quinn.ice).toMatchObject({ borrower: 'Quinn Mann', loan: '1102609CMB57993' })
     expect(amanda.ok && 'ice' in amanda && amanda.ice).toMatchObject({ borrower: 'Amanda Barkan', loan: '1102607CMB57220' })
     expect(kaur.ok && 'ice' in kaur && kaur.ice).toMatchObject({ borrower: 'Kaur', loan: '1102606CMB57004' })
+    const kandov = parseIceStatus('FW: Appraisal Scheduled -  Borr: Kandov, Ronald - Loan #: 1102610CM58418', 'From: noreply-MortgageTech@ice.com')
+    const adedeji = parseIceStatus('FW: CMB - Commitment Letter for Loan #1102610CM58352 - Adedeji', 'From: noreply-MortgageTech@ice.com')
+    expect(kandov.ok && 'ice' in kandov && kandov.ice).toMatchObject({ borrower: 'Ronald Kandov', loan: '1102610CM58418' })
+    expect(adedeji.ok && 'ice' in adedeji && adedeji.ice).toMatchObject({ borrower: 'Adedeji', loan: '1102610CM58352' })
+    expect(atMentionBody('<span data-user-id="16">Frankie Cordeira</span> Commitment letter for Jobanpreet Kaur, loan 1102606CMB57004.')).toBe(
+      '<span data-user-id="16">@Frankie Cordeira</span> Commitment letter for Jobanpreet Kaur, loan 1102606CMB57004.',
+    )
     const remyNoise = parseIceStatus("FW: Nathanaelle Remy's loan: Electronic document package has not been viewed", '')
     const quinnNoise = parseIceStatus("FW: Quinn Mann's Loan Document Successfully Retrieved", '')
     expect(remyNoise.ok && 'noise' in remyNoise && remyNoise.noise).toBe(true)
@@ -73,7 +81,7 @@ describe('ICE status run', () => {
     process.env.ASSISTANT_DEMO_MODE = 'false'
     process.env.FOLLOW_UP_BOSS_API_KEY = 'fub'
     process.env.FUB_LO_USER_ID = '1'
-    const notes: { personId: number; body: string; mentionUserIds: number[] }[] = []
+    const notes: { personId: number; subject: string; body: string; mentionUserIds: number[] }[] = []
     const moves: { dealId: number; stageId: number }[] = []
     const loans: string[] = []
     const run = () => runIceStatus({
@@ -106,8 +114,9 @@ describe('ICE status run', () => {
     expect(first.notes).toEqual([{ personId: 9, name: 'Ada Buyer', event: 'Clear to close', loan: '1102609CMB01234' }])
     expect(moves).toEqual([{ dealId: 70, stageId: 25 }])
     expect(notes[0]?.mentionUserIds).toEqual([16])
-    expect(notes[0]?.body).toContain('data-user-id="16"')
+    expect(notes[0]?.body).toContain('<span data-user-id="16">@Frankie Cordeira</span>')
     expect(notes[0]?.body).not.toContain('data-user-id="1"')
+    expect(notes[0]?.subject).toBe('Cliffco loan update: Clear to close')
     expect(loans).toEqual(['1102609CMB01234'])
 
     const second = await run()
@@ -325,6 +334,57 @@ describe('Cliffco note headings', () => {
     expect(calls).toBe(1)
     expect(second.retitled).toHaveLength(6)
     expect(second.posted).toBe(0)
+  })
+})
+
+describe('missed Cliffco loans', () => {
+  it('posts Adedeji without moving an already-conditional deal, and posts both Kandov appraisals', async () => {
+    process.env.ASSISTANT_DEMO_MODE = 'false'
+    process.env.FOLLOW_UP_BOSS_API_KEY = 'fub'
+    const notes: { personId: number; subject: string; body: string }[] = []
+    const moves: number[] = []
+    const summary = await runIceStatus({
+      list: async () => [
+        { id: 'adedeji', internalDate: cutoff },
+        { id: 'kandov-a', internalDate: cutoff },
+        { id: 'kandov-b', internalDate: cutoff },
+        { id: 'mann-doc', internalDate: cutoff },
+      ],
+      read: async (id) => {
+        if (id === 'adedeji') return { subject: 'FW: CMB - Commitment Letter for Loan #1102610CM58352 - Adedeji', body: 'From: noreply-MortgageTech@ice.com' }
+        if (id === 'kandov-a') return { subject: 'FW: Appraisal Scheduled -  Borr: Kandov, Ronald - Loan #: 1102610CM58468', body: 'From: noreply-MortgageTech@ice.com' }
+        if (id === 'kandov-b') return { subject: 'FW: Appraisal Scheduled -  Borr: Kandov, Ronald - Loan #: 1102610CM58418', body: 'From: noreply-MortgageTech@ice.com' }
+        return { subject: "FW: Quinn Mann's Loan Document Successfully Retrieved", body: 'From: noreply-MortgageTech@ice.com' }
+      },
+      search: async (query) => {
+        if (query.includes('Adedeji')) return [{ id: 11104, name: 'Adedayo Adedeji' }]
+        if (query.includes('Kandov')) return [{ id: 11935, name: 'Ronald Kandov' }]
+        return []
+      },
+      collaborators: async (personId) => (personId === 11104
+        ? [{ id: 1, name: 'Joseph Cordeira' }, { id: 16, name: 'Frankie Cordeira' }]
+        : [{ id: 16, name: 'Frankie Cordeira' }, { id: 32, name: 'Debra Rose' }]),
+      note: async (input) => { notes.push(input) },
+      deals: async (personId) => (personId === 11104 ? [{ id: 892, pipelineId: 1, stageId: 24, status: 'Active' }] : []),
+      stages: async () => [{ id: 23 }, { id: 24 }, { id: 25 }, { id: 129 }],
+      move: async (_deal, stageId) => { moves.push(stageId) },
+      remember: async () => {},
+    })
+    expect(summary.posted).toBe(3)
+    expect(summary.stageMoved).toBe(0)
+    expect(summary.skipped).toBe(1)
+    expect(moves).toEqual([])
+    expect(notes.map((note) => note.subject)).toEqual([
+      'Cliffco loan update: Commitment letter',
+      'Cliffco loan update: Appraisal scheduled',
+      'Cliffco loan update: Appraisal scheduled',
+    ])
+    expect(notes[0]?.body).toContain('<span data-user-id="16">@Frankie Cordeira</span>')
+    expect(notes[0]?.body).not.toContain('data-user-id="1"')
+    expect(notes[0]?.personId).toBe(11104)
+    expect(notes.slice(1).map((note) => note.personId)).toEqual([11935, 11935])
+    expect(summary.reviews).toEqual([])
+    expect(summary.needsReview).toBe(0)
   })
 })
 
