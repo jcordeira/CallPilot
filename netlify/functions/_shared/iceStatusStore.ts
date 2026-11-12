@@ -7,10 +7,14 @@ let memoryReviews: IceReview[] = []
 let memoryLast: unknown
 export type CliffcoRetitle = { personId: number; noteId: number; subject: string }
 
+export type MentionEdit = { personId: number; noteId: number; subject: string }
+
 export type IceFlags = {
   releasedParseClaims?: boolean
   cliffcoHeadings?: boolean
   retitled?: CliffcoRetitle[]
+  mentionAts?: boolean
+  mentionEdits?: MentionEdit[]
 }
 
 let memoryFlags: IceFlags = {}
