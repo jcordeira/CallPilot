@@ -5,6 +5,7 @@ import {
   createHubEvent,
   createHubTask,
   disconnectGoogle,
+  fetchFrankieToday,
   fetchGlance,
   fetchHubSummary,
   fetchSmsUsage,
@@ -19,6 +20,7 @@ import {
   previewWhatsappAutoreply,
   rescoreLeads,
   type CommandPanel,
+  type FrankieTodayBoard,
   type GlanceBoard,
   type GlanceItem,
   type ReminderPanel,
@@ -31,6 +33,7 @@ import {
   type SmsUsageStatus,
   type ScoredLead,
 } from '../lib/hubApi'
+import { FrankieToday } from '../components/FrankieToday'
 import { GlanceSection } from '../components/GlanceSection'
 import { FubPersonLink, TextWithPerson } from '../components/FubPersonLink'
 import { matchPersonInText, personIdForName, type NamedPerson } from '../lib/fubLink'
@@ -136,6 +139,8 @@ export function HubPage() {
   const [searchParams, setSearchParams] = useSearchParams()
   const [summary, setSummary] = useState<HubSummary | null>(null)
   const [glance, setGlance] = useState<GlanceBoard | null>(null)
+  const [frankie, setFrankie] = useState<FrankieTodayBoard | null>(null)
+  const [frankieLoading, setFrankieLoading] = useState(true)
   const [glanceError, setGlanceError] = useState<string | null>(null)
   const [glanceLoading, setGlanceLoading] = useState(true)
   const [smsUsage, setSmsUsage] = useState<SmsUsageStatus | null>(null)
@@ -171,6 +176,10 @@ export function HubPage() {
         fetchCalendarGuestPanel().catch(() => null),
         fetchCommandPanel().catch(() => null),
         fetchSmsUsage().catch(() => null),
+        fetchFrankieToday()
+          .then((board) => setFrankie(board))
+          .catch(() => setFrankie(null))
+          .finally(() => setFrankieLoading(false)),
         fetchGlance()
           .then((board) => {
             setGlance(board)
@@ -575,6 +584,8 @@ export function HubPage() {
           </ul>
         </section>
       )}
+
+      <FrankieToday board={frankie} loading={frankieLoading} />
 
       <GlanceSection
         title="Today at a glance"
