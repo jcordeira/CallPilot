@@ -137,6 +137,7 @@ describe('Hub', () => {
     mockHub()
     renderApp(<App />, { route: '/' })
     expect(await screen.findByRole('heading', { name: 'Hub' })).toBeInTheDocument()
+    expect(screen.queryByRole('heading', { name: 'Frankie Today' })).not.toBeInTheDocument()
     expect(await screen.findByText('Texts today: 3 / 60')).toBeInTheDocument()
     expect(await screen.findByRole('link', { name: 'Week' })).toBeInTheDocument()
     const nav = screen.getByRole('navigation', { name: 'Primary' })
