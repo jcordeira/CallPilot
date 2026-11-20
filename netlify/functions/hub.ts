@@ -11,7 +11,7 @@ import { getWhatsappPanel, runWhatsappAutoreply } from './_shared/whatsappAutore
 import { getCalendarGuestPanel, runCalendarGuest } from './_shared/calendarGuest'
 import { getCommandCenter, listContactMessages, postCommandCenter, searchMessageLeads, sendHubText } from './_shared/commandCenter'
 import { errorResponse, jsonFail, jsonOk, readJson } from './_shared/http'
-import { loadFrankieToday } from './_shared/frankieTodayRun'
+import { previewFrankieDailyEmail } from './_shared/frankieDailyEmailRun'
 import { getSmsUsage } from './_shared/quo'
 
 export default async (req: Request, context: Context) => {
@@ -29,9 +29,12 @@ export default async (req: Request, context: Context) => {
       if (req.method !== 'GET') return jsonFail('Method not allowed', 405)
       return jsonOk(await getHubSummary())
     }
-    if (action === 'frankie-today') {
+    if (action === 'frankie-today-preview') {
       if (req.method !== 'GET') return jsonFail('Method not allowed', 405)
-      return jsonOk(await loadFrankieToday())
+      const email = await previewFrankieDailyEmail()
+      return new Response(email.html, {
+        headers: { 'Content-Type': 'text/html; charset=utf-8', 'Cache-Control': 'no-store' },
+      })
     }
     if (action === 'glance') {
       if (req.method !== 'GET') return jsonFail('Method not allowed', 405)
