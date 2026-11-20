@@ -3,7 +3,7 @@ import { loadFrankieToday } from './_shared/frankieTodayRun'
 
 /** Every 30 minutes. Rebuilds Frankie's read-only call list. */
 export default async () => {
-  const board = await loadFrankieToday({ refresh: true })
+  const board = await loadFrankieToday({ refresh: true, budgetMs: 24_000 })
   return Response.json({ ok: true, updatedAt: board.updatedAt, totalDue: board.totalDue, sections: board.sections })
 }
 
