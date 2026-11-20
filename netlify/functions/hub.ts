@@ -11,6 +11,7 @@ import { getWhatsappPanel, runWhatsappAutoreply } from './_shared/whatsappAutore
 import { getCalendarGuestPanel, runCalendarGuest } from './_shared/calendarGuest'
 import { getCommandCenter, listContactMessages, postCommandCenter, searchMessageLeads, sendHubText } from './_shared/commandCenter'
 import { errorResponse, jsonFail, jsonOk, readJson } from './_shared/http'
+import { loadFrankieToday } from './_shared/frankieTodayRun'
 import { getSmsUsage } from './_shared/quo'
 
 export default async (req: Request, context: Context) => {
@@ -27,6 +28,10 @@ export default async (req: Request, context: Context) => {
     if (action === 'summary') {
       if (req.method !== 'GET') return jsonFail('Method not allowed', 405)
       return jsonOk(await getHubSummary())
+    }
+    if (action === 'frankie-today') {
+      if (req.method !== 'GET') return jsonFail('Method not allowed', 405)
+      return jsonOk(await loadFrankieToday())
     }
     if (action === 'glance') {
       if (req.method !== 'GET') return jsonFail('Method not allowed', 405)

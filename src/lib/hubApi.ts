@@ -116,6 +116,32 @@ export function fetchHubSummary() {
   return hubRequest<HubSummary>('summary')
 }
 
+export type FrankieTodayRow = {
+  id: number
+  name: string
+  sectionId: string
+  reason: string
+  tags: string[]
+  daysSinceTouch: number | null
+  missedYesterday: boolean
+  source: string
+  assignedTo: string
+}
+
+export type FrankieTodayBoard = {
+  updatedAt: string
+  todayKey: string
+  totalDue: number
+  cap: number
+  sections: { id: string; label: string; total: number }[]
+  people: FrankieTodayRow[]
+  warnings: string[]
+}
+
+export function fetchFrankieToday() {
+  return hubRequest<FrankieTodayBoard>('frankie-today')
+}
+
 export type GlanceKind = 'task' | 'appointment'
 export type GlanceSource = 'google' | 'fub'
 
